@@ -88,6 +88,16 @@ export const OPERATOR_PERMISSIONS = [
    * `trace.read`, any approval permission or provisioning.
    */
   'operations.resolve',
+  /**
+   * AUTH-04B2 — passkey enrolment administration: register a named human
+   * principal for a configured operator, issue a one-time, ≤ 15-minute passkey
+   * enrolment invitation for them, revoke one, read their enrolment state.
+   * **Identity only**: it creates no role, no approval standing, no Kernel
+   * Authority, no policy and no capability — a passkey says who a human is,
+   * never what they may do. Held by `organization-administrator` only; implied
+   * by no other permission.
+   */
+  'passkey-enrolment.administer',
 ] as const;
 
 export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
@@ -130,6 +140,9 @@ export type OperatorPermission = (typeof OPERATOR_PERMISSIONS)[number];
  * the attention list: a responder only narrows, and a resolution that an
  * execution did not complete gives its consumed capacity back — that is a
  * widening, the same reason a responder cannot release an emergency stop.
+ *
+ * AUTH-04B2 passkey enrolment: `passkey-enrolment.administer` is held by
+ * `organization-administrator` only (it introduces who may sign decisions).
  */
 export const OPERATOR_ROLES = ['observer', 'responder', 'provisioner', 'profile-steward', 'approver', 'organization-administrator'] as const;
 

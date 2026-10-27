@@ -88,9 +88,9 @@ function administrationBodyReader(req: IncomingMessage): () => Promise<unknown> 
   };
 }
 
-function writeJson(res: ServerResponse, statusCode: number, body: unknown): void {
+function writeJson(res: ServerResponse, statusCode: number, body: unknown, headers: Readonly<Record<string, string>> = {}): void {
   const payload = JSON.stringify(body);
-  res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(payload) });
+  res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(payload), ...headers });
   res.end(payload);
 }
 
@@ -333,6 +333,33 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
               return;
             case 'approval-command':
               respond(operatorApprovals.command(auth, approvalRoute.verb, approvalRoute.approvalRequestId, administrationBodyReader(req)));
+              return;
+          }
+        }
+        // -- AUTH-04B2 passkey enrolment administration (operator plane). Mounted
+        // only when the Host composed `operatorPasskeyEnrolment` (operators
+        // configured and passkey human authority composed). The service
+        // authenticates and authorizes the organization administrator before any
+        // body is read. Identity only; the invitation token is shown once and
+        // never cached.
+        const operatorPasskeyEnrolment = enterprise.operatorPasskeyEnrolment;
+        const enrolmentRoute = operatorPasskeyEnrolment === undefined ? undefined : matchPasskeyEnrolmentRoute(method, url.pathname);
+        if (operatorPasskeyEnrolment !== undefined && enrolmentRoute !== undefined) {
+          const respond = (promise: Promise<unknown>): void => {
+            promise.then((body) => writeJson(res, 200, body, { 'cache-control': 'no-store', pragma: 'no-cache' })).catch(fail);
+          };
+          switch (enrolmentRoute.kind) {
+            case 'register-human':
+              respond(operatorPasskeyEnrolment.registerHuman(auth, administrationBodyReader(req)));
+              return;
+            case 'describe-human':
+              respond(operatorPasskeyEnrolment.describeHuman(auth, enrolmentRoute.operatorId));
+              return;
+            case 'issue-invitation':
+              respond(operatorPasskeyEnrolment.issueInvitation(auth, administrationBodyReader(req)));
+              return;
+            case 'revoke-invitation':
+              respond(operatorPasskeyEnrolment.revokeInvitation(auth, enrolmentRoute.enrolmentId, administrationBodyReader(req)));
               return;
           }
         }
@@ -812,6 +839,31 @@ function matchApprovalRoute(method: string, pathname: string): ApprovalRoute | u
     if (command?.[1] !== undefined && command[2] !== undefined) {
       return { kind: 'approval-command', approvalRequestId: decodeURIComponent(command[1]), verb: command[2] as 'approve' | 'reject' | 'request-changes' | 'escalate' | 'revoke' };
     }
+  }
+  return undefined;
+}
+
+type PasskeyEnrolmentRoute =
+  | { readonly kind: 'register-human' | 'issue-invitation' }
+  | { readonly kind: 'describe-human'; readonly operatorId: string }
+  | { readonly kind: 'revoke-invitation'; readonly enrolmentId: string };
+
+/**
+ * AUTH-04B2 passkey enrolment administration routes. There is deliberately no
+ * route that lists tokens, re-issues a token, registers a passkey, grants a
+ * role, or touches approvals: registration happens on the Authority gateway,
+ * by the named human, with the invitation.
+ */
+function matchPasskeyEnrolmentRoute(method: string, pathname: string): PasskeyEnrolmentRoute | undefined {
+  if (method === 'POST' && /^\/api\/admin\/passkey-humans$/.exec(pathname) !== null) return { kind: 'register-human' };
+  if (method === 'POST' && /^\/api\/admin\/passkey-invitations$/.exec(pathname) !== null) return { kind: 'issue-invitation' };
+  if (method === 'GET') {
+    const human = /^\/api\/admin\/passkey-humans\/([^/]+)$/.exec(pathname);
+    if (human?.[1] !== undefined) return { kind: 'describe-human', operatorId: decodeURIComponent(human[1]) };
+  }
+  if (method === 'POST') {
+    const revoke = /^\/api\/admin\/passkey-invitations\/([^/]+)\/revoke$/.exec(pathname);
+    if (revoke?.[1] !== undefined) return { kind: 'revoke-invitation', enrolmentId: decodeURIComponent(revoke[1]) };
   }
   return undefined;
 }

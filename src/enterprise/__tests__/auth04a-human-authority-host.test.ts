@@ -144,7 +144,7 @@ async function identityRefused(code: string, run: () => Promise<unknown>): Promi
 // ── 1. The gate ─────────────────────────────────────────────────────────────────────
 
 describe('AUTH-04A gate — the authority is composed securely or the Host refuses', () => {
-  const enabled: EnabledHumanAuthorityConfiguration = { mode: 'enabled', sqlitePath: '/unused', rpId: INTENDED_PRODUCTION_RP_ID, rpName: 'Frontera Authority', allowedOrigins: [ORIGIN], initialize: false, decisionChallengeTtlSeconds: 120, ceremonyChallengeTtlSeconds: 120, gateway: { mode: 'disabled' } };
+  const enabled: EnabledHumanAuthorityConfiguration = { mode: 'enabled', sqlitePath: '/unused', rpId: INTENDED_PRODUCTION_RP_ID, rpName: 'Frontera Authority', allowedOrigins: [ORIGIN], initialize: false, decisionChallengeTtlSeconds: 120, ceremonyChallengeTtlSeconds: 120, enrolmentTtlSeconds: 900, gateway: { mode: 'disabled' } };
   const ready = { persistence: 'sqlite', freshness: 'external', signerCustody: 'software', operators: [{ operatorId: 'approver-a', role: 'approver' }], approvalsDeclared: true } as const;
   const refusedBy = (code: string) => (error: unknown) => (error instanceof HumanAuthorityConfigurationError && error.code === code) || assert.fail(`expected ${code}, got ${String((error as { code?: unknown }).code)}`);
 

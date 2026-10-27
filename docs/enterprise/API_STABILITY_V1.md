@@ -595,7 +595,9 @@ composed as well. No existing route, field, status or code changed.
 PROD-03-01 added five operational reads, mounted when operators and governed
 actions are both composed: 58 → **63**. PROD-03-02 added the operator
 resolution command: 63 → **64**. PROD-03-03 added `GET /version`, §2.1:
-64 → **65**.)
+64 → **65**. AUTH-04B2 added four passkey enrolment administration routes,
+mounted only when operators are configured and passkey human authority is
+composed: 65 → **69**.)
 
 | Method | Path | Added by |
 | --- | --- | --- |
@@ -625,6 +627,10 @@ resolution command: 63 → **64**. PROD-03-03 added `GET /version`, §2.1:
 | `GET` | `/api/admin/operations/metrics` | PROD-03-01 |
 | `GET` | `/api/admin/operations/health` | PROD-03-01 |
 | `POST` | `/api/admin/operations/executions/{executionId}/resolution` | PROD-03-02 |
+| `POST` | `/api/admin/passkey-humans` | AUTH-04B2 |
+| `GET` | `/api/admin/passkey-humans/{operatorId}` | AUTH-04B2 |
+| `POST` | `/api/admin/passkey-invitations` | AUTH-04B2 |
+| `POST` | `/api/admin/passkey-invitations/{enrolmentId}/revoke` | AUTH-04B2 |
 
 An **operator** Bearer credential is always required (a CTRL-01
 administrator credential reaches only the CTRL-01 routes of §2.7; ordinary and

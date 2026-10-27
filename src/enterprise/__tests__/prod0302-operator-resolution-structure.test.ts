@@ -204,8 +204,9 @@ describe('PROD-03-02 structure — no retry, replay, resend or re-execute surfac
 
   it('the operator plane adds exactly one route, a POST to …/executions/{id}/resolution', () => {
     const surface = JSON.parse(readFileSync('release/api-surface.v1.json', 'utf8')) as { endpointCount: number; routePatterns: string[] };
-    // 64 at PROD-03-02; PROD-03-03 then added the always-mounted `GET /version` (a literal, not an operator pattern): 65.
-    assert.equal(surface.endpointCount, 65);
+    // 64 at PROD-03-02; PROD-03-03 then added the always-mounted `GET /version` (a literal, not an operator pattern): 65;
+    // AUTH-04B2 then added four passkey enrolment administration routes: 69.
+    assert.equal(surface.endpointCount, 69);
     const added = surface.routePatterns.filter((pattern) => /resolution|retry|replay|resend|reconcile|execute/i.test(pattern));
     assert.deepEqual(added, ['^\\/api\\/admin\\/operations\\/executions\\/([^/]+)\\/resolution$']);
   });

@@ -144,6 +144,8 @@ export type HumanIdentityErrorCode =
   | 'HUMAN_IDENTITY_PRINCIPAL_REVOKED'
   /** The enrolment token is malformed, unknown, wrong, expired, consumed or revoked — deliberately one code. */
   | 'HUMAN_IDENTITY_ENROLMENT_INVALID'
+  /** AUTH-04B2: the human already has the maximum number of open enrolment invitations; revoke one first. */
+  | 'HUMAN_IDENTITY_ENROLMENT_LIMIT'
   /** The ceremony challenge is unknown, of another ceremony, bound elsewhere, expired or already used — deliberately one code. */
   | 'HUMAN_IDENTITY_CHALLENGE_INVALID'
   /** The WebAuthn registration response did not verify (origin, RP ID, flags, attestation, key, shape…). */
