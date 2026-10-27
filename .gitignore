@@ -39,6 +39,10 @@ apps/agent-passport-web/.data/
 # transition"), not disposable pack output.
 !/vendor/*.tgz
 
+# Exception: the vendored Soberanía runtime artifacts are tracked, checksummed build artifacts
+# pinned by soberania-runtime-consumer.lock.json (docs/integration/SOBERANIA_RUNTIME_CONSUMPTION.md).
+!/vendor/soberania-runtime/*.tgz
+
 # Real backups produced by `npm run backup:v1` / restore targets / drill
 # scratch output -- never commit an actual backup (see
 # docs/operations/AOC_ENTERPRISE_BACKUP_V1.md, "Security"). Fixture and

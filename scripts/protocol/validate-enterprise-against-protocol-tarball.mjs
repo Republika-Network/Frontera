@@ -82,7 +82,10 @@ async function copyRepoExcluding(sourceDir, destDir) {
       if (rel === '') return true;
       const topLevel = rel.split('/')[0];
       if (EXCLUDED_TOP_LEVEL.has(topLevel)) return false;
-      if (rel.endsWith('.tgz')) return false;
+      // Protocol tarballs stay out so the copy can only install the tarball under validation. The
+      // pinned Soberanía runtime artifacts are not Protocol artifacts: tests in the battery verify
+      // them against soberania-runtime-consumer.lock.json, so they are copied.
+      if (rel.endsWith('.tgz') && !rel.startsWith('vendor/soberania-runtime/')) return false;
       if (rel.endsWith('.tsbuildinfo')) return false;
       return true;
     },

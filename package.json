@@ -23,6 +23,7 @@
     "validate:invalid-imports": "node scripts/assert-invalid-imports.mjs",
     "validate:publishability": "node scripts/validate-publishability.mjs",
     "check:protocol-consumption": "node scripts/check-protocol-consumption.mjs",
+    "check:soberania-runtime-lock": "node scripts/soberania-runtime/check-runtime-lock.mjs",
     "check:protocol-contract-adoption": "node scripts/check-protocol-contract-adoption.mjs",
     "check:host-configuration": "node scripts/check-host-configuration.mjs",
     "check:runtime-state": "node scripts/check-runtime-operational-state.mjs",

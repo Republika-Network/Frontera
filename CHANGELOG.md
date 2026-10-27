@@ -4,6 +4,12 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Dependencies — FRONTERA-SOBE-PILOT-01A pinned Soberanía runtime artifacts (package integration only)
+- **Vendored**: `vendor/soberania-runtime/` — `@aoc-runtime/authorization-runtime`, `governance-runtime`, `capability-runtime`, `consent-runtime` and `crypto` (runtime), `provider-interfaces` and `shared-types` (declarations), packed reproducibly from Soberanía Protocol `1112c63d` and pinned by the new `soberania-runtime-consumer.lock.json` (sha256, sha512, npm integrity, size, file inventory, runtime requires). Excluded: the root `aoc-runtime`, trust registry, audit wrapper, `@aoc/enterprise`, Portable Cognition, vault runtime, PMFreak adapter. Not installed into Frontera's dependency graph; no Frontera source imports them.
+- **Checks**: `npm run check:soberania-runtime-lock`; `tests/soberania-runtime-consumption.test.mjs` runs the real `AuthorizationRuntime` with governance, capability and consent stages in plain Node from a temporary directory holding only the extracted artifacts, and asserts the allow case, owner/signature/expiry/revocation/timestamp/provider-failure denials, and that only the approved closure loads.
+- **Tooling**: the Protocol tarball validator now copies `vendor/soberania-runtime/*.tgz` into its isolated copy (Protocol tarballs remain excluded); `.gitignore` tracks those artifacts.
+- No Kernel, Host, authentication, payment, evidence or deployment change. Documented: `docs/integration/SOBERANIA_RUNTIME_CONSUMPTION.md`, `docs/release/SOBERANIA_RUNTIME_ARTIFACTS_EVIDENCE.md`.
+
 ### Dependencies — FRONTERA-SOBE-PILOT-01A0 `@aoc/protocol` 0.2.0-rc.3
 - **Repin** from `0.2.0-rc.1` to the security release candidate `0.2.0-rc.3` (source commit `fd705f68`, tag `source/aoc-protocol-0.2.0-rc.3`), built with `scripts/protocol/build-protocol-tarball.mjs` and vendored as `vendor/aoc-protocol-0.2.0-rc.3.tgz` (sha256 `3d17beff…58f4`, equal to Protocol's release manifest). Export map unchanged (fingerprint `a67d65b1…`); integration contract `1.0.1` → `1.0.3`; peer range unchanged. rc.1 is recorded as superseded (not burned); its tarball and evidence are unchanged.
 - **Internal dependency**: `@aoc/protocol/canonical` is permitted only as an internal dependency of the approved Soberanía runtime integration (`protocol-consumer.lock.json` → `internalDependencySubpaths`, constrained to `INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS`). The source allowlist is unchanged: Frontera source still may not import it.
