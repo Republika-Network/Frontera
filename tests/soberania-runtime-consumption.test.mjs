@@ -1,23 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 
 import { ALLOWED_PROTOCOL_SUBPATHS } from '../scripts/protocol/lib-protocol-artifact.mjs';
 import {
   APPROVED_RUNTIME_PACKAGES,
+  CLOSURE_WORKSPACE_DIR,
   EXCLUDED_RUNTIME_PACKAGES,
   RUNTIME_VENDOR_DIR,
+  closureManifestErrors,
   extractTarballAsModule,
   findRuntimeImports,
+  foreignManifestErrors,
+  installedGraphErrors,
   tarballIdentityErrors,
   validateRuntimeLock,
 } from '../scripts/soberania-runtime/lib-runtime-artifacts.mjs';
 
 // FRONTERA-SOBE-PILOT-01A: the vendored Soberanía runtime artifacts, qualified as packages.
-// Nothing here wires the runtime into Frontera; no Frontera source consumes it yet.
+// FRONTERA-SOBE-PILOT-01C0: the same artifacts installed as production dependencies through the closure
+// workspace, and consumed by a strict TypeScript client. Nothing here wires the runtime into the Kernel
+// or the Host; no Frontera source consumes it yet.
 const root = process.cwd();
 const readJson = (path) => JSON.parse(readFileSync(resolve(root, path), 'utf8'));
 const lock = readJson('soberania-runtime-consumer.lock.json');
@@ -39,7 +45,8 @@ function withTempDir(prefix, fn) {
 test('the runtime lock is valid and lists exactly the approved packages', () => {
   assert.deepEqual(validateRuntimeLock(lock), []);
   assert.deepEqual(lock.packages.map((entry) => entry.name).sort(), Object.keys(APPROVED_RUNTIME_PACKAGES).sort());
-  assert.equal(lock.sourceCommit, '1112c63d93875400aeae8e01d85f3c8543be51d4');
+  assert.equal(lock.sourceCommit, 'e85cf1bbb76e844fee7ff6ad5dd5389d26a5f180');
+  assert.equal(lock.sourceTree, '526df04132d0cb0b5dac293c298eae1a104223db');
   assert.equal(lock.protocolDependency.expectedVersion, protocolLock.expectedVersion);
 });
 
@@ -242,15 +249,226 @@ test('runtime imports are detected in every form, and no Frontera source imports
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('the runtime is not part of Frontera\'s dependency graph: no manifest or lockfile entry, no path dependency', () => {
-  const pkg = readJson('package.json');
-  for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
-    for (const name of Object.keys(pkg[field] ?? {})) {
-      assert.ok(!name.startsWith('@aoc-runtime/') && name !== '@aoc/enterprise' && name !== 'aoc-runtime', `${field}: ${name}`);
+// --- Installation (FRONTERA-SOBE-PILOT-01C0) ---------------------------------------
+
+const rootPkg = readJson('package.json');
+const closurePkg = readJson(`${CLOSURE_WORKSPACE_DIR}/package.json`);
+const packageLock = readJson('package-lock.json');
+
+test('only the closure workspace declares the runtime; the published root artifact neither depends on nor bundles it', () => {
+  assert.deepEqual(closureManifestErrors(closurePkg, lock, rootPkg, root), []);
+  assert.deepEqual(foreignManifestErrors(rootPkg, 'package.json'), []);
+  // The root artifact keeps its ADR-FRONTERA-SELF-CONTAINED-PACKAGING shape: @aoc/protocol an external peer
+  // (and the local development pin), never a runtime dependency or a bundled one.
+  assert.equal(rootPkg.dependencies?.['@aoc/protocol'], undefined);
+  assert.ok(rootPkg.peerDependencies?.['@aoc/protocol']);
+  assert.ok(!(rootPkg.bundleDependencies ?? []).some((name) => name.startsWith('@aoc-runtime/') || name === '@aoc/protocol' || name === closurePkg.name));
+  assert.equal(rootPkg.dependencies?.[closurePkg.name], undefined);
+});
+
+test('package-lock.json installs exactly the locked artifacts, and @aoc/protocol, as production dependencies', () => {
+  assert.deepEqual(installedGraphErrors(packageLock, lock), []);
+});
+
+test('the installed node_modules holds the vendored artifacts byte for byte, as real directories', () => {
+  withTempDir('frontera-runtime-installed-', (dir) => {
+    for (const entry of lock.packages) {
+      const installed = resolve(root, 'node_modules', ...entry.name.split('/'));
+      assert.ok(!lstatSync(installed).isSymbolicLink(), `${entry.name} is a symlink`);
+      const expected = extractTarballAsModule(resolve(root, entry.tarball.vendoredAt), join(dir, 'node_modules'), entry.name);
+      for (const file of entry.files) {
+        assert.ok(readFileSync(join(installed, file)).equals(readFileSync(join(expected, file))), `${entry.name}/${file}`);
+      }
     }
+  });
+});
+
+test('the installation policy rejects widened, substituted, dev-only or misplaced runtime dependencies', () => {
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const manifest = (fn) => {
+    const copy = clone(closurePkg);
+    fn(copy);
+    return closureManifestErrors(copy, lock, rootPkg, root);
+  };
+  assert.notDeepEqual(manifest((p) => { p.dependencies['@aoc-runtime/audit-runtime'] = 'file:../../vendor/x.tgz'; }), []);
+  assert.notDeepEqual(manifest((p) => { p.dependencies['@aoc/enterprise'] = '1.0.0'; }), []);
+  assert.notDeepEqual(manifest((p) => { delete p.dependencies['@aoc-runtime/crypto']; }), []);
+  assert.notDeepEqual(manifest((p) => { p.dependencies['@aoc-runtime/crypto'] = '0.1.0'; }), []);
+  assert.notDeepEqual(manifest((p) => { p.dependencies['@aoc/protocol'] = 'file:../../vendor/aoc-protocol-0.2.0-rc.1.tgz'; }), []);
+  assert.notDeepEqual(manifest((p) => { delete p.dependencies['@aoc/protocol']; }), []);
+  assert.notDeepEqual(manifest((p) => { p.main = './index.js'; }), []);
+  assert.notDeepEqual(manifest((p) => { p.private = false; }), []);
+  assert.notDeepEqual(manifest((p) => { p.devDependencies = { '@aoc-runtime/crypto': p.dependencies['@aoc-runtime/crypto'] }; }), []);
+  assert.notDeepEqual(foreignManifestErrors({ dependencies: { '@aoc-runtime/crypto': '0.1.0' } }, 'x'), []);
+  assert.notDeepEqual(foreignManifestErrors({ bundleDependencies: ['@aoc-runtime/crypto'] }, 'x'), []);
+  assert.notDeepEqual(foreignManifestErrors({ devDependencies: { '@aoc-runtime/trust-registry-runtime': '0.1.0' } }, 'x'), []);
+  const graph = (fn) => {
+    const copy = clone(packageLock);
+    fn(copy.packages);
+    return installedGraphErrors(copy, lock);
+  };
+  assert.notDeepEqual(graph((p) => { p['node_modules/@aoc-runtime/crypto'].integrity = 'sha512-AAAA'; }), []);
+  assert.notDeepEqual(graph((p) => { p['node_modules/@aoc-runtime/crypto'].dev = true; }), []);
+  assert.notDeepEqual(graph((p) => { p['node_modules/@aoc-runtime/crypto'].resolved = 'https://registry.npmjs.org/@aoc-runtime/crypto/-/crypto-0.1.0.tgz'; }), []);
+  assert.notDeepEqual(graph((p) => { delete p['node_modules/@aoc-runtime/consent-runtime']; }), []);
+  assert.notDeepEqual(graph((p) => { p['node_modules/@aoc/protocol'].dev = true; }), []);
+  assert.notDeepEqual(graph((p) => { p['node_modules/@aoc-runtime/audit-runtime'] = { version: '0.1.0' }; }), []);
+  assert.notDeepEqual(graph((p) => { p['node_modules/@aoc/enterprise'] = { version: '1.0.0' }; }), []);
+  assert.notDeepEqual(graph((p) => { p['packages/x/node_modules/@aoc-runtime/crypto'] = p['node_modules/@aoc-runtime/crypto']; }), []);
+});
+
+test('npm itself refuses a corrupted artifact at install time (integrity mismatch)', () => {
+  withTempDir('frontera-runtime-npm-integrity-', (dir) => {
+    const entry = lock.packages.find((candidate) => candidate.name === '@aoc-runtime/shared-types');
+    const tarball = join(dir, entry.tarball.filename);
+    copyFileSync(resolve(root, entry.tarball.vendoredAt), tarball);
+    writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ name: 'integrity-probe', version: '0.0.0', private: true, dependencies: { [entry.name]: `file:./${entry.tarball.filename}` } })}\n`);
+    const env = { ...process.env, npm_config_cache: join(dir, '.npm'), npm_config_audit: 'false', npm_config_fund: 'false' };
+    const npm = (argv) => spawnSync('npm', argv, { cwd: dir, env, encoding: 'utf8' });
+    assert.equal(npm(['install', '--offline', '--ignore-scripts']).status, 0);
+    const installedLock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8'));
+    assert.equal(installedLock.packages[`node_modules/${entry.name}`].integrity, entry.tarball.integrity);
+    rmSync(join(dir, 'node_modules'), { recursive: true, force: true });
+    rmSync(join(dir, '.npm'), { recursive: true, force: true });
+    // Substitute other bytes under the same name: npm ci must refuse them against the recorded integrity.
+    copyFileSync(resolve(root, lock.packages.find((candidate) => candidate.name === '@aoc-runtime/provider-interfaces').tarball.vendoredAt), tarball);
+    const tampered = npm(['ci', '--offline', '--ignore-scripts']);
+    assert.notEqual(tampered.status, 0);
+    assert.match(`${tampered.stdout}${tampered.stderr}`, /EINTEGRITY|integrity/i);
+  });
+});
+
+// --- Strict TypeScript consumption (FRONTERA-SOBE-PILOT-01C0) ---------------------------
+
+const STRICT_FIXTURE = resolve(root, 'tests/fixtures/soberania-runtime/strict-consumer');
+const TSC = resolve(root, 'node_modules/typescript/bin/tsc');
+
+function runStrictConsumer() {
+  return withTempDir('frontera-runtime-strict-', (dir) => {
+    // Installed packages only: the lock-verified artifacts and the installed @aoc/protocol. No Soberanía
+    // checkout, no Frontera source, no path alias.
+    cpSync(STRICT_FIXTURE, dir, { recursive: true });
+    const nodeModules = join(dir, 'node_modules');
+    for (const entry of lock.packages) {
+      assert.deepEqual(tarballIdentityErrors(resolve(root, entry.tarball.vendoredAt), entry), [], entry.name);
+      extractTarballAsModule(resolve(root, entry.tarball.vendoredAt), nodeModules, entry.name);
+    }
+    mkdirSync(join(nodeModules, '@aoc'), { recursive: true });
+    cpSync(resolve(root, 'node_modules/@aoc/protocol'), join(nodeModules, '@aoc', 'protocol'), { recursive: true, dereference: true });
+
+    const env = { ...process.env };
+    delete env.NODE_PATH;
+    delete env.NODE_OPTIONS;
+    const compile = spawnSync(process.execPath, [TSC, '-p', 'tsconfig.json'], { cwd: dir, env, encoding: 'utf8' });
+    const negative = spawnSync(process.execPath, [TSC, '-p', 'tsconfig.negative.json'], { cwd: dir, env, encoding: 'utf8' });
+    const run = compile.status === 0 ? spawnSync(process.execPath, ['run.cjs'], { cwd: dir, env, encoding: 'utf8' }) : undefined;
+    const report = run?.status === 0 ? JSON.parse(run.stdout) : undefined;
+    return {
+      compile: { status: compile.status, output: `${compile.stdout}${compile.stderr}` },
+      negativeErrorLines: [...`${negative.stdout}`.matchAll(/^src\/negative\.ts\((\d+),\d+\): error TS\d+/gm)].map((match) => Number(match[1])),
+      run: run === undefined ? undefined : { status: run.status, stderr: run.stderr },
+      report: report === undefined ? undefined : { ...report, loaded: report.loaded.map((file) => relative(dir, file).split(sep).join('/')) },
+    };
+  });
+}
+
+const strict = runStrictConsumer();
+
+test('the strict consumer compiles against the installed declarations: strict, skipLibCheck false, exact optional types, unchecked index access', () => {
+  const config = JSON.parse(readFileSync(join(STRICT_FIXTURE, 'tsconfig.json'), 'utf8')).compilerOptions;
+  assert.equal(config.strict, true);
+  assert.equal(config.skipLibCheck, false);
+  assert.equal(config.exactOptionalPropertyTypes, true);
+  assert.equal(config.noUncheckedIndexedAccess, true);
+  assert.equal(config.paths, undefined);
+  assert.equal(config.baseUrl, undefined);
+  assert.equal(strict.compile.status, 0, strict.compile.output);
+});
+
+test('the strict consumer source uses no escape hatch: no any, no assertion, no ambient module, no suppression', () => {
+  const source = readFileSync(join(STRICT_FIXTURE, 'src/consumer.ts'), 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(source, /:\s*any\b|<any>|\bas\s+(?!const\b)[A-Za-z{[(]/);
+  assert.doesNotMatch(source, /declare\s+module|@ts-ignore|@ts-expect-error|@ts-nocheck/);
+  assert.equal(readdirSync(join(STRICT_FIXTURE, 'src')).filter((file) => file.endsWith('.d.ts')).length, 0);
+});
+
+test('incompatible finalizers and verifiers are rejected by the type checker, line for line', () => {
+  const expected = readFileSync(join(STRICT_FIXTURE, 'src/negative.ts'), 'utf8')
+    .split('\n')
+    .map((line, index) => (line.trimEnd().endsWith('// expect-error') ? index + 1 : 0))
+    .filter(Boolean);
+  assert.equal(expected.length, 7);
+  assert.deepEqual([...new Set(strict.negativeErrorLines)].sort((a, b) => a - b), expected);
+});
+
+test('typed AuthorizationRuntime: one valid signed case allows; invalid, missing, expired, revoked and governance or capability denials deny; provider failures reject', () => {
+  assert.ok(strict.report, strict.run?.stderr ?? strict.compile.output);
+  const cases = strict.report.cases;
+  const allowed = Object.entries(cases).filter(([, outcome]) => outcome.allowed).map(([name]) => name);
+  assert.deepEqual(allowed, ['allow: valid capability, owner-signed delegated consent, allow policy']);
+  assert.equal(cases['allow: valid capability, owner-signed delegated consent, allow policy'].decision, 'allow');
+  const denied = (name, stage) => assert.deepEqual([cases[name].outcome, cases[name].allowed, cases[name].failedStage], ['decided', false, stage], name);
+  denied('deny: consent signed with another trusted key', 'consent');
+  denied('deny: delegated consent without the delegate countersignature', 'consent');
+  denied('deny: no consent', 'consent');
+  denied('deny: expired consent', 'consent');
+  denied('deny: revoked consent', 'consent');
+  denied('deny: consent runtime configured with an empty trusted key set', 'consent');
+  denied('deny: no capability for the actor', 'capability');
+  denied('deny: expired capability', 'capability');
+  denied('deny: malformed evaluation time', 'capability');
+  denied('deny: no governance rule matches', 'governance');
+  denied('deny: governance deny rule', 'governance');
+  // Provider exceptions surface as rejections, never as a decision and never as an allow.
+  for (const name of ['rejected: policy provider throws', 'rejected: capability provider throws', 'rejected: consent provider throws']) {
+    assert.deepEqual([cases[name].outcome, cases[name].allowed, cases[name].error], ['rejected', false, 'provider unavailable'], name);
   }
-  const lockfile = readJson('package-lock.json');
-  for (const key of Object.keys(lockfile.packages)) {
-    assert.ok(!key.includes('node_modules/@aoc-runtime/') && !key.endsWith('node_modules/@aoc/enterprise'), key);
+});
+
+test('the strict consumer loads only the approved runtime closure from installed packages', () => {
+  const packages = new Set();
+  for (const file of strict.report.loaded) {
+    if (file === 'run.cjs' || file === 'dist/consumer.js') continue;
+    assert.ok(file.startsWith('node_modules/'), `${file} loaded from outside the installed packages`);
+    const parts = file.split('/');
+    packages.add(parts[1].startsWith('@') ? `${parts[1]}/${parts[2]}` : parts[1]);
   }
+  assert.deepEqual([...packages].sort(), [...RUNTIME, '@aoc/protocol'].sort());
+  for (const name of [...DECLARATIONS, ...EXCLUDED_RUNTIME_PACKAGES]) assert.ok(!packages.has(name), `${name} was loaded`);
+});
+
+test('the pass-through finalizer is a frozen, explicitly non-production test fixture that nothing ships', () => {
+  const source = readFileSync(join(STRICT_FIXTURE, 'src/consumer.ts'), 'utf8');
+  assert.match(source, /TEST FIXTURE ONLY — NOT A PRODUCTION AUDIT FINALIZER\./);
+  assert.match(source, /export const NON_PRODUCTION_PASS_THROUGH_FINALIZER: AuthorizationDecisionFinalizer = Object\.freeze\(/);
+  assert.equal(strict.report.finalizerIsFrozen, true);
+  // The closure workspace ships no code, so no finalizer, pass-through or otherwise, reaches the Host.
+  assert.equal(closurePkg.main, undefined);
+  assert.equal(closurePkg.exports, undefined);
+  assert.deepEqual(readdirSync(resolve(root, CLOSURE_WORKSPACE_DIR)).sort(), ['README.md', 'package.json']);
+});
+
+// --- Kernel port stays optional and unwired -------------------------------------------
+
+test('the deny-only Kernel external authorization port is configured nowhere outside the Kernel', () => {
+  const allowed = new Set([
+    'src/kernel/AocKernel.ts',
+    'src/kernel/orchestration/external-authorization-adapter.ts',
+    'src/kernel/contracts/kernel-result.ts',
+    'src/kernel/__tests__/kernel-external-authorization.test.ts',
+  ]);
+  const offenders = [];
+  const visit = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.')) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else if (/\.(ts|mts|cts|tsx|js|mjs|cjs|json)$/.test(entry.name)) {
+        const rel = relative(root, full).split(sep).join('/');
+        if (!allowed.has(rel) && /externalAuthorization/.test(readFileSync(full, 'utf8'))) offenders.push(rel);
+      }
+    }
+  };
+  for (const dir of ['src', 'packages', 'apps', 'scripts', 'deploy']) visit(resolve(root, dir));
+  assert.deepEqual(offenders, []);
 });

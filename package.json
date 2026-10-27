@@ -25,6 +25,7 @@
     "validate:publishability": "node scripts/validate-publishability.mjs",
     "check:protocol-consumption": "node scripts/check-protocol-consumption.mjs",
     "check:soberania-runtime-lock": "node scripts/soberania-runtime/check-runtime-lock.mjs",
+    "qualify:soberania-runtime-closure": "node scripts/soberania-runtime/qualify-production-closure.mjs",
     "check:protocol-contract-adoption": "node scripts/check-protocol-contract-adoption.mjs",
     "check:host-configuration": "node scripts/check-host-configuration.mjs",
     "check:runtime-state": "node scripts/check-runtime-operational-state.mjs",

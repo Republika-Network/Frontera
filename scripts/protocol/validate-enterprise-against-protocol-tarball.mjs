@@ -257,8 +257,20 @@ async function main() {
     }
     pkgJson.devDependencies['@aoc/protocol'] = `file:${tarballPath}`;
     await writeFile(pkgJsonPath, `${JSON.stringify(pkgJson, null, 2)}\n`);
+    // The Soberanía runtime closure workspace declares @aoc/protocol as a production dependency
+    // (@aoc-runtime/crypto requires it at run time) through the same artifact as the root. It is
+    // swapped to the tarball under validation too, so the copy resolves exactly one Protocol package.
+    const closurePkgPath = join(tempDir, 'packages', 'soberania-runtime-closure', 'package.json');
+    if (existsSync(closurePkgPath)) {
+      const closurePkg = JSON.parse(await readFile(closurePkgPath, 'utf8'));
+      if (!closurePkg.dependencies?.['@aoc/protocol']) {
+        throw new Error('The Soberanía runtime closure workspace does not declare @aoc/protocol; nothing to swap.');
+      }
+      closurePkg.dependencies['@aoc/protocol'] = `file:${tarballPath}`;
+      await writeFile(closurePkgPath, `${JSON.stringify(closurePkg, null, 2)}\n`);
+    }
     await rm(join(tempDir, 'package-lock.json'), { force: true });
-    log('Rewrote isolated copy\'s package.json devDependency to point at the tarball and removed its lockfile so npm resolves fresh.');
+    log('Rewrote isolated copy\'s @aoc/protocol dependencies (root devDependency, runtime closure workspace) to point at the tarball and removed its lockfile so npm resolves fresh.');
 
     // --- Narrow the local ambient shim to only the documented, ungated export gap ---
     const tsconfigBasePath = join(tempDir, 'tsconfig.base.json');

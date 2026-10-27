@@ -4,6 +4,12 @@
 records what was verified; it authorizes nothing. No Frontera source consumes these artifacts and none
 is installed into Frontera's dependency graph.
 
+> **Historical record (01A, source `1112c63`).** FRONTERA-SOBE-PILOT-01C0 re-pinned the artifacts to
+> Soberanía `e85cf1b` (only `@aoc-runtime/authorization-runtime` changed) and installed them as
+> production dependencies. The current evidence is
+> [`SOBERANIA_RUNTIME_DEPENDENCY_CLOSURE_EVIDENCE_01C0.md`](SOBERANIA_RUNTIME_DEPENDENCY_CLOSURE_EVIDENCE_01C0.md);
+> this document is kept unchanged below as the record of what 01A verified.
+
 ## Source and packaging
 
 | Field | Value |
