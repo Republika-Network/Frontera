@@ -429,8 +429,10 @@ describe('AUTH-04D1 — Authority pilot backup and restore under CORE-07 (softwa
     const authority = host.host.enterprise.humanAuthority;
     assert.ok(authority !== undefined);
 
-    // A consumed decision challenge stays consumed: the old assertion replayed into the restored store is refused, and CORE-05 keeps one verdict.
-    await assert.rejects(authority.decisions.decide(decided.assertion), (error: unknown) => (error as { code?: unknown }).code === 'HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED' || assert.fail(String((error as { code?: unknown }).code)));
+    // A consumed decision challenge stays consumed. Replayed through the decision channel, the old assertion is refused (the
+    // request is already decided at CORE-05); offered to the restored identity store itself, it is refused as consumed.
+    await assert.rejects(authority.decisions.decide(decided.assertion), (error: unknown) => typeof (error as { code?: unknown }).code === 'string');
+    await assert.rejects(authority.identity.authorizeDecision(decided.assertion), (error: unknown) => (error as { code?: unknown }).code === 'HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED' || assert.fail(String((error as { code?: unknown }).code)));
     assert.equal(await verdictsOn(host, decided.approvalRequestId), 1);
     // The revoked passkey stays revoked; the CTO's passkey works.
     const lost = await new Browser(host.gatewayPort).signIn(lostDevice);
