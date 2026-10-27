@@ -605,7 +605,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     assert.equal(success.executionId, executionId, 'the execution id is recomputed from the request and decision, and matches');
     assert.equal(success.organizationId, ORG);
     assert.deepEqual(success.operation, { action: SYNTHETIC, resource: SYNTHETIC_ENV });
-    assert.deepEqual(success.approval, { approvalRequestId: view.approvalRequestId, subjectDigest: view.subjectDigest, approvalDigest: approved.state.approvalDigest ?? null, approvedBy: [`operator:${CTO.operatorId}`], channel: HUMAN_PASSKEY_DECISION_CHANNEL });
+    assert.deepEqual(success.approval, { approvalRequestId: view.approvalRequestId, subjectDigest: view.subjectDigest, currentStatus: 'approved', approvalDigest: approved.state.approvalDigest ?? null, approvedBy: [`operator:${CTO.operatorId}`], channel: HUMAN_PASSKEY_DECISION_CHANNEL });
     assert.equal(success.capability?.issuer, CAPABILITY_ISSUER);
     assert.equal(success.capability?.issuerKeyId, AUTHORITY_KEY_A.keyId);
     assert.equal(success.receipt?.executorId, E2E_EXECUTOR_ID);
@@ -911,14 +911,15 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
   });
 
   it('21 — the approval revoked after the execution: never re-read as NOT_AUTHORIZED; EXECUTION_UNKNOWN (APPROVAL_WITHDRAWN_ORDER_UNPROVEN); nothing re-executes', async () => {
-    const { key, view } = await executedBy(CTO.operatorId, 'auth04d2s-revoked-after');
+    const { key, view, executionId } = await executedBy(CTO.operatorId, 'auth04d2s-revoked-after');
     const effectsBefore = effects();
     const revoked = await call(booted.baseUrl, 'POST', `/api/admin/approvals/${encodeURIComponent(view.approvalRequestId)}/revoke`, { authorization: bearer(CTO_SECRET), body: { subjectDigest: view.subjectDigest, reason: 'withdrawn after the release' } });
     assert.equal(revoked.status, 200, revoked.text);
     assert.equal((await viewOf(view.requestId))?.state.status, 'revoked');
     const after = await verify(view.requestId);
     assert.deepEqual([after.status, after.reason, after.approval?.currentStatus], ['EXECUTION_UNKNOWN', 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN', 'revoked'], JSON.stringify(after));
-    assert.equal(after.receipt?.outcome, 'completed-observed', 'the signed receipt is still reported, as evidence, not as success');
+    assert.equal(after.receipt, null, 'the statement stops at the approval and reports no receipt it did not verify');
+    assert.equal((await evidenceOf(executionId)).evidence[0]?.outcome, 'completed-observed', 'the Host still holds the executor’s signed receipt, as evidence');
     // B: the same key never executes again, and nothing new happens downstream.
     const again = await govern(booted.baseUrl, world.syntheticCredential, synthetic(key));
     assert.ok(again.body['status'] !== 'executed' || again.body['replayed'] === true, `answered from the record, never a new execution: ${again.text}`);
