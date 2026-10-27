@@ -34,6 +34,7 @@ export type {
   ObligationInstanceEvaluation,
   ObligationTransitionEvaluation,
   ObligationVerificationEvaluation,
+  ExternalAuthorizationEvaluation,
   KernelEvaluationResult,
   KernelTrace,
   KernelTraceStep,
@@ -51,6 +52,9 @@ export type {
   GovernedRepresentationProvider,
   ContextProvider,
   ObligationDischargeProvider,
+  ExternalAuthorizationProvider,
+  ExternalAuthorizationInput,
+  ExternalAuthorizationResponse,
   KernelClock,
   KernelIdGenerator,
 } from './contracts/index.js';
@@ -97,6 +101,15 @@ export type { AocKernelExerciseReasonCode } from './reason-codes/exercise-reason
  * `src/features/grant-runtime`, which is not a frozen artifact.
  */
 export type { KernelGrantOptions } from './orchestration/grant-adapter.js';
+
+/**
+ * The deny-only external authorization capability's configuration shape.
+ * Type-only, for the reason stated above: `dist/src/kernel/index.js` is a
+ * checksummed release artifact, and a type export leaves it byte for byte
+ * unchanged. Its four reason codes are part of `AOC_KERNEL_REASON_CODES`,
+ * because a veto is an authorization outcome and appears in `reasonCodes`.
+ */
+export type { KernelExternalAuthorizationOptions } from './orchestration/external-authorization-adapter.js';
 
 export { AOC_KERNEL_REASON_CODES } from './reason-codes/reason-codes.js';
 export type { AocKernelReasonCode } from './reason-codes/reason-codes.js';

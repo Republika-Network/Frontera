@@ -106,6 +106,21 @@ export const AOC_KERNEL_REASON_CODES = {
   CONTEXT_RESTRICTIVE_FACT_AMBIGUOUS: 'CONTEXT_RESTRICTIVE_FACT_AMBIGUOUS',
   /** CORE-04: the request's effective Governance Profile could not be established from trusted configuration, or its own semantics named a different one. Nothing the request claimed selects which facts it stands under. */
   CONTEXT_PROFILE_UNTRUSTED: 'CONTEXT_PROFILE_UNTRUSTED',
+
+  // External authorization codes. They exist only for a deployment that
+  // configured an `ExternalAuthorizationProvider`, and each one narrows an
+  // outcome the Kernel had allowed. Four because they send an operator to four
+  // different places: the external policy, the external service's health, its
+  // latency, or the adapter that speaks for it. None carries anything the
+  // external authority said beyond which of the four happened.
+  /** The external authority answered `deny`. */
+  EXTERNAL_AUTHORIZATION_DENIED: 'EXTERNAL_AUTHORIZATION_DENIED',
+  /** The external authority threw or rejected instead of answering. An unanswered check denies. */
+  EXTERNAL_AUTHORIZATION_UNAVAILABLE: 'EXTERNAL_AUTHORIZATION_UNAVAILABLE',
+  /** The external authority did not answer within the operator-configured bound. Any later answer is discarded. */
+  EXTERNAL_AUTHORIZATION_TIMEOUT: 'EXTERNAL_AUTHORIZATION_TIMEOUT',
+  /** The external authority answered with something that is not exactly `{ decision: 'allow' }` or `{ decision: 'deny' }`. */
+  EXTERNAL_AUTHORIZATION_INVALID_RESPONSE: 'EXTERNAL_AUTHORIZATION_INVALID_RESPONSE',
 } as const;
 
 export type AocKernelReasonCode = (typeof AOC_KERNEL_REASON_CODES)[keyof typeof AOC_KERNEL_REASON_CODES];
