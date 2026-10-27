@@ -61,8 +61,10 @@ describe('AUTH-03 structure — the passkey channel is the only way a human deci
     for (const file of surfaces) assert.equal(/human-decision|human-identity|createHumanDecisionChannel|humanAuthority/.test(read(file)), false, file);
     assert.equal(/human-decision/.test(read('src/enterprise/approval-authority/index.ts')), false, 'not exported from the CORE-05 module index');
     // AUTH-04A: the one composition point is the composition module; the root and the Host only reach it.
+    // AUTH-04B: the Authority gateway reads the decision channel's error type (to map refusals to HTTP); it composes nothing.
     const composers = walk('src/enterprise').filter((file) => /from '[^']*(human-decision|human-identity\/index)\.js'/.test(read(file)));
-    assert.deepEqual(composers.sort(), ['src/enterprise/composition/human-authority-composition.ts']);
+    assert.deepEqual(composers.sort(), ['src/enterprise/authority-gateway/gateway.ts', 'src/enterprise/composition/human-authority-composition.ts']);
+    assert.equal(/createHumanDecisionChannel|openSqliteHumanIdentityStore|createHumanIdentityService/.test(read('src/enterprise/authority-gateway/gateway.ts')), false, 'the gateway composes nothing');
   });
 
   it('caps the decision challenge at 120 seconds and binds the WebAuthn challenge to the commitment', () => {
