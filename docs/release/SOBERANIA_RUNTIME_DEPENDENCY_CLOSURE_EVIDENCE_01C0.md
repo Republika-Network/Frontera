@@ -122,10 +122,55 @@ intersection types, without assertions.
 | Field | Value |
 | --- | --- |
 | First qualification | commit `2638a42` on main `9f3b44f` |
-| Reconciled | rebased onto `cb90a75` (AUTH-04D1, #219), then onto `8f5472e` (AUTH-04D1R, #220) |
-| Conflicts | `CHANGELOG.md` only, positional: both entries kept verbatim, this one first; nothing else overlaps |
+| Reconciled | rebased onto `cb90a75` (AUTH-04D1, #219), then `8f5472e` (AUTH-04D1R, #220), then `b7bae7b` (AUTH-04D2A #223, RSDK-01 #221) |
+| Conflicts | `CHANGELOG.md`, positional (both entries kept verbatim); on `b7bae7b`, `package-lock.json`: main's lockfile with this change's closure re-added by `npm install --package-lock-only`, whose delta against main is identical entry for entry to this change's original delta (RSDK-01's workspace kept) |
 | Patch | identical across the rebases except `CHANGELOG.md` placement and blob index lines |
 | AUTH-04D1 / AUTH-04D1R | they change no lockfile, Dockerfile, `vendor/`, Soberanía or Protocol tooling, Kernel or release manifest file; their `package.json` script additions and this one coexist |
+| AUTH-04D2A / RSDK-01 | the Protocol tarball validator's new package-scoped scan and this change's closure swap merge without conflict; `protocol-consumer.lock.json` (RSDK-01's package-scoped allowance) and the Protocol artifact, version and integrity are unchanged by this change |
+
+## RSDK-01 compatibility: Protocol ownership instead of a dev-only lockfile flag
+
+RSDK-01's boundary test (`packages/sovereign-receiver-verification/__tests__/boundary.test.ts`) required
+the lockfile to mark `node_modules/@aoc/protocol` as `dev: true`. That held while only the root's
+development dependency installed Protocol. This change makes `packages/soberania-runtime-closure` a
+production owner of the same artifact, because `@aoc-runtime/crypto` requires `@aoc/protocol/canonical`
+at run time. npm therefore classifies the package as production, and the old assertion failed
+deterministically on the combined tree.
+
+The flag was a proxy for "nothing ships Protocol in production". The test now states the boundary
+directly:
+
+- **Root:** keeps its development dependency on the approved tarball and its external peer range. It
+  never declares Protocol as a production or bundled dependency.
+- **Closure workspace:** `packages/soberania-runtime-closure` is the only workspace that declares
+  Protocol, as a production dependency on that same tarball. No other workspace declares it in any
+  field.
+- **Installed package:** exactly one top-level `@aoc/protocol`, resolved from the approved tarball with
+  the approved integrity. It is classified as production exactly when an approved production owner
+  exists.
+- **Receiver package:** stays private, has no `publishConfig`, and declares no dependency of any kind in
+  its manifest or its lockfile entry. The package-scoped allowance is not a dependency: the receiver
+  still owns no production dependency.
+- **Receiver imports:** its Protocol subpaths equal the package-scoped allowance in
+  `protocol-consumer.lock.json`. The surface, re-export and source-import checks keep their effect.
+
+19 negative controls mutate in-memory copies of the real inputs. Each is refused for its own reason:
+
+- a receiver dependency in the manifest or the lockfile;
+- a publishable or `publishConfig` receiver;
+- a registry spec or registry resolution for Protocol;
+- a changed integrity;
+- an additional production owner, or another workspace declaring a peer;
+- the closure no longer owning Protocol;
+- a nested duplicate;
+- a dev-only flag despite a production owner;
+- the root moving Protocol into dependencies, bundling it, or dropping the peer;
+- a forbidden subpath, or a Protocol root import;
+- a re-exported Protocol value.
+
+RSDK-01 now runs 100 tests: the 97 qualified, with the one obsolete assertion replaced, plus three. None
+of this grants a runtime capability, Host wiring, federation or publication. It records that Protocol
+reaches production only through the approved, code-free closure workspace.
 
 ## Validation
 
@@ -149,6 +194,27 @@ tree was kept. `typecheck`, `build`, `lint`, `check:soberania-runtime-lock`, `ch
 tests, the Kernel external authorization suite (73), both AUTH-04D1R suites (10),
 `qualify:soberania-runtime-closure`, `validate:publishability` and `check:clean-room-consumer`: pass.
 The full suite and the isolated validator were not re-run on this tree.
+
+### Gates repeated after the rebase onto `b7bae7b`
+
+The lockfile changed (RSDK-01's workspace), so `npm ci` ran first. These pass:
+
+- `typecheck`, `build`, `lint`, `legal:check`;
+- `check:soberania-runtime-lock`, `check:protocol-consumption`, `check:protocol-contract-adoption`,
+  `check:protocol-compatibility-lock`, `check:protocol-canonicalization`;
+- `validate:invalid-imports`, `check-node16-imports`, `check:aoc-boundaries`, `check:host-configuration`;
+- `check:release-integrity`, `check:release-coherence`, `protocol:tarball:verify-lock`;
+- the Soberanía consumption tests, both pilot-kit structure tests, the ingress contract,
+  `generate-pilot-secrets`, the package-scoped Protocol consumption test, the Protocol tarball lock test
+  and the Kernel external authorization suite (187 tests in all);
+- the RSDK-01 workspace (100 tests, after the correction above), and the tarball validator's
+  forbidden-import scan on the tree (0 violations);
+- `qualify:soberania-runtime-closure`, `qualify:pilot` (181), `validate:publishability`,
+  `check:clean-room-consumer`;
+- `qualify-pilot-deployment` 16/16 and `qualify-pilot-acceptance --host-build` 18/18.
+
+Before the correction, the RSDK-01 workspace failed 1 of 97 tests: the dev-only assertion. The full suite
+and the isolated validator were not re-run on this tree.
 
 ### Full suite and isolated validator (base `cb90a75`): failing, on both trees
 
