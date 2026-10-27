@@ -199,7 +199,10 @@ export function createSyntheticExecutionVerifier(options: SyntheticExecutionVeri
 
   function verify(input: SyntheticExecutionVerificationInput): SyntheticExecutionVerification {
     const { trace } = input;
-    const executionId = executionIdForGrant({ correlation: { requestId: trace.requestId, decisionId: trace.decisionId } });
+    // The governed path's derivation reads the request and decision alone; action and scope complete the correlation's shape.
+    const executionId = executionIdForGrant({
+      correlation: { requestId: trace.requestId, decisionId: trace.decisionId, action: input.approval?.subject.action ?? '', resourceScope: input.approval?.subject.resourceScope ?? '' },
+    });
     let approvalPart: SyntheticExecutionVerification['approval'] = null;
     let operation: SyntheticExecutionVerification['operation'] = null;
     let capabilityPart: SyntheticExecutionVerification['capability'] = null;
