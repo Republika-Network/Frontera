@@ -57,6 +57,15 @@ after(async () => {
 
 const identityPath = (dir: string): string => join(dir, 'identity', 'human-identity.sqlite');
 
+/** Folds the WAL into the main file (the Host is closed), so a file-level copy or removal is the whole committed state. */
+function checkpointed(path: string): string {
+  const db = new Database(path);
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  db.close();
+  for (const suffix of ['-wal', '-shm']) if (existsSync(`${path}${suffix}`)) rmSync(`${path}${suffix}`);
+  return path;
+}
+
 function humanAuthorityEnv(dir: string, overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   return {
     AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE: 'enabled',
@@ -345,7 +354,8 @@ describe('AUTH-04A on the shipped Host — passkey decisions into CORE-05, nothi
         const reply = await call(booted.baseUrl, method, path, { ...(authorization !== undefined ? { authorization } : {}), ...(method === 'POST' ? { body: {} } : {}) });
         // Unmounted (404), or refused before any routing decision (400/401/403/405): never answered.
         assert.ok([400, 401, 403, 404, 405].includes(reply.status), `${method} ${path} → ${reply.status}`);
-        assert.equal(/challenge|commitment|credentialId|enrolment/i.test(reply.text), false, `${method} ${path} leaks nothing of the authority`);
+        // The 404 body echoes the requested path; anything beyond it must say nothing of the authority.
+        assert.equal(/challenge|commitment|credentialId|enrolment/i.test(reply.text.split(path).join('')), false, `${method} ${path} leaks nothing of the authority`);
       }
     }
   });
@@ -403,7 +413,7 @@ describe('AUTH-04A recovery — interrupted decisions are settled at restart fro
     // Restart (no initialization): startup reconciliation settles each from CORE-05.
     await booted.host.close();
     const backup = `${identityPath(dir)}.backup`;
-    copyFileSync(identityPath(dir), backup);
+    copyFileSync(checkpointed(identityPath(dir)), backup);
     booted = await boot(dir, witness, { AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE: 'false' });
     assert.equal(booted.host.posture.humanAuthority, 'composed');
     assert.equal(booted.authority.identity.unsettledDecisions().length, 0);
@@ -422,9 +432,8 @@ describe('AUTH-04A recovery — interrupted decisions are settled at restart fro
 
     // Rollback: restoring the identity file from before reconciliation and the retry is refused at startup.
     await booted.host.close();
-    for (const suffix of ['-wal', '-shm']) if (existsSync(`${identityPath(dir)}${suffix}`)) rmSync(`${identityPath(dir)}${suffix}`);
     const current = `${identityPath(dir)}.current`;
-    copyFileSync(identityPath(dir), current);
+    copyFileSync(checkpointed(identityPath(dir)), current);
     copyFileSync(backup, identityPath(dir));
     await refusedAtBoot('AUTHORITY_FRESHNESS_ROLLBACK_DETECTED', dir, witness, { AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE: 'false' });
 
