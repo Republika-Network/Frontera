@@ -74,7 +74,9 @@ test('no CORS, no cross-origin path to the operator plane, the witness or custod
 
 test('the contract carries no secret and configures no infrastructure', () => {
   const text = read(CONTRACT_PATH);
-  assert.equal(/Bearer [A-Za-z0-9]|BEGIN [A-Z ]*KEY|fre1\.|[0-9a-f]{64}|AOC_ENTERPRISE_API_KEYS|_TOKEN"|password/i.test(text), false);
+  // Prose may name a bearer; a credential value may not appear.
+  assert.equal(/Bearer [A-Za-z0-9._~+/-]{16}|BEGIN [A-Z ]*KEY|fre1\.|[0-9a-f]{64}|AOC_ENTERPRISE_API_KEYS|_TOKEN"/.test(text), false);
+  assert.equal(/password/i.test(text), false);
   assert.equal(/\b(\d{1,3}\.){3}\d{1,3}\b/.test(text.replace(/127\.0\.0\.1/g, '')), false, 'no address other than loopback');
   assert.deepEqual(readdirSync(join(ROOT, 'deploy/authority-pilot')), ['ingress-contract.json'], 'a contract, not a deployment kit');
   assert.match(contract['//'], /not a deployment/);

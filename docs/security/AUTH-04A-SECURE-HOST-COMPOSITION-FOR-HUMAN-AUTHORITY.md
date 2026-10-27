@@ -72,7 +72,9 @@ Startup, in order (any failure refuses the Host and closes everything opened):
 6. Startup reconciliation.
 7. Port exposed; Host posture and health checked; `listen()`.
 
-Shutdown closes the identity store with every other store (WAL flushed). No
+Shutdown closes the identity store with every other store (WAL flushed).
+(Corrected in AUTH-04D1: until then a clean shutdown left it open, and only a
+failed startup closed it.) No
 in-memory authorization exists: challenges and their consumption are durable,
 and the port refuses once the Host is not ready.
 

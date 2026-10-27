@@ -16,9 +16,10 @@
 | `storeEnvironmentFor` | Names the identity store's variable only for a deployment that composes it: the Host refuses `AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH` unless the authority is enabled (AUTH-04A, unchanged). |
 | Authority pilot profile | `npm run authority-pilot:backup -- keygen | backup | verify | restore | inspect` (`scripts/portability/authority-pilot-backup.mjs`): backup:v1 and restore:v1 with stricter preconditions, sealed with AES-256-GCM (`lib-sealed-backup.mjs`). |
 | Ingress contract | `deploy/authority-pilot/ingress-contract.json`, a specification checked against the gateway and the web client. |
+| Host shutdown (defect fix) | `Enterprise.close()`/`stop()` now close the human identity store. Before, it was closed only when startup failed. After a clean shutdown its connection stayed open with an un-checkpointed WAL, so no cold backup of a stopped Authority Host was possible, despite AUTH-04A §3. Found by these drills; the same class of defect PROD-02 fixed for the approval, obligation and control-plane stores. |
 | Tests | `src/enterprise/__tests__/auth04d1-authority-recovery-host.test.ts` (the CORE-07 drills), `tests/authority-pilot-sealed-backup.contract.test.mjs`, `tests/authority-pilot-ingress-contract.test.mjs`, registry updates. |
 
-No Host, gateway, CORE-05, CORE-07, G-02, WebAuthn or web-client code changed. No endpoint, route, dependency or witness protocol change.
+Apart from that one shutdown line, no Host, gateway, CORE-05, CORE-07, G-02, WebAuthn or web-client code changed. No endpoint, route, dependency or witness protocol change.
 
 ## 2. Recovery dependency inventory
 

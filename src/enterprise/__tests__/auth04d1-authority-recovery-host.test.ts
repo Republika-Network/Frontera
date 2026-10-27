@@ -342,6 +342,10 @@ describe('AUTH-04D1 — Authority pilot backup and restore under CORE-07 (softwa
     await assert.rejects(profile.runAuthorityPilotBackup({ output: running, keyFile, env: await authorityEnv(deployment, data) }), /--cold was requested/);
     assert.equal(existsSync(running), false);
     await close(host);
+    // A clean shutdown closes the identity store: no WAL is left beside it (the cold backup depends on it).
+    const identityFile = join(data, 'human-identity.sqlite');
+    assert.ok(existsSync(identityFile));
+    assert.equal(existsSync(`${identityFile}-wal`) && statSync(`${identityFile}-wal`).size > 0, false, 'the identity store was closed with the Host');
     // A deployment without the human-decision authority is not this profile's.
     await assert.rejects(profile.runAuthorityPilotBackup({ output: running, keyFile, env: deployment.envFor(data) }), /AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled/);
     assert.deepEqual(leftoverWorkDirs(), [], 'no plaintext work directory survives a refusal');
