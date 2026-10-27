@@ -112,7 +112,7 @@ export function createOperatorPasskeyEnrolmentService(dependencies: { readonly a
     }
   };
 
-  return Object.freeze({
+  return Object.freeze<OperatorPasskeyEnrolmentService>({
     async registerHuman(header, readBody) {
       const administrator = authorize(header);
       const body = await closedBody(readBody, ['operatorId', 'displayName']);
