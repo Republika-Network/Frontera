@@ -1,0 +1,56 @@
+{
+  "format": "frontera.rsdk02-governed-receiver-fixture.v1",
+  "note": "Synthetic, test-only. Signed with keys generated for one run; no private key was written. Not an operational asset.",
+  "registrant": {
+    "issuer": "did:example:rsdk02-registrant",
+    "keyId": "d69783a844d737a1d070570cfdedc9066e71e507302b9028ee4a15feb53d9803"
+  },
+  "foreign": {
+    "issuer": "did:example:rsdk02-foreign",
+    "keyId": "617556e06dcc3431743f9efcfcf02d5072a1fc56dd3d19fa934f52ea77eb80fb"
+  },
+  "consumerSupport": {
+    "schemaVersion": "aoc-sovereignty-interoperability-support/1",
+    "profile": {
+      "id": "aoc:interoperability-profile:sovereignty-portability",
+      "acceptedVersions": [
+        "1.0.0"
+      ]
+    },
+    "mediaTypes": [
+      "application/vnd.aoc.sovereignty-portability+json"
+    ],
+    "representationSchemaVersions": [
+      "aoc-sovereignty-portability-bundle/1"
+    ],
+    "canonicalizationProfiles": [
+      "aoc-canonical-json/1"
+    ],
+    "artifactKinds": [
+      "signed-claim",
+      "signed-manifest"
+    ],
+    "claimTypes": [
+      "Origin"
+    ],
+    "standingStatuses": [],
+    "semanticTerms": []
+  },
+  "assets": {
+    "active": {
+      "sovereignAssetId": "aoc:sovereign-asset:b1bac0d5-a03d-4527-8f28-1fec974f7621",
+      "bundleText": "{\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"claims\":[{\"kind\":\"signed-claim\",\"signedClaim\":{\"claim\":{\"assertionRef\":\"claim-origin-active:assertion\",\"attestationRefs\":[],\"evidenceRefs\":[],\"id\":\"claim-origin-active\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"issuer\":\"did:example:rsdk02-registrant\",\"metadata\":{\"assertedOrigin\":\"synthetic fixture\"},\"subject\":\"aoc:sovereign-asset:b1bac0d5-a03d-4527-8f28-1fec974f7621\",\"type\":\"Origin\"},\"digest\":\"9cbe01282b35e388168e6e54740a3494b878e3da0dcfc97e4fe5682200037299\",\"proof\":{\"algorithm\":\"ed25519\",\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"keyId\":\"d69783a844d737a1d070570cfdedc9066e71e507302b9028ee4a15feb53d9803\",\"payloadHash\":\"9cbe01282b35e388168e6e54740a3494b878e3da0dcfc97e4fe5682200037299\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAqx+Z0o2Oz/IirlTj7NTKxuS74Yq4/BC24X78FrjFU2U=\\n-----END PUBLIC KEY-----\\n\",\"signature\":\"oynaCEM5eNoaLyrLOYSRgWT50WgvG_w25AHHEIDE61mtTbZ-_fP4-prKYxwhO173LT6mK2j2RH-CjppurkgIDg\",\"signedAt\":\"2026-01-01T00:00:00.000Z\"}}}],\"manifests\":[{\"kind\":\"signed-manifest\",\"signedManifest\":{\"manifest\":{\"authorityClaims\":[],\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"contentIdentity\":{\"algorithm\":\"sha256\",\"digest\":\"f9777c4f490c9acde2d00b513f14b4ff5606aa18c2efe5173fb9ea56b84b0c5e\"},\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"manifestVersion\":1,\"registrant\":\"did:example:rsdk02-registrant\",\"schemaVersion\":\"aoc-sovereign-manifest/1\",\"sovereignAssetId\":\"aoc:sovereign-asset:b1bac0d5-a03d-4527-8f28-1fec974f7621\",\"state\":\"active\"},\"manifestDigest\":\"c81ea53172ae210ab99d62f3dce8acad4f5eced0f7c0090503b6ebb82f9c9f72\",\"proof\":{\"algorithm\":\"ed25519\",\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"keyId\":\"d69783a844d737a1d070570cfdedc9066e71e507302b9028ee4a15feb53d9803\",\"payloadHash\":\"c81ea53172ae210ab99d62f3dce8acad4f5eced0f7c0090503b6ebb82f9c9f72\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAqx+Z0o2Oz/IirlTj7NTKxuS74Yq4/BC24X78FrjFU2U=\\n-----END PUBLIC KEY-----\\n\",\"signature\":\"1L7LkpK6_S2bqr-Mm4cgdyf5noNFShk0r_yY7Ez4s_7qhlO7Me_VBo40VrMJgUTPCBVnVZtTVgw0gaIrT8SMDA\",\"signedAt\":\"2026-01-01T00:00:00.000Z\"}}}],\"schemaVersion\":\"aoc-sovereignty-portability-bundle/1\",\"standings\":[],\"subject\":{\"sovereignAssetId\":\"aoc:sovereign-asset:b1bac0d5-a03d-4527-8f28-1fec974f7621\"}}",
+      "contentBase64": "cnNkazAyIHN5bnRoZXRpYyBjb250ZW50OiBhY3RpdmU="
+    },
+    "withdrawn": {
+      "sovereignAssetId": "aoc:sovereign-asset:52fffa65-0186-4dad-b24d-4246255abd17",
+      "bundleText": "{\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"claims\":[{\"kind\":\"signed-claim\",\"signedClaim\":{\"claim\":{\"assertionRef\":\"claim-origin-withdrawn:assertion\",\"attestationRefs\":[],\"evidenceRefs\":[],\"id\":\"claim-origin-withdrawn\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"issuer\":\"did:example:rsdk02-registrant\",\"metadata\":{\"assertedOrigin\":\"synthetic fixture\"},\"subject\":\"aoc:sovereign-asset:52fffa65-0186-4dad-b24d-4246255abd17\",\"type\":\"Origin\"},\"digest\":\"fcad3e9b4b81dae593f0e45f1a89df07fcc256bb715be3dda400582670985bc8\",\"proof\":{\"algorithm\":\"ed25519\",\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"keyId\":\"d69783a844d737a1d070570cfdedc9066e71e507302b9028ee4a15feb53d9803\",\"payloadHash\":\"fcad3e9b4b81dae593f0e45f1a89df07fcc256bb715be3dda400582670985bc8\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAqx+Z0o2Oz/IirlTj7NTKxuS74Yq4/BC24X78FrjFU2U=\\n-----END PUBLIC KEY-----\\n\",\"signature\":\"aLb18jv6KJnFZLwBVH43JI7dxv7EfjhHq4ivrG-2FvN19TdLwDd-ZPQTKE885uUbF3jxxdgPsg8uc_tNZ1e2BA\",\"signedAt\":\"2026-01-01T00:00:00.000Z\"}}}],\"manifests\":[{\"kind\":\"signed-manifest\",\"signedManifest\":{\"manifest\":{\"authorityClaims\":[],\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"contentIdentity\":{\"algorithm\":\"sha256\",\"digest\":\"fe3dc0f952a42d1bdc75199298249da99894253b53c3389208f17ccd4038a6bf\"},\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"manifestVersion\":1,\"registrant\":\"did:example:rsdk02-registrant\",\"schemaVersion\":\"aoc-sovereign-manifest/1\",\"sovereignAssetId\":\"aoc:sovereign-asset:52fffa65-0186-4dad-b24d-4246255abd17\",\"state\":\"withdrawn\"},\"manifestDigest\":\"e01b5f3edf706fba813bbef0954f156cb3d655c78d6d869fd8a8a0d34c487233\",\"proof\":{\"algorithm\":\"ed25519\",\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"keyId\":\"d69783a844d737a1d070570cfdedc9066e71e507302b9028ee4a15feb53d9803\",\"payloadHash\":\"e01b5f3edf706fba813bbef0954f156cb3d655c78d6d869fd8a8a0d34c487233\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAqx+Z0o2Oz/IirlTj7NTKxuS74Yq4/BC24X78FrjFU2U=\\n-----END PUBLIC KEY-----\\n\",\"signature\":\"0Jezfy8vilr0mx147_yS094MFC1HerCZfKcL-MZ_2964mWc0nvBm8mv4kCKDOyvODuMvqwAKEtBfahqObeQFBA\",\"signedAt\":\"2026-01-01T00:00:00.000Z\"}}}],\"schemaVersion\":\"aoc-sovereignty-portability-bundle/1\",\"standings\":[],\"subject\":{\"sovereignAssetId\":\"aoc:sovereign-asset:52fffa65-0186-4dad-b24d-4246255abd17\"}}",
+      "contentBase64": "cnNkazAyIHN5bnRoZXRpYyBjb250ZW50OiB3aXRoZHJhd24="
+    },
+    "foreignClaim": {
+      "sovereignAssetId": "aoc:sovereign-asset:1c004bc5-8925-47ef-a414-2c1e87693307",
+      "bundleText": "{\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"claims\":[{\"kind\":\"signed-claim\",\"signedClaim\":{\"claim\":{\"assertionRef\":\"claim-origin-foreign-claim:assertion\",\"attestationRefs\":[],\"evidenceRefs\":[],\"id\":\"claim-origin-foreign-claim\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"issuer\":\"did:example:rsdk02-foreign\",\"metadata\":{\"assertedOrigin\":\"synthetic fixture\"},\"subject\":\"aoc:sovereign-asset:1c004bc5-8925-47ef-a414-2c1e87693307\",\"type\":\"Origin\"},\"digest\":\"1fbb238fda4ecb47cf806228fb4034cab20db29613709e706965066201db2975\",\"proof\":{\"algorithm\":\"ed25519\",\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"keyId\":\"617556e06dcc3431743f9efcfcf02d5072a1fc56dd3d19fa934f52ea77eb80fb\",\"payloadHash\":\"1fbb238fda4ecb47cf806228fb4034cab20db29613709e706965066201db2975\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAa6xKdrTHBPsvBaqbcTTUBs3BFqzb6R+ePt5bqfV+DCQ=\\n-----END PUBLIC KEY-----\\n\",\"signature\":\"1I63h4uF8rU6-UDobuTnIugOO1SAGSRzM_XU4-P7iT9ZmibQgsDxFd1oAfZ0BhDMNjUat5yg4Q73AJuM4H7WAg\",\"signedAt\":\"2026-01-01T00:00:00.000Z\"}}}],\"manifests\":[{\"kind\":\"signed-manifest\",\"signedManifest\":{\"manifest\":{\"authorityClaims\":[],\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"contentIdentity\":{\"algorithm\":\"sha256\",\"digest\":\"9995ac49ef623a35480ebb1e7b3210f1e9a1aee7902d9daa910364d8f565c9dd\"},\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"manifestVersion\":1,\"registrant\":\"did:example:rsdk02-registrant\",\"schemaVersion\":\"aoc-sovereign-manifest/1\",\"sovereignAssetId\":\"aoc:sovereign-asset:1c004bc5-8925-47ef-a414-2c1e87693307\",\"state\":\"active\"},\"manifestDigest\":\"3d9e58b269ef7f0a69e624281b704cf052f04d5ed384e2d0d5a0e3309272b21f\",\"proof\":{\"algorithm\":\"ed25519\",\"canonicalizationProfile\":\"aoc-canonical-json/1\",\"keyId\":\"d69783a844d737a1d070570cfdedc9066e71e507302b9028ee4a15feb53d9803\",\"payloadHash\":\"3d9e58b269ef7f0a69e624281b704cf052f04d5ed384e2d0d5a0e3309272b21f\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAqx+Z0o2Oz/IirlTj7NTKxuS74Yq4/BC24X78FrjFU2U=\\n-----END PUBLIC KEY-----\\n\",\"signature\":\"6GUK6dYFWTfYxjjN7tu4ClsBseUQ4WafejxrZBSNREhCxapc9_LwfHKN-IAUQxhPBVOlaaq7eYZQXvd2waN5Ag\",\"signedAt\":\"2026-01-01T00:00:00.000Z\"}}}],\"schemaVersion\":\"aoc-sovereignty-portability-bundle/1\",\"standings\":[],\"subject\":{\"sovereignAssetId\":\"aoc:sovereign-asset:1c004bc5-8925-47ef-a414-2c1e87693307\"}}",
+      "contentBase64": "cnNkazAyIHN5bnRoZXRpYyBjb250ZW50OiBmb3JlaWduLWNsYWlt"
+    }
+  }
+}

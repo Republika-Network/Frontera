@@ -108,7 +108,21 @@ function credentialMatches(presented: string, expectedDigest: string): boolean {
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-export function createReferenceExecutorVerificationPipeline(configuration: ReferenceExecutorConfiguration, clock: () => number): ReferenceExecutorVerificationPipeline {
+/**
+ * RSDK-02B: how a composing executor may decide resource admission itself. Absent, the configured
+ * `permittedResources` allow-list decides, exactly as before. Present, `resourcePermitted` replaces that
+ * one check and nothing else; a predicate that throws refuses the request (`EXECUTOR_FAILURE`).
+ */
+export interface ReferenceExecutorPipelineOptions {
+  readonly resourcePermitted?: (resource: string) => boolean;
+}
+
+export function createReferenceExecutorVerificationPipeline(
+  configuration: ReferenceExecutorConfiguration,
+  clock: () => number,
+  options: ReferenceExecutorPipelineOptions = {},
+): ReferenceExecutorVerificationPipeline {
+  const resourcePermittedBy = options.resourcePermitted;
   const verifier = createExecutionCapabilityVerifier({
     trustedIssuers: configuration.trustedIssuers,
     executor: { audience: configuration.audience, organizationIds: configuration.organizationIds, trustDomain: configuration.trustDomain },
@@ -147,7 +161,7 @@ export function createReferenceExecutorVerificationPipeline(configuration: Refer
       if (capability.trustDomain !== configuration.trustDomain) return assessment('refused', 'policy', 'TRUST_DOMAIN_NOT_PERMITTED');
       const actionPermitted = configuration.permittedActions.includes(capability.action);
       if (!actionPermitted) return assessment('refused', 'policy', 'ACTION_NOT_PERMITTED');
-      const resourcePermitted = configuration.permittedResources.includes(capability.resource);
+      const resourcePermitted = resourcePermittedBy === undefined ? configuration.permittedResources.includes(capability.resource) : resourcePermittedBy(capability.resource) === true;
       if (!resourcePermitted) return assessment('refused', 'policy', 'RESOURCE_NOT_PERMITTED');
 
       // 5 — the binding, rebuilt from what was received

@@ -13,6 +13,8 @@ import { EXECUTION_CAPABILITY_CONSUMPTION_STATES, EXECUTION_CAPABILITY_LEDGER_SC
  */
 
 const EXECUTOR = 'src/enterprise/reference-executor';
+// RSDK-02B: executor-side composition that runs this flow; rsdk02-governed-receiver-structure.test.ts pins that no Host module imports it.
+const GOVERNED_RECEIVER = 'src/enterprise/governed-receiver';
 
 function codeOf(file: string): string {
   return readFileSync(file, 'utf8')
@@ -131,7 +133,7 @@ describe('G-02C1B structure — no Host, receipt or production adapter', () => {
   });
 
   it('no Host module imports the execution flow or the synthetic effect', () => {
-    const importers = sourcesUnder('src').filter((file) => !file.startsWith(`${EXECUTOR}/`) && /(execution-flow|synthetic-effect)\.js['"]/.test(codeOf(file)));
+    const importers = sourcesUnder('src').filter((file) => !file.startsWith(`${EXECUTOR}/`) && !file.startsWith(`${GOVERNED_RECEIVER}/`) && /(execution-flow|synthetic-effect)\.js['"]/.test(codeOf(file)));
     assert.deepEqual(importers, []);
   });
 });
