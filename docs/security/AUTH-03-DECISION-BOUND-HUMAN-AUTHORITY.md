@@ -139,8 +139,9 @@ AUTH-03 uses a **consume-then-record** order instead:
    superseded, not already approved by this human). **A refusal here consumes
    nothing** (tested).
 2. `authorizeDecision` verifies the assertion and, in **one signed append**,
-   records `credential_used` and `decision_authorized` (with the evidence and
-   the challenge digest). A unique index and the guard over the verified
+   records one `decision_authorized` row (the evidence, the challenge digest
+   and the credential's new counter — CORE-07 advances a store by exactly one
+   position per transition, so every append is one row). A unique index and the guard over the verified
    history refuse a second authorization of the same commitment.
 3. The channel calls CORE-05 `approve` or `reject`.
 4. The outcome (`recorded` / `refused`) is recorded best effort.

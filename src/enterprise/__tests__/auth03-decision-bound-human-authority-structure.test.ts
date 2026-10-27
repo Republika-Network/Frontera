@@ -76,10 +76,12 @@ describe('AUTH-03 structure — the passkey channel is the only way a human deci
     assert.ok(append.indexOf('await signState(next)') < append.indexOf('session.transition('));
   });
 
-  it('consumption and evidence are one signed append, and a consumed decision is refused by the verified history', () => {
+  it('consumption and evidence are one signed append of one row, and a consumed decision is refused by the verified history', () => {
+    // CORE-07 advances a store by exactly one position per transition: an append is one row.
+    assert.match(code(STORE), /append\(\s*row: Omit<HumanIdentityRowContent, 'organizationId'>,/);
     const source = code(SERVICE);
     const authorize = source.slice(source.indexOf('async authorizeDecision(raw) {'), source.indexOf('async recordDecisionOutcome('));
-    assert.match(authorize, /row\('decision_authorized', contract\.operatorId, commitment, \{ evidence: \{ \.\.\.evidence \}, evidenceDigest, challengeDigest \}/);
+    assert.match(authorize, /row\('decision_authorized', contract\.operatorId, commitment, \{ evidence: \{ \.\.\.evidence \}, evidenceDigest, challengeDigest, counter: use\.counter, backedUp: use\.backedUp \}/);
     assert.match(authorize, /current\.decisions\.has\(commitment\)/);
     assert.match(read(STORE), /human_identity_one_authorization_per_decision/);
   });

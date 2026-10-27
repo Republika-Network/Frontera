@@ -337,6 +337,12 @@ function project(rows: readonly StoredHumanIdentityRow[], organizationId: string
       }
       case 'credential_revoked': {
         const credential = credentials.get(row.objectId ?? '') ?? corrupt('A credential revocation names an unknown credential.');
+        const assertedWith = payload['assertedWith'];
+        if (typeof assertedWith === 'string') {
+          // An owner revocation records the use of the credential that asserted it, in the same row.
+          const asserting = credentials.get(assertedWith) ?? corrupt('An owner revocation names an unknown asserting credential.');
+          asserting.view = { ...asserting.view, counter: count(payload, 'counter'), backedUp: payload['backedUp'] === true, lastUsedAt: row.recordedAt };
+        }
         credential.view = { ...credential.view, state: 'revoked', revokedAt: row.recordedAt, revokedBy: row.recordedBy, revocationReason: text(payload, 'reason') };
         break;
       }
@@ -346,6 +352,9 @@ function project(rows: readonly StoredHumanIdentityRow[], organizationId: string
         if (decisions.has(commitment) || evidence.challengeCommitment !== commitment || evidence.operatorId !== row.operatorId || !credentials.has(evidence.credentialId)) corrupt('A decision is inconsistent with the history.');
         if (humanDecisionEvidenceDigest(evidence) !== text(payload, 'evidenceDigest')) corrupt('A decision row does not match its evidence digest.');
         decisions.set(commitment, { evidence, evidenceDigest: text(payload, 'evidenceDigest') });
+        // The decision row also records the deciding credential's use.
+        const deciding = credentials.get(evidence.credentialId) as CredentialRecord;
+        deciding.view = { ...deciding.view, counter: count(payload, 'counter'), backedUp: payload['backedUp'] === true, lastUsedAt: row.recordedAt };
         break;
       }
       case 'decision_outcome': {
@@ -528,7 +537,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
   };
 
   const anomaly = (credential: CredentialRecord, challengeDigest: string, presented: number) => async (): Promise<void> => {
-    await store.append([row('credential_counter_anomaly', credential.view.operatorId, credential.view.credentialId, { presented, stored: credential.view.counter, challengeDigest }, CEREMONY_RECORDER)], (history) => void notUsed(challengeDigest)(history));
+    await store.append(row('credential_counter_anomaly', credential.view.operatorId, credential.view.credentialId, { presented, stored: credential.view.counter, challengeDigest }, CEREMONY_RECORDER), (history) => void notUsed(challengeDigest)(history));
   };
 
   /** The decision challenge an assertion's client data names, with its commitment recomputed from the stored contract; one refusal for every failure. */
@@ -560,7 +569,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       if (typeof operatorId !== 'string' || !OPERATOR_ID.test(operatorId) || !operatorIds.has(operatorId)) throw new HumanIdentityError('HUMAN_IDENTITY_UNKNOWN_OPERATOR', "That operator id is not one of this Host's configured operators.");
       const displayName = input.displayName;
       if (typeof displayName !== 'string' || displayName.trim() !== displayName || displayName.length === 0 || displayName.length > 128) throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'displayName must be a non-empty trimmed string of at most 128 characters.');
-      await store.append([row('principal_created', operatorId, null, { displayName, userHandle: randomBytes(32).toString('base64url') }, actor.actorRef)], (history) => {
+      await store.append(row('principal_created', operatorId, null, { displayName, userHandle: randomBytes(32).toString('base64url') }, actor.actorRef), (history) => {
         if (project(history, organizationId).principals.has(operatorId)) throw new HumanIdentityError('HUMAN_IDENTITY_PRINCIPAL_EXISTS', 'A human principal already exists for that operator.');
       });
       return (state().principals.get(operatorId) as PrincipalState).principal;
@@ -569,7 +578,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
     async revokePrincipal(admin, operatorId, reason) {
       const actor = administrator(admin);
       const why = reasonOf(reason);
-      await store.append([row('principal_revoked', operatorId, null, { reason: why }, actor.actorRef)], (history) => {
+      await store.append(row('principal_revoked', operatorId, null, { reason: why }, actor.actorRef), (history) => {
         const found = project(history, organizationId).principals.get(operatorId);
         if (found === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_UNKNOWN_PRINCIPAL', 'No human principal exists for that operator.');
         if (found.principal.state === 'revoked') throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That human principal is already revoked.');
@@ -583,7 +592,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       const enrolmentId = `enr-${randomBytes(16).toString('hex')}`;
       const secret = randomBytes(32).toString('base64url');
       const expiresAt = after(enrolmentTtl);
-      await store.append([row('enrolment_authorized', operatorId, enrolmentId, { expiresAt, tokenVerifier: verifierOf(secret) }, actor.actorRef)], (history) => {
+      await store.append(row('enrolment_authorized', operatorId, enrolmentId, { expiresAt, tokenVerifier: verifierOf(secret) }, actor.actorRef), (history) => {
         activePrincipal(project(history, organizationId), operatorId);
       });
       const record = state().enrolments.get(enrolmentId) as EnrolmentRecord;
@@ -596,7 +605,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       if (typeof enrolmentId !== 'string' || !ENROLMENT_ID.test(enrolmentId)) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'That is not an enrolment id.');
       const current = state().enrolments.get(enrolmentId);
       if (current === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'No such enrolment.');
-      await store.append([row('enrolment_revoked', current.operatorId, enrolmentId, { reason: why }, actor.actorRef)], (history) => {
+      await store.append(row('enrolment_revoked', current.operatorId, enrolmentId, { reason: why }, actor.actorRef), (history) => {
         const record = project(history, organizationId).enrolments.get(enrolmentId);
         if (record === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'No such enrolment.');
         if (record.revoked || record.consumed) throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That enrolment is already revoked or consumed.');
@@ -633,8 +642,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       const verified = await verifyRegistration(response, challenge.challenge, relyingParty);
       const challengeDigest = challengeDigestOf(challenge.challenge);
       await store.append(
-        [
-          row(
+        row(
             'credential_registered',
             enrolment.operatorId,
             verified.credentialId,
@@ -653,7 +661,6 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
             },
             CEREMONY_RECORDER,
           ),
-        ],
         (history) => {
           const current = notUsed(challengeDigest)(history);
           if (current.credentials.has(verified.credentialId)) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_DUPLICATE', 'That credential id is already registered.');
@@ -678,7 +685,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       const known = state().credentials.get(response.id);
       const use = await verifiedUse(response, challenge.challenge, null, known === undefined ? async () => undefined : anomaly(known, challengeDigest, signatureCounterOf(response.response.authenticatorData)));
       await store.append(
-        [row('credential_used', use.credential.view.operatorId, use.credential.view.credentialId, { counter: use.counter, backedUp: use.backedUp, challengeDigest }, CEREMONY_RECORDER)],
+        row('credential_used', use.credential.view.operatorId, use.credential.view.credentialId, { counter: use.counter, backedUp: use.backedUp, challengeDigest }, CEREMONY_RECORDER),
         (history) => {
           const current = notUsed(challengeDigest)(history);
           stillUsable(use.credential.view.credentialId, current);
@@ -704,7 +711,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       const why = reasonOf(reason);
       const existing = state().credentials.get(credentialId);
       if (existing === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'No such credential.');
-      await store.append([row('credential_revoked', existing.view.operatorId, credentialId, { reason: why, revokedBy: 'administrator' }, actor.actorRef)], (history) => {
+      await store.append(row('credential_revoked', existing.view.operatorId, credentialId, { reason: why, revokedBy: 'administrator' }, actor.actorRef), (history) => {
         const credential = project(history, organizationId).credentials.get(credentialId);
         if (credential === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'No such credential.');
         if (credential.view.state === 'revoked') throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That credential is already revoked.');
@@ -734,10 +741,8 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       if (target === undefined || target.view.operatorId !== use.credential.view.operatorId) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_OWNERSHIP_MISMATCH', 'Only the human who owns a credential may revoke it this way.');
       const asserting = use.credential.view.credentialId;
       await store.append(
-        [
-          row('credential_used', use.credential.view.operatorId, asserting, { counter: use.counter, backedUp: use.backedUp, challengeDigest }, CEREMONY_RECORDER),
-          row('credential_revoked', target.view.operatorId, credentialId, { reason: why, revokedBy: 'owner', assertedWith: asserting }, `owner:${asserting}`),
-        ],
+        // One row (CORE-07 advances one position per append): the revocation also records the asserting credential's use.
+        row('credential_revoked', target.view.operatorId, credentialId, { reason: why, revokedBy: 'owner', assertedWith: asserting, counter: use.counter, backedUp: use.backedUp, challengeDigest }, `owner:${asserting}`),
         (history) => {
           const current = notUsed(challengeDigest)(history);
           stillUsable(asserting, current);
@@ -811,10 +816,8 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       };
       const evidenceDigest = humanDecisionEvidenceDigest(evidence);
       await store.append(
-        [
-          row('credential_used', use.credential.view.operatorId, use.credential.view.credentialId, { counter: use.counter, backedUp: use.backedUp }, CEREMONY_RECORDER),
-          row('decision_authorized', contract.operatorId, commitment, { evidence: { ...evidence }, evidenceDigest, challengeDigest }, CEREMONY_RECORDER),
-        ],
+        // One row (CORE-07 advances one position per append): the decision also records the credential's use.
+        row('decision_authorized', contract.operatorId, commitment, { evidence: { ...evidence }, evidenceDigest, challengeDigest, counter: use.counter, backedUp: use.backedUp }, CEREMONY_RECORDER),
         (history) => {
           const current = project(history, organizationId);
           if (current.decisions.has(commitment)) throw new HumanIdentityError('HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED', 'This decision challenge was already used; read its outcome instead.');
@@ -830,7 +833,7 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       const decided = state().decisions.get(commitment);
       if (decided === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
       const payload = outcome.outcome === 'recorded' ? { outcome: 'recorded', verdictRowDigest: outcome.verdictRowDigest } : { outcome: 'refused', code: outcome.code };
-      await store.append([row('decision_outcome', decided.evidence.operatorId, commitment, payload, CEREMONY_RECORDER)], (history) => {
+      await store.append(row('decision_outcome', decided.evidence.operatorId, commitment, payload, CEREMONY_RECORDER), (history) => {
         const current = project(history, organizationId).decisions.get(commitment);
         if (current === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
         if (current.outcome !== undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That decision already has a recorded outcome.');

@@ -203,17 +203,18 @@ export interface HumanIdentityStore {
   history(): readonly StoredHumanIdentityRow[];
   head(): HumanIdentityStateCommitment;
   /**
-   * Appends `rows` atomically and advances the signed head. `guard` decides
+   * Appends one row and advances the signed head by exactly one position (the
+   * CORE-07 transition rule: every witnessed transition is one step). `guard` decides
    * every refusal against the verified history before anything is signed or
    * prepared; when `consume` is given, that challenge must also be unused and
    * unexpired at `consume.at`, and is marked used in the same transaction.
    * Any refusal records nothing.
    */
   append(
-    rows: readonly Omit<HumanIdentityRowContent, 'organizationId'>[],
+    row: Omit<HumanIdentityRowContent, 'organizationId'>,
     guard: (history: readonly StoredHumanIdentityRow[]) => void,
     consume?: { readonly challenge: string; readonly ceremony: CeremonyKind; readonly at: string },
-  ): Promise<readonly StoredHumanIdentityRow[]>;
+  ): Promise<StoredHumanIdentityRow>;
   saveChallenge(challenge: Omit<CeremonyChallenge, 'consumedAt'>): void;
   challenge(challenge: string): CeremonyChallenge | undefined;
   saveDecisionChallenge(challenge: StoredDecisionChallenge): void;
@@ -389,28 +390,21 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
   };
 
   const appendOnce = async (
-    rows: readonly Omit<HumanIdentityRowContent, 'organizationId'>[],
+    row: Omit<HumanIdentityRowContent, 'organizationId'>,
     guard: (history: readonly StoredHumanIdentityRow[]) => void,
     consume: { readonly challenge: string; readonly ceremony: CeremonyKind; readonly at: string } | undefined,
-  ): Promise<readonly StoredHumanIdentityRow[]> => {
+  ): Promise<StoredHumanIdentityRow> => {
     for (let attempt = 0; ; attempt += 1) {
       open();
       // Every refusal is decided here, against the verified history, before anything is signed or prepared.
       const { state, rows: history } = verifiedState();
       guard(history);
       if (consume !== undefined && !challengeUsable(consume)) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'The ceremony challenge is unknown, expired or already used.');
-      const planned: StoredHumanIdentityRow[] = [];
-      let sequence = state.sequence;
-      let chain = state.chainDigest;
-      for (const row of rows) {
-        sequence += 1;
-        const content: HumanIdentityRowContent = { ...row, organizationId };
-        const digest = humanIdentityRowDigest(state.storeId, sequence, content);
-        chain = nextHumanIdentityChainDigest(chain, digest);
-        planned.push({ ...content, sequence, digest });
-      }
-      if (planned.length === 0) return [];
-      const next: HumanIdentityStateCommitment = { ...state, sequence, chainDigest: chain };
+      const sequence = state.sequence + 1;
+      const content: HumanIdentityRowContent = { ...row, organizationId };
+      const digest = humanIdentityRowDigest(state.storeId, sequence, content);
+      const planned: StoredHumanIdentityRow = { ...content, sequence, digest };
+      const next: HumanIdentityStateCommitment = { ...state, sequence, chainDigest: nextHumanIdentityChainDigest(state.chainDigest, digest) };
       // Signed before the write transaction; nothing is written if signing fails.
       const signature = await signState(next);
       // A second connection may have committed while we signed: re-plan before preparing anything at the witness.
@@ -433,7 +427,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
               .run(consume.at, consume.challenge, consume.ceremony, consume.at);
             if (result.changes !== 1) corrupt('A ceremony challenge changed while a record was being appended; nothing was written.');
           }
-          for (const row of planned) insert.run(row.sequence, organizationId, row.kind, row.operatorId, row.objectId, row.payload, row.recordedBy, row.recordedAt, row.digest);
+          insert.run(planned.sequence, organizationId, planned.kind, planned.operatorId, planned.objectId, planned.payload, planned.recordedBy, planned.recordedAt, planned.digest);
           const updated = updateHead.run(next.sequence, next.chainDigest, JSON.stringify(signature), updatedAt, state.sequence);
           if (updated.changes !== 1) corrupt('The human identity head moved during a locked append.');
           // Read back through the same verification every later read runs.
@@ -476,8 +470,8 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
     storeId,
     history: () => (open(), verifiedState().rows),
     head: () => (open(), verifiedState().state),
-    append(rows, guard, consume) {
-      const result = tail.then(() => appendOnce(rows, guard, consume));
+    append(row, guard, consume) {
+      const result = tail.then(() => appendOnce(row, guard, consume));
       tail = result.catch(() => undefined);
       return result;
     },
