@@ -1,0 +1,26 @@
+// AUTH-04C: the browser build of the Authority web client (ES modules, DOM).
+// Built by scripts/authority-web/build.mjs; not part of the root `tsc -b` graph.
+// The same sources are also compiled by the root build for the Node test suites.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmitOnError": true,
+    "declaration": false,
+    "sourceMap": false,
+    "removeComments": true,
+    "rootDir": "../../src/authority-web",
+    "outDir": "dist/js"
+  },
+  "include": ["../../src/authority-web/*.ts"]
+}

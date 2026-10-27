@@ -1,0 +1,496 @@
+/*
+ * FRONTERA AUTHORITY — design system (AUTH-04C).
+ * Obsidian foundation, jade accent, high contrast, calm decisions.
+ * Mobile-first (iPhone Safari), responsive to desktop. No external fonts or assets.
+ * Contrast (WCAG 2.2): text #e9efec on #0a0d0c ≈ 17:1; muted #a4b1ab ≈ 9:1; jade #46d6a0 ≈ 11:1;
+ * primary button text #03140c on #46d6a0 ≈ 11:1; danger text #ffb4ab on #0a0d0c ≈ 11:1.
+ */
+
+:root {
+  --obsidian: #0a0d0c;
+  --surface: #121816;
+  --surface-raised: #18201d;
+  --line: #27322e;
+  --text: #e9efec;
+  --muted: #a4b1ab;
+  --jade: #46d6a0;
+  --jade-deep: #1f7a5a;
+  --on-jade: #03140c;
+  --danger: #ffb4ab;
+  --danger-fill: #5c1b16;
+  --warning: #f3d28a;
+  --warning-fill: #3f3214;
+  --info: #a9c7ff;
+  --radius: 14px;
+  --gap: 1rem;
+  --touch: 48px;
+  --focus: 3px solid var(--jade);
+  color-scheme: dark;
+  /* Honours the iOS text-size setting (Dynamic Type) in Safari. */
+  font: -apple-system-body;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--obsidian);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+.skip-link:focus {
+  left: 1rem;
+  top: calc(env(safe-area-inset-top) + 0.5rem);
+  z-index: 10;
+  background: var(--surface-raised);
+  color: var(--text);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  outline: var(--focus);
+}
+
+.app {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: calc(env(safe-area-inset-top) + 0.75rem) calc(env(safe-area-inset-right) + 1rem) calc(env(safe-area-inset-bottom) + 1.5rem) calc(env(safe-area-inset-left) + 1rem);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-height: 100dvh;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  font-size: 0.8rem;
+  color: var(--jade);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.who {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+h1 {
+  font-size: 1.6rem;
+  line-height: 1.2;
+  margin: 0.25rem 0;
+  letter-spacing: -0.01em;
+}
+h1:focus {
+  outline: none;
+}
+h1:focus-visible {
+  outline: var(--focus);
+  outline-offset: 4px;
+}
+h2 {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+p {
+  margin: 0;
+}
+.lede {
+  font-size: 1.05rem;
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 0.875rem;
+}
+.eyebrow {
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+/* Long identifiers, digests, parameters and canonical bytes always wrap; nothing scrolls the page sideways. */
+.mono {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+.wrap,
+.digest,
+.value,
+.code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+button {
+  font: inherit;
+  min-height: var(--touch);
+  min-width: var(--touch);
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  padding: 0.75rem 1.1rem;
+  background: var(--surface-raised);
+  color: var(--text);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible,
+.card:focus-visible {
+  outline: var(--focus);
+  outline-offset: 3px;
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+button.primary {
+  background: var(--jade);
+  border-color: var(--jade);
+  color: var(--on-jade);
+  font-weight: 650;
+}
+button.danger {
+  background: var(--danger-fill);
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 650;
+}
+button.secondary {
+  background: transparent;
+}
+button.link {
+  background: transparent;
+  border: none;
+  color: var(--jade);
+  padding: 0.5rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+button.small {
+  align-self: flex-start;
+  min-height: 44px;
+  padding: 0.5rem 0.9rem;
+}
+.back {
+  align-self: flex-start;
+  margin-left: -0.5rem;
+}
+
+.buttons {
+  display: flex;
+  gap: 0.75rem;
+}
+.buttons > button {
+  flex: 1;
+}
+
+.secondary-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+label {
+  font-weight: 600;
+}
+input {
+  font: inherit;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  min-height: var(--touch);
+  padding: 0.75rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  width: 100%;
+}
+input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.facts {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.badge,
+.pill {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+[data-tone='success'].pill {
+  border-color: var(--jade-deep);
+  color: var(--jade);
+}
+[data-tone='error'].pill {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+[data-tone='warning'].pill {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.card {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  background: var(--surface);
+  padding: 1rem;
+}
+.card-title {
+  overflow-wrap: anywhere;
+}
+.card-meta {
+  font-size: 0.9rem;
+}
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.summary,
+.subject,
+.status-card,
+.notice {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.subject {
+  background: var(--obsidian);
+}
+
+.fields {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.15rem 1rem;
+}
+.fields dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 0.6rem;
+}
+.fields dd {
+  margin: 0;
+  min-width: 0;
+}
+.params {
+  margin: 0;
+  padding-left: 1rem;
+}
+
+details.canonical summary {
+  min-height: var(--touch);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--jade);
+}
+details.canonical pre {
+  margin: 0.5rem 0 0;
+  padding: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+/* The decision stays reachable at the bottom without covering the subject. */
+.decision-bar {
+  position: sticky;
+  bottom: 0;
+  background: linear-gradient(to top, var(--obsidian) 75%, transparent);
+  padding: 1rem 0 calc(env(safe-area-inset-bottom) + 0.25rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.confirm[data-tone='success'] h1 {
+  color: var(--jade);
+}
+.confirm[data-tone='error'] h1 {
+  color: var(--danger);
+}
+.progress {
+  color: var(--info);
+}
+
+.status-card[data-tone='success'] {
+  border-color: var(--jade-deep);
+}
+.status-card[data-tone='error'] {
+  border-color: var(--danger);
+}
+.status-card[data-tone='warning'] {
+  border-color: var(--warning);
+}
+.status-label {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.notice[data-tone='error'] {
+  border-color: var(--danger);
+  background: var(--danger-fill);
+}
+.notice[data-tone='warning'] {
+  border-color: var(--warning);
+  background: var(--warning-fill);
+}
+.notice[data-tone='success'] {
+  border-color: var(--jade-deep);
+}
+.notice.inline {
+  display: block;
+}
+
+.footer {
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+}
+.noscript {
+  padding: 2rem 1rem;
+}
+
+/* Wider screens: definitions sit beside their labels. */
+@media (min-width: 40rem) {
+  .fields {
+    grid-template-columns: minmax(9rem, 12rem) 1fr;
+  }
+  .fields dt {
+    margin-top: 0;
+    padding-top: 0.35rem;
+  }
+  .fields dd {
+    padding-top: 0.35rem;
+  }
+  h1 {
+    font-size: 1.9rem;
+  }
+}
+
+/* Landscape phones: keep the decision bar compact. */
+@media (orientation: landscape) and (max-height: 30rem) {
+  .decision-bar {
+    position: static;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (forced-colors: active) {
+  button,
+  .card,
+  .notice,
+  .status-card {
+    border: 1px solid CanvasText;
+  }
+}

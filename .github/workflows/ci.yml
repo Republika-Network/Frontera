@@ -144,3 +144,36 @@ jobs:
           echo "artifact zip digest: ${ARTIFACT_DIGEST}"
           echo "- Artifact: ${ARTIFACT_URL}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Artifact zip digest: ${ARTIFACT_DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+
+  authority-web-preview:
+    # AUTH-04C: reproducible build of the Frontera Authority web client (static
+    # files, browser ES modules) and a private CI artifact for review. Not a
+    # deployment: no hosting, DNS, TLS or public URL. The client's behaviour is
+    # qualified by the suites in `npm test` (validate).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build:authority-web
+      - name: Verify the build is reproducible
+        run: |
+          cp apps/authority-web/dist/asset-manifest.json "$RUNNER_TEMP/first-manifest.json"
+          npm run build:authority-web
+          diff "$RUNNER_TEMP/first-manifest.json" apps/authority-web/dist/asset-manifest.json
+          {
+            echo '### AUTH-04C Authority web client (CI preview artifact, not deployed)'
+            echo
+            echo '```'
+            sha256sum apps/authority-web/dist/asset-manifest.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontera-authority-web-preview-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: apps/authority-web/dist/
+          if-no-files-found: error
+          retention-days: 30
