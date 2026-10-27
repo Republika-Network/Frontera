@@ -30,13 +30,19 @@ describe('AUTH-03 structure — the passkey channel is the only way a human deci
     const source = code(CHANNEL);
     assert.equal([...source.matchAll(/authenticated:\s*true/g)].length, 1);
     assert.match(source, /function contextFor\(operatorId: string\): ApprovalCommandContext \{\s*return Object\.freeze\(\{ authenticated: true as const, actorId: `operator:\$\{operatorId\}`, authenticatedBy: HUMAN_PASSKEY_DECISION_CHANNEL \}\);\s*\}/);
+    // decide() runs every ordinary refusal, then hands over to decideAuthorized(), which consumes first and only then builds a context.
     const decide = source.slice(source.indexOf('async decide('), source.indexOf('async outcome('));
-    const authorized = decide.indexOf('await identity.authorizeDecision(assertion)');
-    const firstContext = decide.indexOf('contextFor(');
+    assert.ok(decide.indexOf('await admissible(contract)') > 0 && decide.indexOf('await admissible(contract)') < decide.indexOf('decideAuthorized(assertion, contract)'), 'every ordinary refusal is decided before consumption');
+    assert.equal(/contextFor\(|authorizeDecision\(/.test(decide), false);
+    const authorizedBody = source.slice(source.indexOf('async function decideAuthorized('));
+    const authorized = authorizedBody.indexOf('await identity.authorizeDecision(assertion)');
+    const firstContext = authorizedBody.indexOf('contextFor(');
     assert.ok(authorized > 0 && firstContext > authorized, 'no context exists before the assertion is verified and the challenge consumed');
-    assert.ok(decide.indexOf('await admissible(contract)') < authorized, 'every ordinary refusal is decided before consumption');
     // The bound human is the contract's — never an input of decide().
-    assert.equal(/contextFor\((?!contract\.operatorId\))/.test(decide), false);
+    assert.equal(/contextFor\((?!contract\.operatorId\))/.test(authorizedBody), false);
+    // Reconciliation records outcomes only: it never reaches a CORE-05 command or builds a context.
+    const reconcile = source.slice(source.indexOf('async reconcile()'), source.indexOf('async function decideAuthorized('));
+    assert.equal(/contextFor\(|approvals\.(approve|reject)\(|authorizeDecision\(/.test(reconcile), false);
   });
 
   it('takes no bearer, session, cookie, API key or caller organization: the only input to decide() is the assertion', () => {
@@ -49,11 +55,14 @@ describe('AUTH-03 structure — the passkey channel is the only way a human deci
     assert.match(begin.slice(0, begin.indexOf('peekDecision(')), /\n\s+organizationId,\n/);
   });
 
-  it('no route, adapter, API, administration surface or composition reaches the channel or the identity service yet (AUTH-04)', () => {
-    const surfaces = [...walk('src/enterprise/adapters'), ...walk('src/enterprise/api'), ...walk('src/enterprise/authority-administration'), ...walk('src/enterprise/operator-control'), 'src/enterprise/composition/composition-root.ts', 'src/enterprise/host/enterprise-host.ts'];
+  it('no route, adapter, API, administration surface or operator plane reaches the channel or the identity service (AUTH-04B adds a route)', () => {
+    const surfaces = [...walk('src/enterprise/adapters'), ...walk('src/enterprise/api'), ...walk('src/enterprise/authority-administration'), ...walk('src/enterprise/operator-control')];
     assert.ok(surfaces.length > 10);
-    for (const file of surfaces) assert.equal(/human-decision|human-identity|createHumanDecisionChannel/.test(read(file)), false, file);
+    for (const file of surfaces) assert.equal(/human-decision|human-identity|createHumanDecisionChannel|humanAuthority/.test(read(file)), false, file);
     assert.equal(/human-decision/.test(read('src/enterprise/approval-authority/index.ts')), false, 'not exported from the CORE-05 module index');
+    // AUTH-04A: the one composition point is the composition module; the root and the Host only reach it.
+    const composers = walk('src/enterprise').filter((file) => /from '[^']*(human-decision|human-identity\/index)\.js'/.test(read(file)));
+    assert.deepEqual(composers.sort(), ['src/enterprise/composition/human-authority-composition.ts']);
   });
 
   it('caps the decision challenge at 120 seconds and binds the WebAuthn challenge to the commitment', () => {

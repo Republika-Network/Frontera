@@ -44,6 +44,7 @@ import { createAuthorityAdministrationService, type AuthorityAdministrationServi
 import { createAgentCredentialVerifier, AGENT_PRINCIPAL_PREFIX } from '../operator-control/agent-credentials.js';
 import { createSqliteControlPlaneStore, replayProfileLifecycle, type ControlPlaneStore, type ProfileLifecycleState } from '../operator-control/control-plane-store.js';
 import { createOperatorAuthenticator, type OperatorAuthenticator } from '../operator-control/operator-authenticator.js';
+import { assertHumanAuthorityComposable, composeHumanAuthority, type HumanAuthorityPort } from './human-authority-composition.js';
 import { createOperatorControlService, type OperatorControlService } from '../operator-control/service.js';
 import { createOperatorApprovalService, type OperatorApprovalService } from '../operator-control/approval-workflow.js';
 import { createGovernedPathLog, createOperatorResolutionLog } from '../operations/governed-path-log.js';
@@ -912,6 +913,16 @@ export interface AocEnterprise {
    */
   readonly approvals?: ApprovalCommandPort;
   /**
+   * AUTH-04A — the passkey human-decision authority: the signed, witnessed
+   * human identity store, the AUTH-03 decision channel into CORE-05, and the
+   * AUTH-02 identity service. **In-process only**: no route, adapter or
+   * administration API reaches it. Present only when
+   * `configuration.humanAuthority.mode` is `enabled` and every security gate
+   * passed (an enabled authority that cannot be composed securely refuses the
+   * Host instead). Every call is refused while the Host is not ready.
+   */
+  readonly humanAuthority?: HumanAuthorityPort;
+  /**
    * P8 — the **read-only** surface over the canonical authority event stream,
    * present only when governed actions are composed and a stream store is
    * available.
@@ -1423,6 +1434,16 @@ function operatorsConfigured(configuration: EnterpriseConfiguration): boolean {
   return (configuration.administration?.operators?.length ?? 0) > 0;
 }
 
+/** AUTH-04A: the human-decision authority was enabled but CORE-05 is not durably composed beside it. */
+class HumanAuthorityCompositionIncomplete extends Error {
+  readonly code = 'HUMAN_AUTHORITY_PREREQUISITE_MISSING';
+
+  constructor() {
+    super('The human-decision authority is enabled but the durable CORE-05 approval authority and governed-action orchestrator are not composed beside it. Nothing was exposed.');
+    this.name = 'HumanAuthorityCompositionIncomplete';
+  }
+}
+
 async function closeIfClosable(resource: unknown): Promise<void> {
   const closable = resource as Partial<{ close: () => Promise<void> }> | undefined;
   if (typeof closable?.close === 'function') await closable.close();
@@ -1828,6 +1849,23 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     }
   }
 
+  // AUTH-04A: the human-decision authority is composed securely or the Host
+  // refuses — checked here, before the signer is proven, the witness contacted
+  // or any store opened. The external CORE-07 witness is mandatory for it.
+  const humanAuthorityConfiguration = configuration.humanAuthority?.mode === 'enabled' ? configuration.humanAuthority : undefined;
+  const humanAuthorityRelyingParty =
+    humanAuthorityConfiguration === undefined
+      ? undefined
+      : assertHumanAuthorityComposable(humanAuthorityConfiguration, {
+          persistence: governanceStoreKind === 'sqlite' && configuration.persistence.provider === 'sqlite' ? 'sqlite' : 'memory',
+          freshness: freshnessExternal ? 'external' : 'none',
+          // Software custody is the default when the mode is not stated.
+          signerCustody: configuration.authorityAuthenticity.mode === 'external' ? 'external' : 'software',
+          // Ids and roles only: the operators' bearer secrets never reach the human-decision authority.
+          operators: (configuration.administration?.operators ?? []).map(({ operatorId, role }) => ({ operatorId, role })),
+          approvalsDeclared,
+        });
+
   // PROD-01: the authenticity boundary is resolved before any store is opened,
   // so a missing, mismatched or untrusted signing key refuses the Host before a
   // single SQLite file exists — not after the Governance, Passport, Assurance
@@ -1853,7 +1891,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // most once; every store shares one boundary.
   let authorityFreshnessOnce: Promise<AuthorityStateFreshnessBoundary | undefined> | undefined;
   const resolveAuthorityFreshness = (): Promise<AuthorityStateFreshnessBoundary | undefined> => (authorityFreshnessOnce ??= buildAuthorityFreshness(configuration));
-  if (freshnessExternal && ((options.authorityControlledExecution !== undefined && configuration.persistence.provider === 'sqlite') || (governanceStoreKind === 'sqlite' && (obligationStoreComposed || approvalsDeclared)))) {
+  if (freshnessExternal && ((options.authorityControlledExecution !== undefined && configuration.persistence.provider === 'sqlite') || (governanceStoreKind === 'sqlite' && (obligationStoreComposed || approvalsDeclared)) || humanAuthorityConfiguration !== undefined)) {
     await resolveAuthorityFreshness();
   }
 
@@ -2913,6 +2951,34 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
             : {}),
         });
 
+  // AUTH-04A: the human-decision authority, over the one authority signer and
+  // the one freshness boundary this root built, into the composed CORE-05
+  // command port. Startup reconciliation runs here; a failure refuses the Host.
+  const humanAuthority =
+    humanAuthorityConfiguration === undefined || humanAuthorityRelyingParty === undefined
+      ? undefined
+      : await (async () => {
+          if (approvalAuthority === undefined || governedActionOrchestrator === undefined || approvalStore?.kind !== 'durable-authenticated') {
+            throw new HumanAuthorityCompositionIncomplete();
+          }
+          const composed = await composeHumanAuthority({
+            configuration: humanAuthorityConfiguration,
+            relyingParty: humanAuthorityRelyingParty,
+            organizationId: configuration.kernelAuthority.organizationId,
+            authenticity: await resolveAuthorityAuthenticity(),
+            freshness: await resolveAuthorityFreshness(),
+            approvals: { list: () => approvalAuthority.list(), approve: (context, command) => approvalAuthority.approve(context, command), reject: (context, command) => approvalAuthority.reject(context, command) },
+            operators: (configuration.administration?.operators ?? []).map(({ operatorId, role }) => ({ operatorId, role })),
+            busyTimeoutMs: configuration.persistence.busyTimeoutMs,
+            isReady: () => lifecycle.isReady(),
+            notReady: () => EnterpriseHttpErrors.enterpriseNotReady(lifecycle.lifecycleState()),
+          });
+          opened.push(async () => composed.store.close());
+          // The closed log context: counts only, never a commitment, credential or human.
+          logger.info('enterprise.human_authority.composed', { organizationId: configuration.kernelAuthority.organizationId, status: `reconciled:${String(composed.reconciled.length)};abandoned:${String(composed.reconciled.filter((entry) => entry.settled === 'abandoned').length)}` });
+          return composed;
+        })();
+
   // CORE-02: the authenticity boundary this root built, if any — for the
   // posture and for the custody service's non-signing health probe.
   const authorityAuthenticity = authorityAuthenticityOnce === undefined ? undefined : await authorityAuthenticityOnce;
@@ -2954,6 +3020,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     obligations: obligationDischargeStore === undefined || governedActionOrchestrator === undefined ? 'not-configured' : obligationDischargeStore.kind === 'durable-authenticated' ? 'durable' : 'ephemeral',
     // CORE-05: likewise.
     approvals: approvalAuthority === undefined || governedActionOrchestrator === undefined ? 'not-configured' : approvalAuthority.storeKind === 'durable-authenticated' ? 'durable' : 'ephemeral',
+    // AUTH-04A: from the composed port, never from what was asked for.
+    humanAuthority: humanAuthority !== undefined && freshnessBoundaryOf(humanAuthority.store) === authorityFreshness && authorityFreshness !== undefined ? 'composed' : 'not-configured',
     // ASSURE-01: from the composed store, never from what was asked for.
     evidenceStore: evidenceStore.providerKind === 'sqlite' ? 'durable' : 'ephemeral',
     // CORE-02: where the authority private key lives — `external` means not in this process.
@@ -2968,6 +3036,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
         ...(grantStore !== undefined && isAuthenticatedDurableBoundedGrantStore(grantStore) ? [grantStore] : []),
         ...(obligationDischargeStore?.kind === 'durable-authenticated' ? [obligationDischargeStore] : []),
         ...(approvalStore?.kind === 'durable-authenticated' ? [approvalStore] : []),
+        // AUTH-04A: the signed human identity store is authority material too.
+        ...(humanAuthority !== undefined ? [humanAuthority.store] : []),
       ];
       return authorityFreshness !== undefined && durable.length > 0 && durable.every((store) => freshnessBoundaryOf(store) === authorityFreshness) ? 'external' : 'not-composed';
     })(),
@@ -3033,6 +3103,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
           }),
         }
       : {}),
+    ...(humanAuthority !== undefined ? { humanAuthority: humanAuthority.port } : {}),
     ...(authorityEventStore !== undefined && authorityEvents !== undefined ? { authorityEventStream: createAuthorityEventStreamReader(authorityEventStore) } : {}),
     ...(executionOutcomeStore !== undefined ? { executionOutcomes: createExecutionOutcomeReader(executionOutcomeStore) } : {}),
     ...(executionResolutionStore !== undefined ? { executionResolutions: createExecutionResolutionReader(executionResolutionStore) } : {}),

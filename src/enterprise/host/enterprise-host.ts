@@ -551,6 +551,10 @@ export async function bootEnterpriseHost(options: BootEnterpriseHostOptions = {}
     if (host.configuration.authorityAuthenticity.mode === 'external' && posture.authorityStore !== 'not-composed' && posture.authoritySigner !== 'external') {
       throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', `External authority-key custody was configured but the composed authority signer is '${posture.authoritySigner}'.`);
     }
+    // AUTH-04A: an enabled human-decision authority is composed (signed, witnessed, exposed in-process) or the Host does not start.
+    if (host.configuration.humanAuthority?.mode === 'enabled' && (posture.humanAuthority !== 'composed' || enterprise.humanAuthority === undefined)) {
+      throw new EnterpriseHostConfigurationError('HOST_COMPOSITION_INCOMPLETE', 'The human-decision authority was enabled but the composed Enterprise does not expose it over a witnessed identity store.');
+    }
     if (host.secureProfile) {
       const shortfalls = secureProfileShortfalls(posture);
       if (shortfalls.length > 0) {

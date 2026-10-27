@@ -57,7 +57,8 @@ describe('AUTH-02 structure — the human identity module', () => {
     for (const file of files) assert.equal(/'node:(?:http|https|net|tls|dgram|http2)'|fetch\(/.test(code(file)), false, file);
     for (const surface of ['src/enterprise/adapters/node-http-adapter.ts', 'src/enterprise/composition/composition-root.ts', 'src/enterprise/host/enterprise-host.ts', 'src/control-plane-web']) {
       const sources = surface.endsWith('.ts') ? [surface] : readdirSync(surface, { recursive: true }).map(String).filter((name) => name.endsWith('.ts') || name.endsWith('.tsx')).map((name) => `${surface}/${name}`);
-      for (const file of sources) assert.equal(/human-identity/.test(read(file)), false, `${file} must not expose human identity in AUTH-02`);
+      // AUTH-04A composes the module through composition/human-authority-composition.ts only; no route, adapter or console names it.
+      for (const file of sources) assert.equal(/human-identity/.test(read(file)), false, `${file} must not name the human identity module`);
     }
   });
 

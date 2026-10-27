@@ -1,5 +1,5 @@
 import type { AuthorizedHumanDecision, HumanDecisionRecord, HumanIdentityService, IssuedHumanDecisionChallenge } from '../human-identity/service.js';
-import type { HumanDecisionEvidence, HumanDecisionVerdict } from '../human-identity/decision-challenge.js';
+import type { HumanDecisionChallengeContract, HumanDecisionEvidence, HumanDecisionVerdict } from '../human-identity/decision-challenge.js';
 import { isOperatorRole, operatorMay, type OperatorRole } from '../operator-control/roles.js';
 import type { ApprovalCommand, ApprovalCommandContext } from './contracts.js';
 import { ApprovalAuthorityError } from './errors.js';
@@ -42,7 +42,15 @@ import type { ApprovalCommandPort, ApprovalRequestView } from './service.js';
  * The context is built only in this module and only after `authorizeDecision`
  * returned. The organization is always the Host's own.
  *
- * In-process only. There is no route to this module (AUTH-04 adds one).
+ * **Reconciliation (AUTH-04A).** `reconcile()` settles every consumed
+ * decision that has no recorded outcome and is not in flight in this process:
+ * `recorded` when CORE-05 holds the verdict citing it, otherwise `abandoned`.
+ * It only *records an outcome*: it never calls a CORE-05 command, never
+ * re-opens a challenge and never produces a verdict. The pilot runs one Host
+ * process, so a consumed decision that is not in flight here can no longer
+ * reach CORE-05; the Host runs it once at startup, after a crash.
+ *
+ * In-process only. There is no route to this module (AUTH-04B adds one).
  */
 
 /** The trusted channel every passkey-bound verdict records as `recordedBy`. */
@@ -72,7 +80,7 @@ export interface HumanDecisionChannelOptions {
   /** The CORE-05 command port: reads, approve and reject. No store. */
   readonly approvals: Pick<ApprovalCommandPort, 'list' | 'approve' | 'reject'>;
   /** The human identity service of the same organization. */
-  readonly identity: Pick<HumanIdentityService, 'organizationId' | 'beginDecision' | 'peekDecision' | 'authorizeDecision' | 'recordDecisionOutcome' | 'decision'>;
+  readonly identity: Pick<HumanIdentityService, 'organizationId' | 'beginDecision' | 'peekDecision' | 'authorizeDecision' | 'recordDecisionOutcome' | 'decision' | 'unsettledDecisions'>;
   /** The configured CTRL-02 role of an operator, or `undefined` when they are not one. Never a caller's claim. */
   readonly roleOf: (operatorId: string) => OperatorRole | undefined;
 }
@@ -90,10 +98,18 @@ export type HumanDecisionStatus =
   /** Consumed, and CORE-05 holds no verdict citing it: the attempt ended without a verdict. It never authorizes again. */
   | { readonly state: 'not-recorded'; readonly decision: HumanDecisionRecord };
 
+/** What reconciliation did with one consumed, unsettled decision. */
+export interface HumanDecisionReconciliation {
+  readonly commitment: string;
+  readonly settled: 'recorded' | 'abandoned';
+}
+
 export interface HumanDecisionChannel {
   begin(input: { readonly operatorId: string; readonly approvalRequestId: string; readonly subjectDigest: string; readonly verdict: HumanDecisionVerdict }): Promise<IssuedHumanDecisionChallenge>;
   decide(assertion: unknown): Promise<HumanDecisionResult>;
   outcome(commitment: string): Promise<HumanDecisionStatus | undefined>;
+  /** Settles consumed decisions with no recorded outcome that are not in flight. Records outcomes only — never a verdict. */
+  reconcile(): Promise<readonly HumanDecisionReconciliation[]>;
 }
 
 const PERMISSION = { approve: 'approval.approve', reject: 'approval.restrict' } as const;
@@ -110,6 +126,9 @@ function verdictCiting(view: ApprovalRequestView | undefined, operatorId: string
 export function createHumanDecisionChannel(options: HumanDecisionChannelOptions): HumanDecisionChannel {
   const { organizationId, approvals, identity, roleOf } = options;
   if (identity.organizationId !== organizationId) throw new HumanDecisionError('HUMAN_DECISION_CONFIGURATION_INVALID', "The human identity store serves another organization than this Host's.");
+
+  // Commitments whose decide() may still reach CORE-05 in this process. Added before the challenge is consumed, removed after the outcome is settled.
+  const inFlight = new Set<string>();
 
   const find = async (approvalRequestId: string): Promise<ApprovalRequestView | undefined> => (await approvals.list()).find((view) => view.approvalRequestId === approvalRequestId);
 
@@ -143,30 +162,16 @@ export function createHumanDecisionChannel(options: HumanDecisionChannelOptions)
     },
 
     async decide(assertion) {
-      const { contract } = identity.peekDecision(assertion);
+      const { contract, commitment: peeked } = identity.peekDecision(assertion);
       await admissible(contract);
-      const authorized = await identity.authorizeDecision(assertion);
-      const { evidence, evidenceDigest, commitment } = authorized;
-      const command: ApprovalCommand = {
-        approvalRequestId: contract.approvalRequestId,
-        subjectDigest: contract.subjectDigest,
-        evidence: [{ type: 'approval_proof', hash: evidenceDigest, uri: `${HUMAN_PASSKEY_DECISION_CHANNEL}:${commitment}` }],
-      };
-      let approval: ApprovalRequestView;
+      // A second submission of the same decision in this process is refused by the identity store either way; only the first owns the in-flight mark.
+      const owner = !inFlight.has(peeked);
+      if (owner) inFlight.add(peeked);
       try {
-        approval = contract.verdict === 'approve' ? await approvals.approve(contextFor(contract.operatorId), command) : await approvals.reject(contextFor(contract.operatorId), command);
-      } catch (error) {
-        if (error instanceof ApprovalAuthorityError && error.code !== 'APPROVAL_STORE_CORRUPT' && error.code !== 'APPROVAL_STORE_CLOSED' && error.code !== 'APPROVAL_STORE_UNSUPPORTED') {
-          await settle(authorized, { outcome: 'refused', code: error.code });
-          return { outcome: 'refused', commitment, evidence, evidenceDigest, code: error.code, reasonCode: error.reasonCode ?? null };
-        }
-        // Whether CORE-05 recorded it is unknown here; `outcome()` reads it from CORE-05. The challenge never authorizes again.
-        throw error;
+        return await decideAuthorized(assertion, contract);
+      } finally {
+        if (owner) inFlight.delete(peeked);
       }
-      const verdictRowDigest = verdictCiting(approval, contract.operatorId, evidenceDigest);
-      if (verdictRowDigest === undefined) throw new ApprovalAuthorityError('APPROVAL_STORE_CORRUPT', 'CORE-05 accepted the passkey decision but its view holds no verdict citing it.');
-      await settle(authorized, { outcome: 'recorded', verdictRowDigest });
-      return { outcome: 'recorded', commitment, evidence, evidenceDigest, verdictRowDigest, approval };
     },
 
     async outcome(commitment) {
@@ -178,5 +183,43 @@ export function createHumanDecisionChannel(options: HumanDecisionChannelOptions)
       if (decision.outcome?.outcome === 'refused') return { state: 'refused', decision, code: decision.outcome.code };
       return { state: 'not-recorded', decision };
     },
+
+    async reconcile() {
+      const settled: HumanDecisionReconciliation[] = [];
+      for (const decision of identity.unsettledDecisions()) {
+        if (inFlight.has(decision.commitment) || decision.evidenceDigest === undefined) continue;
+        const verdictRowDigest = verdictCiting(await find(decision.contract.approvalRequestId), decision.contract.operatorId, decision.evidenceDigest);
+        // Re-checked after the read: a decide() that began meanwhile owns its own outcome.
+        if (inFlight.has(decision.commitment)) continue;
+        await identity.recordDecisionOutcome(decision.commitment, verdictRowDigest !== undefined ? { outcome: 'recorded', verdictRowDigest } : { outcome: 'abandoned' });
+        settled.push({ commitment: decision.commitment, settled: verdictRowDigest !== undefined ? 'recorded' : 'abandoned' });
+      }
+      return settled;
+    },
   };
+
+  async function decideAuthorized(assertion: unknown, contract: HumanDecisionChallengeContract): Promise<HumanDecisionResult> {
+    const authorized = await identity.authorizeDecision(assertion);
+    const { evidence, evidenceDigest, commitment } = authorized;
+    const command: ApprovalCommand = {
+      approvalRequestId: contract.approvalRequestId,
+      subjectDigest: contract.subjectDigest,
+      evidence: [{ type: 'approval_proof', hash: evidenceDigest, uri: `${HUMAN_PASSKEY_DECISION_CHANNEL}:${commitment}` }],
+    };
+    let approval: ApprovalRequestView;
+    try {
+      approval = contract.verdict === 'approve' ? await approvals.approve(contextFor(contract.operatorId), command) : await approvals.reject(contextFor(contract.operatorId), command);
+    } catch (error) {
+      if (error instanceof ApprovalAuthorityError && error.code !== 'APPROVAL_STORE_CORRUPT' && error.code !== 'APPROVAL_STORE_CLOSED' && error.code !== 'APPROVAL_STORE_UNSUPPORTED') {
+        await settle(authorized, { outcome: 'refused', code: error.code });
+        return { outcome: 'refused', commitment, evidence, evidenceDigest, code: error.code, reasonCode: error.reasonCode ?? null };
+      }
+      // Whether CORE-05 recorded it is unknown here; `outcome()` reads it from CORE-05. The challenge never authorizes again.
+      throw error;
+    }
+    const verdictRowDigest = verdictCiting(approval, contract.operatorId, evidenceDigest);
+    if (verdictRowDigest === undefined) throw new ApprovalAuthorityError('APPROVAL_STORE_CORRUPT', 'CORE-05 accepted the passkey decision but its view holds no verdict citing it.');
+    await settle(authorized, { outcome: 'recorded', verdictRowDigest });
+    return { outcome: 'recorded', commitment, evidence, evidenceDigest, verdictRowDigest, approval };
+  }
 }

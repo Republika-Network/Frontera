@@ -58,6 +58,14 @@ export interface EnterpriseHealthPosture {
   readonly obligations: 'durable' | 'ephemeral' | 'not-configured';
   /** CORE-05: the approval store's kind, or `not-configured` when no Governance Profile declares an approval requirement. */
   readonly approvals: 'durable' | 'ephemeral' | 'not-configured';
+  /**
+   * AUTH-04A: the passkey human-decision authority. `composed` — the signed
+   * human identity store is anchored at the external CORE-07 witness and the
+   * in-process decision port is exposed; `not-configured` — it is not enabled.
+   * An enabled authority that cannot be composed securely refuses the Host, so
+   * there is no third, degraded value.
+   */
+  readonly humanAuthority: 'composed' | 'not-configured';
   /** ASSURE-01: the Evidence Bundle Store's provider — `durable` (SQLite) or `ephemeral` (process memory). A secure Host requires `durable`. */
   readonly evidenceStore: 'durable' | 'ephemeral';
   /**

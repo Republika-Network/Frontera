@@ -417,6 +417,17 @@ export interface EnterpriseConfiguration {
    * claims cross-restart freshness, and no fallback from `external` to one.
    */
   readonly authorityFreshness?: NoAuthorityFreshnessConfiguration | ExternalAuthorityFreshnessConfiguration;
+  /**
+   * AUTH-04A — the passkey human-decision authority (AUTH-02 identity store,
+   * AUTH-03 decision channel), composed in-process only. A closed choice:
+   * `disabled` (absent means disabled) or `enabled`. Enabled, the Host refuses
+   * to start unless it can compose it securely: SQLite persistence, the
+   * external CORE-07 witness (an unwitnessed identity store never authorizes a
+   * decision), software authority-key custody, CTRL-02 operators and durable
+   * CORE-05 approvals. Exposes no route. Optional in the type; the loader
+   * always sets it.
+   */
+  readonly humanAuthority?: DisabledHumanAuthorityConfiguration | EnabledHumanAuthorityConfiguration;
   /** PR-007: Assurance Runtime configuration (mission section 57 -- Assurance criticality is deployment-configurable, never hardcoded). */
   readonly assurance: {
     /** SQLite path for the Assurance Store when `persistence.provider === 'sqlite'`. Independent of every other store's path -- the Assurance Store is an independent store (mission section 48). */
@@ -493,6 +504,34 @@ export interface ExternalAuthorityAuthenticityConfiguration {
    * process's environment.
    */
   readonly conflictingSigningKeyPresent: boolean;
+}
+
+/** AUTH-04A: no human-decision authority is composed. */
+export interface DisabledHumanAuthorityConfiguration {
+  readonly mode: 'disabled';
+}
+
+/**
+ * AUTH-04A: the human-decision authority. The relying party is deployment
+ * configuration only — never taken from a request. No secret lives here.
+ */
+export interface EnabledHumanAuthorityConfiguration {
+  readonly mode: 'enabled';
+  /** The signed, witnessed human identity store (its own file). */
+  readonly sqlitePath: string;
+  /** The WebAuthn relying party id (the intended pilot domain is `authority.frontera-systems.com`). */
+  readonly rpId: string;
+  readonly rpName: string;
+  /** The exact HTTPS origins a ceremony may come from, on the RP ID or its subdomains. */
+  readonly allowedOrigins: readonly string[];
+  /**
+   * The one initialization path: `true` permits creating the store (and
+   * enrolling its genesis at the witness) when the file is absent. Never a
+   * reconstruction: a store whose witness slot already advanced is refused.
+   */
+  readonly initialize: boolean;
+  /** Decision challenge lifetime, 1–120 seconds. */
+  readonly decisionChallengeTtlSeconds: number;
 }
 
 /** CORE-07: no freshness witness. Cross-restart rollback of durable authority is not detected (AA-003 / GS-002 open for this deployment). */
@@ -716,6 +755,7 @@ export function validateEnterpriseEnvironment(env: Readonly<Record<string, strin
   }
   problems.push(...authoritySignerEnvironmentProblems(env));
   problems.push(...authorityFreshnessEnvironmentProblems(env));
+  problems.push(...humanAuthorityEnvironmentProblems(env));
   const apiKeys = env.AOC_ENTERPRISE_API_KEYS;
   if (apiKeys !== undefined && parseApiKeys(apiKeys).some((apiKey) => apiKey.key.length === 0)) {
     problems.push('AOC_ENTERPRISE_API_KEYS contains an entry with an empty key.');
@@ -803,6 +843,69 @@ function authoritySignerEnvironmentProblems(env: Readonly<Record<string, string 
     problems.push('AOC_ENTERPRISE_AUTHORITY_SIGNER_PROBE_INTERVAL_MS must be an integer from 0 to 60000.');
   }
   return problems;
+}
+
+const HUMAN_AUTHORITY_VARIABLES = [
+  'AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH',
+  'AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID',
+  'AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_NAME',
+  'AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS',
+  'AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE',
+  'AOC_ENTERPRISE_HUMAN_AUTHORITY_DECISION_TTL_SECONDS',
+] as const;
+
+/**
+ * AUTH-04A: the strict reading of the human-authority variables. One mode,
+ * stated explicitly; a human-authority variable without `enabled` is refused,
+ * never guessed. The relying party itself (RP ID ↔ origins) is validated again
+ * at composition by the AUTH-02 relying-party rules. Names variables, never values.
+ */
+function humanAuthorityEnvironmentProblems(env: Readonly<Record<string, string | undefined>>): readonly string[] {
+  const problems: string[] = [];
+  const mode = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE;
+  if (mode !== undefined && mode !== 'disabled' && mode !== 'enabled') {
+    problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE must be one of: disabled, enabled.');
+    return problems;
+  }
+  if (mode !== 'enabled') {
+    for (const name of HUMAN_AUTHORITY_VARIABLES) {
+      if (env[name] !== undefined) problems.push(`${name} is set but AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE is not 'enabled'. Refusing to guess whether the human-decision authority was meant.`);
+    }
+    return problems;
+  }
+  const rpId = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID;
+  if (rpId === undefined || rpId.trim().length === 0) problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled requires AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID (the intended pilot relying party is authority.frontera-systems.com).');
+  const origins = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS;
+  if (origins === undefined || origins.split(',').every((origin) => origin.trim().length === 0)) {
+    problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled requires AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS: a comma-separated list of exact https origins.');
+  } else if (origins.split(',').some((origin) => !origin.trim().startsWith('https://'))) {
+    problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS accepts https origins only.');
+  }
+  const initialize = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE;
+  if (initialize !== undefined && initialize !== 'true' && initialize !== 'false') problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE must be true or false.');
+  const ttl = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_DECISION_TTL_SECONDS;
+  if (ttl !== undefined && (!/^\d{1,3}$/.test(ttl) || Number.parseInt(ttl, 10) < 1 || Number.parseInt(ttl, 10) > 120)) {
+    problems.push('AOC_ENTERPRISE_HUMAN_AUTHORITY_DECISION_TTL_SECONDS must be an integer from 1 to 120.');
+  }
+  return problems;
+}
+
+/** AUTH-04A: the human-decision authority as read from `env`. Absent (or `disabled`) is `disabled`. */
+function loadHumanAuthority(env: Readonly<Record<string, string | undefined>>): NonNullable<EnterpriseConfiguration['humanAuthority']> {
+  if (env.AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE !== 'enabled') return { mode: 'disabled' };
+  const ttl = env.AOC_ENTERPRISE_HUMAN_AUTHORITY_DECISION_TTL_SECONDS;
+  return {
+    mode: 'enabled',
+    sqlitePath: env.AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH ?? '.data/human-identity.sqlite',
+    rpId: env.AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID ?? '',
+    rpName: env.AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_NAME ?? 'Frontera Authority',
+    allowedOrigins: (env.AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS ?? '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0),
+    initialize: env.AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE === 'true',
+    decisionChallengeTtlSeconds: ttl !== undefined && /^\d+$/.test(ttl) ? Number.parseInt(ttl, 10) : 120,
+  };
 }
 
 const AUTHORITY_FRESHNESS_VARIABLES = [
@@ -1036,6 +1139,7 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     },
     authorityAuthenticity: loadAuthorityAuthenticity(env),
     authorityFreshness: loadAuthorityFreshness(env),
+    humanAuthority: loadHumanAuthority(env),
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',
       required: parseBoolean(env.AOC_ENTERPRISE_ASSURANCE_REQUIRED, false),

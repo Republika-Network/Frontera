@@ -448,6 +448,12 @@ export const EXCLUDED_DURABLE_STATE = Object.freeze([
       'PAY-06: the Lightning payment interlock (createSqliteLightningPaymentInterlock, schema aoc.lightning-payment-interlock.schema.v1) is composed by an embedder beside the Lightning rail; the Enterprise Host composes no Lightning rail and no Host configuration names the store, so backup:v1 does not cover it. An embedder that composes it backs its file up itself, with the Governance Store and P11 / P12 stores it belongs to, and must keep the CORE-07 witness outside that backup domain: its reservation history is always anchored at the witness (slot payment-initiation-reservations), so a stale or lost copy — which could make a payment already initiated look new — is refused at open with nothing sent, and recovery is restoring the newest file or trusted recovery at the witness (docs/payments/PAY-06-LIGHTNING-RAIL.md §12).',
   },
   {
+    name: 'human-identity',
+    envVar: 'AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH',
+    reason:
+      'AUTH-04A: the signed human identity store (humans, passkey public keys, consumed ceremony and decision challenges) is composed only when AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled, in-process, with no route yet. backup:v1 does not cover it in this increment; an operator who enables it backs its file up with the Online Backup API outside backup:v1 and must keep the CORE-07 witness outside that backup domain. Its signed head is always anchored at the witness (slot human-identity-state): a stale copy — which could resurrect a revoked passkey or a consumed decision — is refused at open, and a lost file is never recreated over an advanced slot. Loss narrows (no human decision can be authorized until the newest copy is restored or the slot is recovered at the witness); it never widens.',
+  },
+  {
     name: 'governed-actions-file',
     envVar: 'AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE',
     reason: 'Configuration, secret-free by design, kept in configuration management. The manifest records its SHA-256 so a restore can be matched to it.',

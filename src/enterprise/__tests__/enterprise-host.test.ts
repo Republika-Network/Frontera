@@ -363,6 +363,8 @@ describe('PROD-01 — a secure Host composes the real governed-action spine', ()
       authoritySigner: 'software',
       // CORE-07: a secure Host anchors its durable authority at an external witness.
       authorityFreshness: 'external',
+      // AUTH-04A: the human-decision authority is not enabled here.
+      humanAuthority: 'not-configured',
       // ASSURE-01: evidence bundles are durable on a secure Host.
       evidenceStore: 'durable',
     });
