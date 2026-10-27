@@ -80,7 +80,7 @@ export interface HumanDecisionChannelOptions {
   /** The CORE-05 command port: reads, approve and reject. No store. */
   readonly approvals: Pick<ApprovalCommandPort, 'list' | 'approve' | 'reject'>;
   /** The human identity service of the same organization. */
-  readonly identity: Pick<HumanIdentityService, 'organizationId' | 'beginDecision' | 'peekDecision' | 'authorizeDecision' | 'recordDecisionOutcome' | 'decision'>;
+  readonly identity: Pick<HumanIdentityService, 'organizationId' | 'beginDecision' | 'peekDecision' | 'authorizeDecision' | 'recordDecisionOutcome' | 'decision' | 'unsettledDecisions'>;
   /** The configured CTRL-02 role of an operator, or `undefined` when they are not one. Never a caller's claim. */
   readonly roleOf: (operatorId: string) => OperatorRole | undefined;
 }

@@ -1859,7 +1859,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       : assertHumanAuthorityComposable(humanAuthorityConfiguration, {
           persistence: governanceStoreKind === 'sqlite' && configuration.persistence.provider === 'sqlite' ? 'sqlite' : 'memory',
           freshness: freshnessExternal ? 'external' : 'none',
-          signerCustody: configuration.authorityAuthenticity.mode,
+          // Software custody is the default when the mode is not stated.
+          signerCustody: configuration.authorityAuthenticity.mode === 'external' ? 'external' : 'software',
           // Ids and roles only: the operators' bearer secrets never reach the human-decision authority.
           operators: (configuration.administration?.operators ?? []).map(({ operatorId, role }) => ({ operatorId, role })),
           approvalsDeclared,
@@ -2973,7 +2974,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
             notReady: () => EnterpriseHttpErrors.enterpriseNotReady(lifecycle.lifecycleState()),
           });
           opened.push(async () => composed.store.close());
-          logger.info('enterprise.human_authority.composed', { reconciled: composed.reconciled.length, abandoned: composed.reconciled.filter((entry) => entry.settled === 'abandoned').length });
+          // The closed log context: counts only, never a commitment, credential or human.
+          logger.info('enterprise.human_authority.composed', { organizationId: configuration.kernelAuthority.organizationId, status: `reconciled:${String(composed.reconciled.length)};abandoned:${String(composed.reconciled.filter((entry) => entry.settled === 'abandoned').length)}` });
           return composed;
         })();
 
