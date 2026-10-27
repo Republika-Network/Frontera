@@ -5,7 +5,7 @@ import {
   validateSovereigntyInteroperabilityConsumerSupportV1,
 } from '@aoc/protocol/interoperability';
 import type { SovereigntyInteroperabilityConsumerSupportV1 } from '@aoc/protocol/interoperability';
-import { verifySignedSovereignClaim, verifySovereignManifest } from '@aoc/protocol/manifest';
+import { SovereignAssetState, verifySignedSovereignClaim, verifySovereignManifest } from '@aoc/protocol/manifest';
 import type {
   SignedClaim,
   SignedSovereignManifest,
@@ -124,16 +124,29 @@ async function verifyStrict(bundleText: unknown, rawOptions: unknown): Promise<R
     if (artifact.kind === 'signed-claim') signedClaims.push(artifact.signedClaim);
     else policyReasons.push('UNSIGNED_CLAIM');
   }
-  // Standings travel unsigned; nothing in the bundle can establish who asserted them.
-  if (bundle.standings.length > 0) policyReasons.push('UNVERIFIABLE_STANDING');
+  // Registrant continuity: rc.3 manifests do not chain, and nothing in a bundle
+  // transfers authority, so every version must name the same canonical issuer
+  // (the identity the binding resolves). A valid signature on a later version
+  // from another issuer does not make it this asset's current record.
+  const registrants = new Set(signedManifests.map((signed) => issuerId(signed.manifest.registrant)));
+  if (registrants.size > 1) policyReasons.push('REGISTRANT_DISCONTINUITY');
+  // The highest version present is the current one. A current manifest that
+  // records itself as superseded contradicts the bundle that carries it.
+  const current = signedManifests.reduce<SignedSovereignManifest | undefined>(
+    (a, b) => (a === undefined || b.manifest.manifestVersion > a.manifest.manifestVersion ? b : a),
+    undefined,
+  );
+  if (current?.manifest.state === SovereignAssetState.Superseded) policyReasons.push('CURRENT_MANIFEST_SUPERSEDED');
+  // Standings travel unsigned and are not verified here. They are accepted only
+  // as Protocol-valid structure (checked by the parser) and reported as such.
   if (policyReasons.length > 0) return rejected(policyReasons);
+  if (current === undefined) return rejected(['NO_SIGNED_MANIFEST']);
 
   // 3. Exact compatibility with what this receiver declared it supports.
   const compatibilityReason = assessCompatibility(bundle, options.consumerSupport);
   if (compatibilityReason) return rejected([compatibilityReason]);
 
   // 4. Content identity is required wherever the current manifest commits to one.
-  const current = signedManifests.reduce((a, b) => (b.manifest.manifestVersion > a.manifest.manifestVersion ? b : a));
   const contentRequired = current.manifest.contentIdentity !== undefined;
   if (contentRequired && options.contentBytes === undefined) return rejected(['CONTENT_BYTES_REQUIRED']);
   if (!contentRequired && options.contentBytes !== undefined) return rejected(['CONTENT_IDENTITY_NOT_DECLARED']);
@@ -166,6 +179,7 @@ async function verifyStrict(bundleText: unknown, rawOptions: unknown): Promise<R
       manifestDigest: signed.manifestDigest,
       issuer,
       keyId: signed.proof.keyId,
+      state: signed.manifest.state,
     });
   }
 
@@ -188,6 +202,9 @@ async function verifyStrict(bundleText: unknown, rawOptions: unknown): Promise<R
   }
 
   if (reasons.length > 0) return rejected(reasons);
+  // The current issuer comes from the verified binding, never from the caller.
+  const currentEvidence = manifests.find((evidence) => evidence.manifestVersion === current.manifest.manifestVersion);
+  if (currentEvidence === undefined) return rejected(['INTERNAL_VERIFICATION_ERROR']);
 
   return deepFreeze({
     outcome: 'verified',
@@ -197,8 +214,12 @@ async function verifyStrict(bundleText: unknown, rawOptions: unknown): Promise<R
     freshness: 'not_evaluated',
     sovereignAssetId,
     currentManifestVersion: current.manifest.manifestVersion,
+    currentManifestBasis: 'highest_version_in_bundle',
+    currentIssuer: currentEvidence.issuer,
+    currentState: currentEvidence.state,
     contentIdentity: contentRequired ? 'verified' : 'not_declared',
     compatibility: 'compatible',
+    standings: bundle.standings.length > 0 ? 'present_unverified' : 'none',
     manifests: manifests.sort((a, b) => a.manifestVersion - b.manifestVersion),
     claims: claims.sort((a, b) => (a.claimId < b.claimId ? -1 : a.claimId > b.claimId ? 1 : 0)),
     reasons: [],

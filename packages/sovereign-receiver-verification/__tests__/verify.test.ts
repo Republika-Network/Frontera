@@ -53,11 +53,15 @@ test('a valid signed representation verifies, with evidence and no authorization
   if (result.outcome !== 'verified') return;
   assert.equal(result.sovereignAssetId, fixture.sovereignAssetId);
   assert.equal(result.currentManifestVersion, 1);
+  assert.equal(result.currentManifestBasis, 'highest_version_in_bundle');
+  assert.equal(result.currentIssuer, ISSUER);
+  assert.equal(result.currentState, 'active');
   assert.equal(result.contentIdentity, 'verified');
   assert.equal(result.compatibility, 'compatible');
+  assert.equal(result.standings, 'none');
   assert.deepEqual(result.reasons, []);
   assert.deepEqual(result.manifests, [
-    { manifestVersion: 1, manifestDigest: fixture.manifest.manifestDigest, issuer: ISSUER, keyId: fixture.manifest.proof.keyId },
+    { manifestVersion: 1, manifestDigest: fixture.manifest.manifestDigest, issuer: ISSUER, keyId: fixture.manifest.proof.keyId, state: 'active' },
   ]);
   assert.deepEqual(result.claims, [{ claimId: 'claim-origin-1', claimType: 'Origin', issuer: ISSUER, keyId: fixture.claim.proof.keyId }]);
   assert.ok(Object.isFrozen(result) && Object.isFrozen(result.manifests) && Object.isFrozen(result.manifests[0]));
@@ -304,19 +308,6 @@ test('a standing that references a claim missing from the bundle is rejected', a
     bundle['standings'] = [standing];
   });
   assertRejected(await verifyReceivedSovereignAsset(text, validOptions()), ['MISSING_REFERENCED_CLAIM']);
-});
-
-test('an unsigned standing is rejected even when its claim is present', async () => {
-  const sovereignAssetId = mintSovereignAssetId();
-  const claim = signedOriginClaim(sovereignAssetId);
-  const standing = contestClaim({ id: 'standing-1', claimRef: claim.claim.id, reason: 'disputed', effectiveAt: '2026-01-02T00:00:00.000Z' });
-  const text = serialize({
-    subject: { sovereignAssetId },
-    manifests: [manifestArtifact(signedManifest({ sovereignAssetId }))],
-    claims: [claimArtifact(claim)],
-    standings: [standing],
-  });
-  assertRejected(await verifyReceivedSovereignAsset(text, validOptions()), ['UNVERIFIABLE_STANDING']);
 });
 
 // --- Content identity -------------------------------------------------------------

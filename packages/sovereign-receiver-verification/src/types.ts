@@ -1,4 +1,4 @@
-import type { VerifySovereignManifestOptions } from '@aoc/protocol/manifest';
+import type { SovereignAssetState, VerifySovereignManifestOptions } from '@aoc/protocol/manifest';
 import type { SovereigntyInteroperabilityConsumerSupportV1 } from '@aoc/protocol/interoperability';
 
 import type { ReceiverVerificationRejectionReason } from './reasons.js';
@@ -45,8 +45,11 @@ interface NotEvaluated {
 export interface VerifiedManifestEvidence {
   readonly manifestVersion: number;
   readonly manifestDigest: string;
+  /** The signed registrant's canonical identity, bound to `keyId` by the resolver. */
   readonly issuer: string;
   readonly keyId: string;
+  /** The lifecycle state the signed manifest records. Reported, not enforced. */
+  readonly state: SovereignAssetState;
 }
 
 export interface VerifiedClaimEvidence {
@@ -60,10 +63,31 @@ export interface ReceivedSovereignAssetVerified extends NotEvaluated {
   readonly outcome: 'verified';
   readonly profile: StrictReceiverProfile;
   readonly sovereignAssetId: string;
+  /** The highest manifest version in this bundle. Not a claim that no newer version exists. */
   readonly currentManifestVersion: number;
+  /** States how `currentManifestVersion` was chosen: freshness is not evaluated. */
+  readonly currentManifestBasis: 'highest_version_in_bundle';
+  /**
+   * The verified issuer of the current manifest: its signed registrant, bound to
+   * a trusted key. Every signed manifest in the bundle names this same issuer.
+   * Never taken from `expectedIssuer`.
+   */
+  readonly currentIssuer: string;
+  /**
+   * The lifecycle state the current manifest records. `withdrawn` and
+   * `disputed` are reported as such; no state here is an authorization or
+   * eligibility decision.
+   */
+  readonly currentState: SovereignAssetState;
   /** `not_declared` when the current manifest makes no content commitment. */
   readonly contentIdentity: 'verified' | 'not_declared';
   readonly compatibility: 'compatible';
+  /**
+   * Standing records travel unsigned. `present_unverified` means the bundle
+   * carries structurally valid standings that nothing here verified; they are
+   * not part of `claims` and change no other field.
+   */
+  readonly standings: 'none' | 'present_unverified';
   readonly manifests: readonly VerifiedManifestEvidence[];
   readonly claims: readonly VerifiedClaimEvidence[];
   readonly reasons: readonly [];
