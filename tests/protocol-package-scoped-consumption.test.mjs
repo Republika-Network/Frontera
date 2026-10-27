@@ -232,3 +232,78 @@ test('require() and dynamic import() of an unapproved subpath are rejected insid
     });
   }
 });
+
+// --- The tarball validator's forbidden import scan (the third gate) -------------
+
+const { forbiddenImportScan } = await import('../scripts/protocol/validate-enterprise-against-protocol-tarball.mjs');
+const scan = (files) => withFixtureTree(files, (dir) => forbiddenImportScan(dir));
+
+test('the tarball scan accepts the approved subpaths inside the package, in every source form', async () => {
+  const files = {};
+  SCOPED.forEach((subpath, index) => {
+    files[`${PKG_DIR}src/use-${index}.ts`] = importOf(subpath);
+    files[`${PKG_DIR}__tests__/use-${index}.test.ts`] = `${requireOf(subpath)}${dynamicImportOf(subpath).replace('used', 'later')}`;
+  });
+  assert.deepEqual(await scan(files), []);
+});
+
+test('the tarball scan rejects the approved subpaths from any other Frontera path', async () => {
+  const paths = [
+    'src/receiver.ts',
+    'packages/enterprise-host-sdk/src/receiver.ts',
+    'packages/sovereign-receiver-verification-evil/src/receiver.ts',
+    'packages/evil/packages/sovereign-receiver-verification/src/receiver.ts',
+    'tests/receiver.test.mjs',
+    'scripts/receiver.mjs',
+    'types/receiver.d.ts',
+  ];
+  for (const path of paths) {
+    for (const subpath of SCOPED) {
+      assert.deepEqual(await scan({ [path]: importOf(subpath) }), [`${path}: forbidden deep protocol import`], `${subpath} from ${path}`);
+    }
+  }
+});
+
+test('the tarball scan rejects unapproved and deeper subpaths inside the package, in every source form', async () => {
+  const deeper = ['@aoc/protocol/identity/', '@aoc/protocol/identity/../manifest', '@aoc/protocol/manifest/verify.js', '@aoc/protocol/'];
+  for (const subpath of [...NOT_SCOPED, ...deeper]) {
+    for (const form of [importOf, requireOf, dynamicImportOf]) {
+      const violations = await scan({ [`${PKG_DIR}src/leak.ts`]: form(subpath) });
+      assert.ok(violations.includes(`${PKG_DIR}src/leak.ts: forbidden deep protocol import`), `accepted ${subpath}: ${violations}`);
+    }
+  }
+});
+
+test('the tarball scan fails closed on mismatched quotes, template literals and mixed files', async () => {
+  const leak = `${PKG_DIR}src/leak.ts`;
+  const sources = [
+    `import { value } from '${SCOPED[0]}";\n`,
+    `import { value } from '${SCOPED[0]}\n`,
+    `export const used = import(\`${SCOPED[0]}\`);\n`,
+    `${importOf(SCOPED[0])}${importOf('@aoc/protocol/canonical').replace('value', 'other').replace('used', 'leaked')}`,
+  ];
+  for (const source of sources) {
+    assert.deepEqual(await scan({ [leak]: source }), [`${leak}: forbidden deep protocol import`], JSON.stringify(source));
+  }
+});
+
+test('the tarball scan keeps its sibling-path and dist checks inside the package', async () => {
+  const leak = `${PKG_DIR}src/leak.ts`;
+  // Assembled at runtime: the consumption gate scans tests/ for the literal sibling path.
+  const siblingSource = ['..', '..', '..', ['Architects', 'of', 'Change', 'Protocol'].join('_'), 'src', 'index'].join('/');
+  assert.deepEqual(await scan({ [leak]: importOf(siblingSource) }), [`${leak}: forbidden protocol source import`]);
+  assert.deepEqual(await scan({ [leak]: importOf('@aoc/protocol/dist/manifest/index.js') }), [
+    `${leak}: forbidden deep protocol import`,
+    `${leak}: forbidden protocol dist deep import`,
+  ]);
+});
+
+test('the tarball validator still runs its battery when executed directly', () => {
+  const run = spawnSync(process.execPath, [join(ROOT, 'scripts/protocol/validate-enterprise-against-protocol-tarball.mjs')], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, AOC_PROTOCOL_TARBALL: '' },
+  });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /FATAL: .*Usage: node scripts\/protocol\/validate-enterprise-against-protocol-tarball\.mjs/);
+});

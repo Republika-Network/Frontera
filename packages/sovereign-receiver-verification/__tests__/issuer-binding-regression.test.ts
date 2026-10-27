@@ -99,7 +99,8 @@ test('SOBE-SEC-01: a resolver entry whose key material differs from the signing 
   // real key material: key id agreement alone must not bind.
   const { text } = attackerSignedIssuerManifest();
   const { createPublicKey } = await import('node:crypto');
-  const issuerJwk = createPublicKey(issuerKeys.signingKey.publicKey).export({ format: 'jwk' });
+  // Spread into a plain record: newer @types/node declares JsonWebKey without an index signature.
+  const issuerJwk: Readonly<Record<string, unknown>> = { ...createPublicKey(issuerKeys.signingKey.publicKey).export({ format: 'jwk' }) };
   const resolver: ReceiverVerificationKeyResolver = {
     resolveVerificationKey: (issuer) => ({ keyId: attackerKeys.signingKey.keyId, issuer, algorithm: 'ed25519', publicKeyJwk: issuerJwk }),
   };

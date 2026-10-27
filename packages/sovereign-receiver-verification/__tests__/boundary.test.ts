@@ -52,9 +52,38 @@ test('no Protocol value is reachable through the package surface', () => {
 test('the package stays private, Host-independent and free of runtime dependencies', () => {
   const pkg = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as Record<string, unknown>;
   assert.equal(pkg['private'], true);
-  assert.equal(pkg['dependencies'], undefined);
   assert.equal(pkg['publishConfig'], undefined);
-  assert.deepEqual(pkg['peerDependencies'], { '@aoc/protocol': '0.2.0-rc.3' });
+  // No dependency of any kind: in particular no registry spec for @aoc/protocol
+  // that a lockfile-free install could satisfy from a public registry package.
+  for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies', 'bundleDependencies']) {
+    assert.equal(pkg[field], undefined, `${field} must not be declared`);
+  }
+});
+
+test('Protocol reaches the package only through the root, pinned to the approved tarball', () => {
+  // Path-independent on purpose: the tarball validator points the root at its
+  // own rebuilt copy of the same artifact. What must hold everywhere is a
+  // file: tarball (never a registry range) whose integrity is the approved one.
+  const repoRoot = join(packageRoot, '..', '..');
+  const approved = (JSON.parse(readFileSync(join(repoRoot, 'protocol-consumer.lock.json'), 'utf8')) as {
+    tarball: { filename: string; integrity: string };
+  }).tarball;
+  const rootPkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { devDependencies?: Record<string, string> };
+  const spec = rootPkg.devDependencies?.['@aoc/protocol'] ?? '';
+  assert.ok(spec.startsWith('file:') && spec.endsWith(`/${approved.filename}`), `root @aoc/protocol must be the ${approved.filename} tarball, got ${spec}`);
+  const lock = JSON.parse(readFileSync(join(repoRoot, 'package-lock.json'), 'utf8')) as { packages: Record<string, Record<string, unknown>> };
+  const protocolEntries = Object.entries(lock.packages).filter(([path]) => path.endsWith('node_modules/@aoc/protocol'));
+  assert.equal(protocolEntries.length, 1, `exactly one installed @aoc/protocol, got ${protocolEntries.map(([path]) => path).join(', ')}`);
+  const [path, entry] = protocolEntries[0]!;
+  assert.equal(path, 'node_modules/@aoc/protocol');
+  const resolved = String(entry['resolved']);
+  assert.ok(resolved.startsWith('file:') && resolved.endsWith(`/${approved.filename}`), `resolved from ${resolved}`);
+  assert.equal(entry['integrity'], approved.integrity);
+  assert.equal(entry['dev'], true);
+  const self = lock.packages['packages/sovereign-receiver-verification'] ?? {};
+  for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+    assert.equal(self[field], undefined, `lockfile entry declares ${field}`);
+  }
 });
 
 test('sources import only the approved Protocol subpaths and each other', () => {
