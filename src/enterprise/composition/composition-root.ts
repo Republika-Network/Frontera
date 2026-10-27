@@ -3190,6 +3190,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       await closeComposedExecutionOutcomeStore();
       await closeComposedExecutionResolutionStore();
       await closeComposedGovernedStateStores();
+      // AUTH-04D1: the human identity store this root opened. Left open, its WAL outlived a clean shutdown and no cold backup was possible.
+      humanAuthority?.store.close();
     },
     stop: async () => {
       await lifecycle.shutdown();
@@ -3202,6 +3204,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       await closeComposedExecutionOutcomeStore();
       await closeComposedExecutionResolutionStore();
       await closeComposedGovernedStateStores();
+      // AUTH-04D1: the human identity store this root opened. Left open, its WAL outlived a clean shutdown and no cold backup was possible.
+      humanAuthority?.store.close();
     },
   };
 

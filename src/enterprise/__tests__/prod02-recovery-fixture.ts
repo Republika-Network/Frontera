@@ -254,7 +254,8 @@ export interface Portability {
   readonly registry: {
     readonly STORE_DEFINITIONS: readonly { readonly name: string; readonly filename: string; readonly envVar: string; readonly targetFilename: string; readonly condition: string; readonly signedHead?: unknown; readonly freshnessStateKind?: string }[];
     readonly EXCLUDED_DURABLE_STATE: readonly { readonly name: string; readonly envVar: string | null; readonly reason: string }[];
-    readonly storeEnvironmentFor: (dir: string) => Record<string, string>;
+    /** `requirements`: AUTH-04D1 — a store whose variable the Host accepts only when composed is named only when they compose it. */
+    readonly storeEnvironmentFor: (dir: string, requirements?: Readonly<Record<string, unknown>>) => Record<string, string>;
     readonly deriveDeploymentRequirements: AnyFn;
     readonly conditionHolds: AnyFn;
     readonly COVERAGE_MODEL: string;

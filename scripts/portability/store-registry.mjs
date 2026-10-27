@@ -10,6 +10,8 @@
 //                         store-inventory and coverage validators as restore, below)
 //   fixture / comparison  generate-portability-fixture.mjs, compare-portability-state.mjs
 //   tests / docs          tests/portability-*.test.mjs, the PROD-02 Host drill
+//   sealed profile        authority-pilot-backup.mjs (AUTH-04D1: backup:v1 sealed for the
+//                         Authority pilot; it reads this registry, never a list of its own)
 //
 // A structural test (`tests/portability-store-registry.structure.test.mjs`)
 // reads the Host's configuration loader and fails when a `*_SQLITE_PATH`
@@ -59,6 +61,9 @@ export const COVERAGE_MODEL = 'aoc.enterprise.backup.coverage.v1';
  *   (TRADE-04C): the durable trade sequence interlock (its own file, its own
  *   CORE-07 slot). The Host then also composes P12 (the trade resolution
  *   authority).
+ * - `human-authority-enabled` — `AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled`
+ *   (AUTH-04A): the signed human identity store (AUTH-04D1 brought it into
+ *   backup:v1; until then it was excluded below).
  */
 export const STORE_CONDITIONS = Object.freeze([
   'always',
@@ -70,7 +75,11 @@ export const STORE_CONDITIONS = Object.freeze([
   'embedder-reconciliation',
   'xrpl-payment-rail',
   'xrpl-trade-execution',
+  'human-authority-enabled',
 ]);
+
+/** The Host's default human identity store path (AUTH-04A), which it opens once the authority is enabled. */
+const HUMAN_IDENTITY_DEFAULT_PATH = '.data/human-identity.sqlite';
 
 /**
  * The registry. Order is the backup's stable store order (the four historical
@@ -86,16 +95,21 @@ export const STORE_CONDITIONS = Object.freeze([
  * - `version` — how its schema version is recorded: a `versions` table (with
  *   or without a `migration_state` column) or a single-row `meta` table.
  * - `supportedSchemaVersionsOf(modules)` — what this build opens.
- * - `signedHead` — present for the three CORE-01/04/05 authenticated stores:
- *   the signed head is in the same file as its rows and is copied with them.
+ * - `signedHead` — present for the four authenticated stores (CORE-01/04/05
+ *   and the AUTH-03 human identity store): the signed head is in the same file
+ *   as its rows and is copied with them.
  * - `freshnessStateKind` — the CORE-07 witness slot that anchors the store, if any.
  * - `open(modules, path, authority)` — opens the store through its own
  *   factory, for restore's deep verification. Only ever called on a scratch
  *   copy of an already checksum-verified file, never on a target, and never on
  *   a path that does not exist (a factory creates a store when the file is
- *   absent — exactly what a restore must never do). The three signed stores
+ *   absent — exactly what a restore must never do). The signed stores
  *   need `authority`: trusted verification keys and a signer that refuses to
  *   sign, so they open only when their signed head verifies.
+ * - `envVarOnlyWhenComposed` — the Host refuses this store's variable unless
+ *   the store is composed (AUTH-04A's strict reading of the human-authority
+ *   variables), so `storeEnvironmentFor` names it only for a deployment whose
+ *   requirements compose it.
  * - `lossEffect` — what losing (or rolling back) this store does. Used in docs
  *   and the manifest; never a decision input.
  */
@@ -378,6 +392,32 @@ export const STORE_DEFINITIONS = Object.freeze([
     },
     lossEffect: 'issued evidence bundles and their lifecycle lost (bundles can be rebuilt from the canonical records, but under new ids; a bundle a third party holds can no longer be looked up)',
   },
+  {
+    name: 'human-identity',
+    filename: 'human-identity.sqlite',
+    envVar: 'AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH',
+    configKey: 'humanAuthority.sqlitePath',
+    // Disabled, the configuration carries no path: the Host's own default, which it would open once enabled.
+    configPathOf: (config) => (config.humanAuthority?.mode === 'enabled' ? config.humanAuthority.sqlitePath : HUMAN_IDENTITY_DEFAULT_PATH),
+    targetFilename: 'human-identity.sqlite',
+    // AUTH-04D1: in backup:v1 since the Authority pilot needs a restore that covers it.
+    condition: 'human-authority-enabled',
+    envVarOnlyWhenComposed: true,
+    purpose: 'AUTH-02/03 human identity: principals, passkey public keys, enrolment authorizations (invitation verifiers, never tokens), revocations, consumed ceremony and decision challenges, decision evidence and outcomes',
+    version: { kind: 'meta-row', table: 'human_identity_meta' },
+    supportedSchemaVersionsOf: ({ humanIdentity }) => [humanIdentity.HUMAN_IDENTITY_STORE_SCHEMA_VERSION],
+    recordTable: 'human_identity_records',
+    integrity: 'Ed25519-signed chain head over a digest chain (AUTH-03), CORE-07 anchored',
+    signedHead: { table: 'human_identity_head', sequenceColumn: 'sequence', digestColumn: 'chain_digest', metaTable: 'human_identity_meta', rowTable: 'human_identity_records' },
+    freshnessStateKind: 'human-identity-state',
+    open: async ({ factories }, path, authority) => {
+      // Opening verifies the signed head and recomputes the whole chain; no freshness boundary, so the witness is never contacted.
+      const store = await factories.humanIdentity.openSqliteHumanIdentityStore(path, { organizationId: authority.organizationId, now: () => new Date().toISOString(), authenticity: authority.authenticity });
+      store.history();
+      return store;
+    },
+    lossEffect: 'no human decision can be authorized (narrows); an older copy would resurrect a revoked passkey or a consumed decision or invitation (widens) and is refused under CORE-07; a lost file is never recreated over the advanced witness slot',
+  },
 ]);
 
 /**
@@ -446,12 +486,6 @@ export const EXCLUDED_DURABLE_STATE = Object.freeze([
     envVar: null,
     reason:
       'PAY-06: the Lightning payment interlock (createSqliteLightningPaymentInterlock, schema aoc.lightning-payment-interlock.schema.v1) is composed by an embedder beside the Lightning rail; the Enterprise Host composes no Lightning rail and no Host configuration names the store, so backup:v1 does not cover it. An embedder that composes it backs its file up itself, with the Governance Store and P11 / P12 stores it belongs to, and must keep the CORE-07 witness outside that backup domain: its reservation history is always anchored at the witness (slot payment-initiation-reservations), so a stale or lost copy — which could make a payment already initiated look new — is refused at open with nothing sent, and recovery is restoring the newest file or trusted recovery at the witness (docs/payments/PAY-06-LIGHTNING-RAIL.md §12).',
-  },
-  {
-    name: 'human-identity',
-    envVar: 'AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH',
-    reason:
-      'AUTH-04A: the signed human identity store (humans, passkey public keys, consumed ceremony and decision challenges) is composed only when AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled, in-process, with no route yet. backup:v1 does not cover it in this increment; an operator who enables it backs its file up with the Online Backup API outside backup:v1 and must keep the CORE-07 witness outside that backup domain. Its signed head is always anchored at the witness (slot human-identity-state): a stale copy — which could resurrect a revoked passkey or a consumed decision — is refused at open, and a lost file is never recreated over an advanced slot. Loss narrows (no human decision can be authorized until the newest copy is restored or the slot is recovered at the witness); it never widens.',
   },
   {
     name: 'governed-actions-file',
@@ -534,6 +568,8 @@ export function deriveDeploymentRequirements(env, configuration) {
     executionReconciliation: governedActions && ((Array.isArray(file.operators) && file.operators.length > 0) || file.xrplPaymentRail !== undefined || file.xrplTradeExecution !== undefined),
     xrplPaymentRail: governedActions && file.xrplPaymentRail !== undefined,
     xrplTradeExecution: governedActions && file.xrplTradeExecution !== undefined,
+    // AUTH-04A: the human-decision authority, exactly as the Host's configuration loader reads it.
+    humanAuthorityEnabled: configuration.humanAuthority?.mode === 'enabled',
     governedActionsFileDigest: fileDigest,
     secretReferenceEnvVars: [...secretReferences].sort(),
   };
@@ -561,6 +597,8 @@ export function conditionHolds(condition, requirements) {
       return requirements.governedActions === true && requirements.xrplPaymentRail === true;
     case 'xrpl-trade-execution':
       return requirements.governedActions === true && requirements.xrplTradeExecution === true;
+    case 'human-authority-enabled':
+      return requirements.humanAuthorityEnabled === true;
     default:
       // An unknown condition is a registry defect; refusing is the only safe reading.
       throw new DeploymentRequirementsError(`Unknown store condition '${String(condition)}'.`);
@@ -581,9 +619,19 @@ export function targetStorePaths(targetDir) {
   return Object.fromEntries(STORE_DEFINITIONS.map((storeDef) => [storeDef.name, resolve(targetDir, storeDef.targetFilename)]));
 }
 
-/** The Host environment that points every store at `dataDir`, using the registry's target filenames. */
-export function storeEnvironmentFor(dataDir) {
-  return Object.fromEntries(STORE_DEFINITIONS.map((storeDef) => [storeDef.envVar, resolve(dataDir, storeDef.targetFilename)]));
+/**
+ * The Host environment that points every store at `dataDir`, using the
+ * registry's target filenames. A store whose variable the Host accepts only
+ * when it composes the store (`envVarOnlyWhenComposed`) is named only when
+ * `requirements` (deriveDeploymentRequirements' shape) composes it.
+ */
+export function storeEnvironmentFor(dataDir, requirements) {
+  return Object.fromEntries(
+    STORE_DEFINITIONS.filter((storeDef) => storeDef.envVarOnlyWhenComposed !== true || (requirements !== undefined && conditionHolds(storeDef.condition, requirements))).map((storeDef) => [
+      storeDef.envVar,
+      resolve(dataDir, storeDef.targetFilename),
+    ]),
+  );
 }
 
 // -- backup coverage: the ONE reading of a PROD-02 manifest's store inventory ----------------
@@ -633,7 +681,7 @@ export function validateManifestStoreEntries(manifest) {
  * quietly un-require that store (PAY-03 `xrplPaymentRail`, TRADE-04C
  * `xrplTradeExecution`). Pinned against `conditionHolds` by test.
  */
-export const DEPLOYMENT_FLAGS = Object.freeze(['kernelAuthorityEnabled', 'governedActions', 'obligationsDeclared', 'approvalsDeclared', 'operatorsConfigured', 'executionReconciliation', 'xrplPaymentRail', 'xrplTradeExecution']);
+export const DEPLOYMENT_FLAGS = Object.freeze(['kernelAuthorityEnabled', 'governedActions', 'obligationsDeclared', 'approvalsDeclared', 'operatorsConfigured', 'executionReconciliation', 'xrplPaymentRail', 'xrplTradeExecution', 'humanAuthorityEnabled']);
 
 /**
  * Which required stores the backup does not include, judged two ways and
@@ -721,6 +769,7 @@ export async function loadRegistryModules(repoRoot) {
     evidence: await required('enterprise/evidence/sqlite-evidence-store.js'),
     xrplInterlock: await required('enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.js'),
     tradeInterlock: await required('enterprise/xrpl-trade-execution/sqlite-trade-sequence-interlock.js'),
+    humanIdentity: await required('enterprise/human-identity/index.js'),
     authenticity: await required('enterprise/authority-authenticity/index.js'),
   };
   cachedModules.factories = {
@@ -736,6 +785,7 @@ export async function loadRegistryModules(repoRoot) {
     evidence: await required('enterprise/evidence/sqlite-evidence-store.js'),
     xrplInterlock: await required('enterprise/xrpl-payment-rail/sqlite-xrpl-submission-interlock.js'),
     tradeInterlock: await required('enterprise/xrpl-trade-execution/sqlite-trade-sequence-interlock.js'),
+    humanIdentity: await required('enterprise/human-identity/index.js'),
   };
   return cachedModules;
 }

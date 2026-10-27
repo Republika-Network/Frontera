@@ -19,9 +19,11 @@ registry neither declares nor excludes, and a Host-level test boots real Hosts
 to prove the registry predicts exactly the store files the composition root
 opens.
 
-The registry declares **fourteen** durable SQLite stores — every store the
-Enterprise Host can compose (thirteen at PROD-02; ASSURE-01 added the durable
-Evidence Bundle Store):
+The registry declares every durable SQLite store the Enterprise Host can
+compose (thirteen at PROD-02; ASSURE-01 added the durable Evidence Bundle
+Store; PAY-03 and TRADE-04C the XRPL interlocks, documented with their rails;
+AUTH-04D1 the signed human identity store). The table lists the general ones
+and the identity store:
 
 | Store | Variable | Backup file | Required when | Integrity |
 |---|---|---|---|---|
@@ -39,6 +41,14 @@ Evidence Bundle Store):
 | approvals | `AOC_ENTERPRISE_APPROVAL_SQLITE_PATH` | `stores/approvals.sqlite` | some Governance Profile declares `approval` | **Ed25519-signed** chain head, CORE-07 anchored |
 | control-plane | `AOC_ENTERPRISE_CONTROL_PLANE_SQLITE_PATH` | `stores/control-plane.sqlite` | the governed-action file declares `operators` | append-only triggers (unsigned, **not** anchored) |
 | evidence-bundles | `AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH` | `stores/evidence-bundles.sqlite` | always (ASSURE-01) | per-row digest over the exact bundle bytes plus each bundle's own digests; lifecycle replayed from an append-only log (unsigned) |
+| human-identity | `AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH` | `stores/human-identity.sqlite` | `AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled` (AUTH-04D1; excluded before) | **Ed25519-signed** chain head (AUTH-03), CORE-07 anchored (slot `human-identity-state`) |
+
+The identity store's variable is accepted by the Host only with the
+human-decision authority enabled (AUTH-04A), so `storeEnvironmentFor` names it
+only for a deployment that composes it. For the Authority pilot, use the sealed
+profile on top of this command (`npm run authority-pilot:backup`,
+`docs/security/AUTH-04D1-AUTHORITY-PILOT-RECOVERY-READINESS.md`): cold and
+complete only, encrypted, with explicit verification.
 
 Which conditional stores a deployment composes is read from the environment
 and the **structure** of the governed-action file (`deriveDeploymentRequirements`):
@@ -97,7 +107,7 @@ Run it with the same environment you start the Host with. Requires
 6. On each copy: `PRAGMA integrity_check` (any failure aborts the whole
    backup), the store's recorded schema version (refused unless this build
    supports it), SHA-256, byte size, the row count of every table, and — for
-   the three signed stores — the signed head's store id, organization,
+   the four signed stores — the signed head's store id, organization,
    sequence, state digest and signing key id, refusing a head that does not
    commit to exactly the rows present.
 7. Writes `backup-manifest.json`, `checksums.sha256`, `metadata/*.json` and
@@ -191,7 +201,7 @@ cannot detect.
   access-controlled and off-host.** Governed records, approval subjects and
   credential verifiers are sensitive.
 - Backups are checksummed, not signed: whoever controls the backup storage
-  can rewrite files and manifest together. The three signed stores still
+  can rewrite files and manifest together. The four signed stores still
   verify under the trusted authority keys on restore, and CORE-07 still
   refuses a stale signed state at startup; the unsigned stores have no such
   defense (`THREAT_MODEL_V1.md` §7.28).

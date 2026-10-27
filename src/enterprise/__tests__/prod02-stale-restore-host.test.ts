@@ -140,7 +140,8 @@ describe('PROD-02 stale-backup drill — an older authority backup never becomes
 
     // ── each signed store alone, stale inside an otherwise-current restore ────────────
     const { registry } = await portability();
-    for (const storeDef of registry.STORE_DEFINITIONS.filter((entry) => entry.freshnessStateKind !== undefined)) {
+    // Every anchored store this deployment composes (AUTH-04D1's human identity store is not composed here).
+    for (const storeDef of registry.STORE_DEFINITIONS.filter((entry) => entry.freshnessStateKind !== undefined && manifestA.stores.some((store) => store.name === entry.name))) {
       const mixed = deployment.dir(`restored-B-stale-${storeDef.name}`);
       await runRestore({ backup: backupB, target: mixed, env: { ...deployment.envFor(mixed), FRONTERA_REFERENCE_WITNESS_DB: deployment.witness.databasePath } });
       copyFileSync(join(backupA, 'stores', storeDef.filename), join(mixed, storeDef.targetFilename));

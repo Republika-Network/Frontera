@@ -147,7 +147,7 @@ The witness protocol is unchanged.
 - No UI yet (AUTH-04C): the enrolment and sign-in screens are not built.
 - The bootstrap administrator is a static bearer (§2).
 - There is no in-Host rate limiter; the proxy must provide one.
-- The identity store is still outside backup:v1 (AUTH-04A).
+- The identity store was outside backup:v1 (AUTH-04A); AUTH-04D1 brought it in.
 - External key custody is still unsupported.
 - One Host process.
 - The enrolment ceremony state is in memory (lost on restart). The invitation is not: restart and begin again.
