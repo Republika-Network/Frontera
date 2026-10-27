@@ -8,6 +8,7 @@ import {
   declaresProtocolModule,
   extractProtocolImportSpecifiers,
   isAllowedProtocolImportSpecifier,
+  isPackageScopedProtocolImport,
 } from './protocol/lib-protocol-artifact.mjs';
 
 const ROOT = process.cwd();
@@ -129,7 +130,8 @@ for (const root of scanRoots) {
     }
 
     for (const specifier of extractProtocolImportSpecifiers(text)) {
-      if (!isAllowedProtocolImportSpecifier(specifier)) {
+      // A package-scoped allowance admits its subpaths only inside its own package directory.
+      if (!isAllowedProtocolImportSpecifier(specifier) && !isPackageScopedProtocolImport(specifier, rel)) {
         violations.push(`${rel}: imports forbidden/undeclared subpath '${specifier}'. Allowed: ${ALLOWED_PROTOCOL_SUBPATHS.join(', ')}.`);
       }
     }

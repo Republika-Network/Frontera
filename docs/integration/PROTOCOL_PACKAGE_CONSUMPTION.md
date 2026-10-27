@@ -163,6 +163,21 @@ overlap `verifiedPublicExports`. `tests/protocol-active-pin.test.mjs` checks tha
 artifact declares it and that the consumption gate still rejects a source import of it. Every other
 restriction in this document is unchanged.
 
+### Package-scoped imports: `@aoc-enterprise/sovereign-receiver-verification`
+
+One private package, and only files under `packages/sovereign-receiver-verification/`, may import
+`@aoc/protocol/identity`, `@aoc/protocol/manifest`, `@aoc/protocol/portability` and
+`@aoc/protocol/interoperability` (founder decision, RSDK-00B, for RSDK-01 receiver-side
+verification). These subpaths are not allowed imports for any other path: they are absent from the
+list above and from `ALLOWED_PROTOCOL_SUBPATHS`, and both `scripts/check-protocol-consumption.mjs`
+and `scripts/check-node16-imports.mjs` still reject them everywhere else, including lookalike and
+traversal paths. Inside the package, no other subpath and no deeper path is admitted. The allowance
+is `PACKAGE_SCOPED_PROTOCOL_SUBPATHS` (`scripts/protocol/lib-protocol-artifact.mjs`) and is recorded
+in `protocol-consumer.lock.json` → `packageScopedPublicExports`, which must equal it exactly, must not
+overlap `verifiedPublicExports`, and is required by `scripts/protocol/check-compatibility-lock.mjs`.
+The package re-exports no Protocol value, so the allowance cannot be reached through it.
+`tests/protocol-package-scoped-consumption.test.mjs` runs both gates against fixture trees.
+
 ## Known gaps
 
 **None.** As of the Protocol Contract Adoption sprint, `protocol-consumer.lock.json`'s `knownGaps`

@@ -136,6 +136,23 @@ export function validateCompatibilityLock(lock) {
     }
   }
 
+  // Optional. When present it must record PACKAGE_SCOPED_PROTOCOL_SUBPATHS exactly, so neither the
+  // lock nor the gate can widen a package-scoped allowance without the other.
+  if (lock.packageScopedPublicExports !== undefined) {
+    const expected = PACKAGE_SCOPED_PROTOCOL_SUBPATHS.map(({ package: name, directory, subpaths }) => ({ package: name, directory, subpaths: [...subpaths] }));
+    if (JSON.stringify(lock.packageScopedPublicExports) !== JSON.stringify(expected)) {
+      errors.push(`Field "packageScopedPublicExports" must equal PACKAGE_SCOPED_PROTOCOL_SUBPATHS exactly: ${JSON.stringify(expected)}.`);
+    } else {
+      for (const { subpaths } of expected) {
+        for (const subpath of subpaths) {
+          if (Array.isArray(lock.verifiedPublicExports) && lock.verifiedPublicExports.includes(subpath)) {
+            errors.push(`"${subpath}" is package-scoped and must not also be listed in "verifiedPublicExports".`);
+          }
+        }
+      }
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -157,6 +174,37 @@ export const ALLOWED_PROTOCOL_SUBPATHS = Object.freeze([
 // scripts/check-protocol-consumption.mjs keeps rejecting such an import. Recorded in
 // protocol-consumer.lock.json -> internalDependencySubpaths.
 export const INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS = Object.freeze(['@aoc/protocol/canonical']);
+
+// Protocol subpaths one named package may import, approved by the founder for RSDK-01
+// (RSDK-00B). The allowance is keyed to the package's directory and nothing else: no other
+// Frontera source, package or test may use it, and ALLOWED_PROTOCOL_SUBPATHS is unchanged.
+// Recorded in protocol-consumer.lock.json -> packageScopedPublicExports, which must equal this
+// value exactly (validateCompatibilityLock).
+export const PACKAGE_SCOPED_PROTOCOL_SUBPATHS = Object.freeze([
+  Object.freeze({
+    package: '@aoc-enterprise/sovereign-receiver-verification',
+    directory: 'packages/sovereign-receiver-verification/',
+    subpaths: Object.freeze([
+      '@aoc/protocol/identity',
+      '@aoc/protocol/manifest',
+      '@aoc/protocol/portability',
+      '@aoc/protocol/interoperability',
+    ]),
+  }),
+]);
+
+const SAFE_RELATIVE_PATH_RE = /^(?!\/)(?!.*\\)(?!.*(?:^|\/)\.\.?(?:\/|$))[^\0]+$/;
+
+/**
+ * Whether `specifier` is admitted for the repository-relative file `relPath` by a package-scoped
+ * allowance. The path must be a plain forward-slash relative path with no `.`/`..` segment, and
+ * must lie inside the allowance's directory (a sibling such as `packages/sovereign-receiver-verification-x/`
+ * does not). Only exact subpaths are admitted; never a deeper path below one.
+ */
+export function isPackageScopedProtocolImport(specifier, relPath, scoped = PACKAGE_SCOPED_PROTOCOL_SUBPATHS) {
+  if (typeof specifier !== 'string' || typeof relPath !== 'string' || !SAFE_RELATIVE_PATH_RE.test(relPath)) return false;
+  return scoped.some((entry) => relPath.startsWith(entry.directory) && entry.subpaths.includes(specifier));
+}
 
 const SIBLING_PATH_RE = /['"](?:\.\.\/)+Architects_of_Change_Protocol\b/;
 const DECLARE_MODULE_RE = /declare\s+module\s+['"]@aoc\/protocol(\/[^'"]*)?['"]/;
