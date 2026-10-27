@@ -494,6 +494,28 @@ export interface GrantEvaluation {
   readonly summary?: string;
 }
 
+/**
+ * What the optional external authorization port was asked and what came of it.
+ *
+ * Present only when an `ExternalAuthorizationProvider` is configured. Absent
+ * means the Kernel consulted no external authority, never that one agreed.
+ *
+ * Nothing the external authority said is carried beyond the closed outcome:
+ * no reason text, no payload, no timing. `outcome` and `reasonCode` are
+ * widened to `string` for the reason every other feature-owned union on this
+ * contract is.
+ */
+export interface ExternalAuthorizationEvaluation {
+  /** `false` when the port was not asked: `evaluate()` consults it only for an outcome the Kernel allowed. */
+  readonly performed: boolean;
+  /** `allowed`, `denied`, `unavailable`, `timeout`, `invalid_response`, or `not_consulted`. */
+  readonly outcome: string;
+  /** Whether this step turned the Kernel's `allowed` into `denied`. Never true for any other transition, because there is none. */
+  readonly narrowed: boolean;
+  /** The `EXTERNAL_AUTHORIZATION_*` code for any outcome other than `allowed` and `not_consulted`. */
+  readonly reasonCode?: string;
+}
+
 /** One entry per `evidence_required`-policy result the wrapped engine's own chain recorded. */
 export interface EvidenceEvaluation {
   readonly policyId: string;
@@ -534,6 +556,13 @@ export interface KernelEvaluationResult {
    * bounded permission it would produce.
    */
   readonly grants?: GrantEvaluation;
+  /**
+   * Present only when an `ExternalAuthorizationProvider` is configured. Absent
+   * means no external authority was consulted. When it narrowed the outcome,
+   * `status` is `denied` and its code leads `reasonCodes`; otherwise `status`
+   * is exactly what the Kernel concluded.
+   */
+  readonly externalAuthorization?: ExternalAuthorizationEvaluation;
   readonly trace: KernelTrace;
   readonly evaluatedAt: string;
   readonly kernelVersion: string;
