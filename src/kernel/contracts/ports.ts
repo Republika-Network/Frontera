@@ -189,3 +189,66 @@ export type ContextProvider = ContextResolverPort;
  * only thing it can do is withhold an execution the decision authorized.
  */
 export type ObligationDischargeProvider = ObligationDischargeProviderPort;
+
+/**
+ * What the Kernel tells an external authorization port about a request.
+ *
+ * Built by the Kernel from the validated request and its own clock, never
+ * passed through: the port receives no request object it could mutate, no
+ * caller-supplied context bag, and no caller-supplied time. `at` is the
+ * Kernel's trusted instant, so an integration that evaluates consent and
+ * capability windows reads one server-derived time rather than anything a
+ * requester wrote.
+ *
+ * The identity fields are the ones the request declared. They introduce no new
+ * identity authority: the port can only ever narrow an outcome the Kernel
+ * reached about that same declared identity, so a forged identity can at worst
+ * be denied twice.
+ */
+export interface ExternalAuthorizationInput {
+  readonly requestId: string;
+  readonly actorId: string;
+  readonly trustDomainId: string;
+  readonly organizationId?: string;
+  readonly action: string;
+  readonly capability?: string;
+  readonly resourceScope: string;
+  readonly targetType?: string;
+  readonly targetId?: string;
+  /** The Kernel clock's instant for this evaluation. */
+  readonly at: string;
+  /** Aborted when the Kernel stops waiting (its bound elapsed). An answer after that is discarded unread. */
+  readonly signal: AbortSignal;
+}
+
+/**
+ * The only two answers an external authorization port can give.
+ *
+ * There is no grant, scope, identity, reason text or expiry field, and a
+ * response carrying anything beyond `decision` is rejected as malformed: the
+ * port has nothing to say that could create or widen a permission. An `allow`
+ * means only "no objection" — it leaves the Kernel's own outcome exactly as it
+ * was.
+ */
+export type ExternalAuthorizationResponse = { readonly decision: 'allow' } | { readonly decision: 'deny' };
+
+/**
+ * Optional deny-only external authorization port: answers "does an external
+ * authority object to this action?" and nothing else.
+ *
+ * A *sixth* narrow port rather than a widening of `GovernedAuthorityProvider`,
+ * because it answers a different question: governed authority asks whether a
+ * holder controls a quantity of a right, and this asks a configured external
+ * authority (in the pilot, a Soberanía authorization runtime behind a
+ * deployment adapter) for a veto. Folding the two would force a
+ * consent/capability contract into a coverage union that has no place for it.
+ *
+ * Present, it can only turn an `allowed` outcome into `denied`. It is never
+ * consulted to rescue anything, its `allow` changes nothing, and every failure
+ * mode — a throw, a rejection, a malformed answer, no answer within the
+ * operator's bound — denies. Omitted, kernel behaviour is byte-identical to
+ * this layer not existing.
+ */
+export interface ExternalAuthorizationProvider {
+  authorize(input: ExternalAuthorizationInput): Promise<ExternalAuthorizationResponse>;
+}

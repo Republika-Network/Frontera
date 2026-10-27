@@ -25,6 +25,7 @@ export type {
   ObligationInstanceEvaluation,
   ObligationTransitionEvaluation,
   ObligationVerificationEvaluation,
+  ExternalAuthorizationEvaluation,
   KernelEvaluationResult,
 } from './kernel-result.js';
 export type { KernelTrace, KernelTraceStep, KernelTraceStepStatus } from './kernel-trace.js';
@@ -39,6 +40,9 @@ export type {
   GovernedRepresentationProvider,
   ContextProvider,
   ObligationDischargeProvider,
+  ExternalAuthorizationProvider,
+  ExternalAuthorizationInput,
+  ExternalAuthorizationResponse,
   KernelClock,
   KernelIdGenerator,
 } from './ports.js';

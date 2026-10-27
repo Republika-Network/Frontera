@@ -44,6 +44,13 @@ import {
   type KernelObligationFacts,
   type KernelObligationOptions,
 } from './orchestration/obligation-adapter.js';
+import {
+  KernelExternalAuthorizationCapability,
+  applyExternalAuthorizationStep,
+  recordExternalAuthorizationNotConsulted,
+  resolveExternalAuthorization,
+  type KernelExternalAuthorizationOptions,
+} from './orchestration/external-authorization-adapter.js';
 import { applyGovernedAuthorityStep, resolveGovernedAuthorityFacts, type GovernedAuthorityFacts } from './orchestration/governed-authority-adapter.js';
 import { assertKernelInvariants, cloneKernelEvaluationRequest } from './orchestration/kernel-invariants.js';
 import { toGuardActionRequestInput, validateKernelEvaluationRequest } from './orchestration/request-adapter.js';
@@ -187,6 +194,31 @@ export interface AocKernelOptions {
    * Governance Record is unchanged.
    */
   readonly grants?: KernelGrantOptions;
+  /**
+   * Optional deny-only external authorization port: a provider and the bound,
+   * in milliseconds, the Kernel waits for it.
+   *
+   * Configuring it is how a deployment lets an external authority — in the
+   * pilot, a Soberanía authorization runtime behind a deployment adapter — veto
+   * an action this Kernel allowed. **It cannot do anything else.** It is asked
+   * only about an outcome that could proceed, its `allow` leaves that outcome
+   * exactly as the Kernel produced it, and a denial, a throw, a rejection, a
+   * malformed answer or no answer within the bound all turn `allowed` into
+   * `denied`. No answer whatsoever rescues a denial, clears an
+   * `approval_required`, or adds to a grant: this class remains the only
+   * component that produces a decision.
+   *
+   * `evaluate()` asks it after every narrowing step of the Kernel's own, and
+   * only when the result is `allowed`. `enforce()` must ask it before the
+   * executor can run — `guard.enforce()` decides and invokes in one call — so
+   * it is asked there before the wrapped engine decides, and a veto routes the
+   * request through the same preflight-only path an unmet obligation does: the
+   * real decision is produced, and the executor is never reached.
+   *
+   * Omitted, kernel behaviour is byte-identical to this layer not existing: no
+   * call is made, no field is added to the result, and no trace step appears.
+   */
+  readonly externalAuthorization?: KernelExternalAuthorizationOptions;
   /** Defaults to a real-time clock. Tests should supply a deterministic one (see `AOC_KERNEL_INTEGRATION_GUIDE.md`). */
   readonly clock?: KernelClock;
   /** Defaults to `crypto.randomUUID()`-backed ids. Tests should supply a deterministic sequential generator. */
@@ -233,6 +265,7 @@ export class AocKernel {
   private readonly contextCapability: KernelContextCapability | undefined;
   private readonly obligationCapability: KernelObligationCapability | undefined;
   private readonly grantCapability: KernelGrantCapability | undefined;
+  private readonly externalAuthorizationCapability: KernelExternalAuthorizationCapability | undefined;
 
   constructor(options: AocKernelOptions) {
     if (options.recognitionProvider === undefined) {
@@ -269,6 +302,11 @@ export class AocKernel {
     // deployment that declares a grant horizon of zero seconds is rejected when
     // it wires the Kernel, not when a payment is evaluated.
     this.grantCapability = options.grants === undefined ? undefined : new KernelGrantCapability(options.grants);
+    // Composed here for the same reason, and with the same consequence: a port
+    // with no `authorize()` or an unbounded wait is rejected when the Kernel is
+    // wired, not when the first payment waits on it.
+    this.externalAuthorizationCapability =
+      options.externalAuthorization === undefined ? undefined : new KernelExternalAuthorizationCapability(options.externalAuthorization);
 
     for (const adapter of options.adapters ?? []) {
       this.runtime.registerAdapter(adapter);
@@ -369,6 +407,19 @@ export class AocKernel {
     // second would misreport why the request actually stopped.
     const contextResult = applyContextStep(this.contextCapability, contextResolution, authorityResult, request);
 
+    // After every narrowing step of the Kernel's own, so the Kernel has fully
+    // decided before an external authority is asked anything, and asked only
+    // about an `allowed` outcome: no other outcome leaves a veto anything to
+    // act on. Before the obligation and grant steps, so both annotate the
+    // decision as it finally stands — a vetoed action reports grant eligibility
+    // `ineligible`, exactly as every other denial does.
+    const externalResult =
+      this.externalAuthorizationCapability === undefined
+        ? contextResult
+        : contextResult.status === 'allowed'
+          ? applyExternalAuthorizationStep(await resolveExternalAuthorization(this.externalAuthorizationCapability, request, contextResult.evaluatedAt), contextResult)
+          : recordExternalAuthorizationNotConsulted(this.externalAuthorizationCapability, contextResult);
+
     // Last of all, and the only step in this pipeline that cannot change the
     // outcome it is handed. `applyObligationStep` adds a field and reads
     // nothing: `status`, `reasonCodes` and `summary` arrive from the authority
@@ -376,7 +427,7 @@ export class AocKernel {
     // is. `evaluate()` therefore *reports* that exercise is withheld and never
     // enacts it — enacting is `enforce()`'s business, because only `enforce()`
     // has an executor to withhold.
-    const obligationResult = applyObligationStep(obligationResolution, contextResult);
+    const obligationResult = applyObligationStep(obligationResolution, externalResult);
 
     // Last of all, and after the obligation step, because grant eligibility is
     // a function of what the decision concluded *and* of whether every blocking
@@ -512,7 +563,16 @@ export class AocKernel {
     const obligationResolution = await resolveKernelObligations(this.obligationCapability, request, this.ctx.clock.now());
     const obligationFacts: KernelObligationFacts | undefined = obligationResolution === undefined ? undefined : resolveKernelObligationFacts(obligationResolution);
 
-    if (obligationFacts !== undefined && !obligationFacts.eligible) {
+    // Asked *before* the executor can run, for the reason every check above is,
+    // and after them, so a request the Kernel's own pre-execution checks
+    // already refused never reaches an external authority. The answer is fixed
+    // here: whatever the port does after its bound elapses is never read, so a
+    // late `allow` cannot reach `guard.enforce()` below.
+    const externalFacts =
+      this.externalAuthorizationCapability === undefined ? undefined : await resolveExternalAuthorization(this.externalAuthorizationCapability, request, this.ctx.clock.now());
+    const externalWithholds = externalFacts !== undefined && !externalFacts.permits;
+
+    if ((obligationFacts !== undefined && !obligationFacts.eligible) || externalWithholds) {
       // The authorization is produced exactly as it always is, and the executor
       // is never reached.
       //
@@ -551,11 +611,16 @@ export class AocKernel {
               },
             };
       const withheldWithContext = contextFacts === undefined ? withheldWithAuthority : { ...withheldWithAuthority, context: contextFacts.evaluation };
+      // The external veto is folded into the real decision, exactly as
+      // `evaluate()` folds it: an `allowed` decision becomes `denied`, and every
+      // other decision — including the Kernel's own denial — stands as the
+      // Kernel produced it.
+      const withheldWithExternal = applyExternalAuthorizationStep(externalFacts, withheldWithContext);
       // The obligation evaluation is *added*. `status`, `reasonCodes` and
       // `summary` are carried through byte for byte from what the authority and
       // policy layers concluded — an unmet obligation withholds the action, it
       // does not reinterpret the authorization.
-      const withheldWithObligations = { ...withheldWithContext, obligations: obligationFacts.evaluation };
+      const withheldWithObligations = obligationFacts === undefined ? withheldWithExternal : { ...withheldWithExternal, obligations: obligationFacts.evaluation };
       // Reported on the withheld path too, and reporting exactly what is true
       // there: the authorization stands, the obligation is outstanding, and no
       // grant may be derived from it yet. Omitting it here would have made the
@@ -569,7 +634,9 @@ export class AocKernel {
           executed: false,
           // Named only when the decision itself would have permitted execution.
           // On a denial the denial is the reason, and labelling it "withheld by
-          // obligation" would give one outcome two causes.
+          // obligation" would give one outcome two causes. An external veto
+          // always leaves a non-executable status, so a status that is still
+          // executable here can only have been withheld by an obligation.
           ...(isExecutableStatus(withheldResult.status) ? { withheldBy: 'obligation' as const } : {}),
         },
       };
@@ -613,13 +680,16 @@ export class AocKernel {
     // second read taken afterwards would describe a world the decision was not
     // made in.
     const withContext = contextFacts === undefined ? withAuthority : { ...withAuthority, context: contextFacts.evaluation };
+    // Reaching here means the external authority, when configured, raised no
+    // objection; the fold records that and changes nothing.
+    const withExternal = applyExternalAuthorizationStep(externalFacts, withContext);
     // Re-attached rather than re-resolved, for the same reason: the obligations
     // were read before the executor ran, and a second read taken afterwards
     // would describe a world the execution was not permitted in. Nothing here
     // consumes or mutates a discharge — obligation state is derived, never
     // held — so a repeated `enforce()` over the same world produces the same
     // instances and cannot double-discharge anything.
-    const withObligations = obligationFacts === undefined ? withContext : { ...withContext, obligations: obligationFacts.evaluation };
+    const withObligations = obligationFacts === undefined ? withExternal : { ...withExternal, obligations: obligationFacts.evaluation };
     // Derived from the same result the caller receives, after the executor has
     // run. It records what bounded permission this authorization would produce;
     // it does not gate the executor, and nothing here has issued a grant — see
