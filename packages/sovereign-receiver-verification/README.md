@@ -57,6 +57,27 @@ receiver rules around them:
 9. **Claims.** `verifySignedSovereignClaim` must report the structure, digest and signature as valid
    and the binding as `verified` for the claim's own signed issuer.
 
+## Options and content bytes
+
+Options are read once into a private snapshot before anything else runs. Changing the options
+object, or the bytes it pointed at, after the call starts has no effect.
+
+- **Recognized options are never dropped.** They are found wherever they are defined on the options
+  object or its prototypes, up to `Object.prototype`. That covers own or inherited properties,
+  enumerable or not, and data properties or getters. Each is read exactly once, so a getter cannot
+  answer differently later. A getter or proxy trap that throws rejects the call.
+- **Unrecognized options are refused** (`INVALID_OPTIONS`) rather than ignored, wherever they appear
+  in that chain, enumerable or not. The one exception is a class prototype's `constructor`. Class
+  instances therefore work only when they expose nothing but recognized options (`#private` fields
+  are fine).
+- **`Object.prototype` is not a configuration source.** A recognized option that reads as defined
+  without appearing in the inspected chain is refused. Such a value would come from a polluted
+  global prototype, or from a proxy hiding its keys.
+- **`contentBytes` must be a genuine `Uint8Array`**, checked by the intrinsic typed-array brand.
+  Subclasses such as `Buffer` are accepted; proxies, look-alike objects and other typed arrays are
+  refused. The bytes are copied into a fresh intrinsic buffer without consulting the caller's
+  species constructor. The snapshot therefore never aliases memory the caller can still change.
+
 ## Issuers
 
 Issuer binding follows Protocol rc.3 (the SOBE-SEC-01 fixes). A key binds only when it produced the

@@ -39,6 +39,16 @@ const OPTION_KEYS = new Set([
   'contentBytes',
 ]);
 
+/** How many prototype levels of an options object are inspected before it is refused. */
+const MAX_OPTIONS_PROTOTYPE_DEPTH = 8;
+
+// Intrinsics captured at load, so neither a caller's subclass nor a later
+// patch of the prototypes can change how content bytes are recognized or copied.
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const typedArrayTag = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag)!.get!;
+const typedArrayLength = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'length')!.get!;
+const typedArraySet = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'set')!.value as (source: ArrayLike<number>) => void;
+
 const PORTABILITY_REASONS: Readonly<Record<SovereigntyPortabilityReasonCode, Reason>> = {
   [SOVEREIGNTY_PORTABILITY_REASON_CODES.invalidBundle]: 'BUNDLE_INVALID',
   [SOVEREIGNTY_PORTABILITY_REASON_CODES.invalidJson]: 'BUNDLE_MALFORMED',
@@ -229,18 +239,38 @@ async function verifyStrict(bundleText: unknown, rawOptions: unknown): Promise<R
 /**
  * Reads every option exactly once into a plain snapshot, so a getter or proxy
  * cannot show one value to validation and another to verification.
+ *
+ * Layout policy: the options object and its prototypes up to (not including)
+ * `Object.prototype` are inspected without invoking anything but proxy traps.
+ * A recognized option found there, whether own or inherited, enumerable or not,
+ * a data property or a getter, is read once and honoured: a constraint is never
+ * silently dropped. Any other string key there (bar a prototype's `constructor`)
+ * is refused, because an unrecognized option must never be silently ignored.
+ * `Object.prototype` is not a configuration source: a recognized option that
+ * reads as defined without appearing in the inspected chain (a polluted global
+ * prototype, or a proxy hiding its keys) is refused.
  */
 function snapshotOptions(raw: unknown): OptionsOutcome {
   const invalid = { ok: false, reason: 'INVALID_OPTIONS' } as const;
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return invalid;
-  let keys: string[];
   const values = new Map<string, unknown>();
   try {
-    keys = Object.keys(raw);
-    // An unrecognized option is refused rather than ignored: a misspelled or
-    // unsupported relaxation must never be silently dropped.
-    if (keys.some((key) => !OPTION_KEYS.has(key))) return invalid;
-    for (const key of keys) values.set(key, (raw as Record<string, unknown>)[key]);
+    const located = new Set<string>();
+    let level: object | null = raw;
+    for (let depth = 0; level !== null && level !== Object.prototype; depth += 1) {
+      if (depth === MAX_OPTIONS_PROTOTYPE_DEPTH) return invalid;
+      for (const key of Reflect.ownKeys(level)) {
+        if (typeof key !== 'string' || (depth > 0 && key === 'constructor')) continue;
+        if (!OPTION_KEYS.has(key)) return invalid;
+        located.add(key);
+      }
+      level = Reflect.getPrototypeOf(level);
+    }
+    for (const key of OPTION_KEYS) {
+      const value: unknown = Reflect.get(raw, key);
+      if (!located.has(key) && value !== undefined) return invalid;
+      values.set(key, value);
+    }
   } catch {
     return invalid;
   }
@@ -281,10 +311,16 @@ function snapshotOptions(raw: unknown): OptionsOutcome {
   const suppliedBytes = values.get('contentBytes');
   let contentBytes: Uint8Array | undefined;
   if (suppliedBytes !== undefined) {
-    if (!(suppliedBytes instanceof Uint8Array)) return invalid;
     try {
-      // A private copy: the caller cannot change the bytes mid-verification.
-      contentBytes = Uint8Array.prototype.slice.call(suppliedBytes);
+      // The intrinsic brand: a real Uint8Array (subclasses such as Buffer
+      // included); a proxy or an object with a borrowed prototype has none.
+      if (Reflect.apply(typedArrayTag, suppliedBytes, []) !== 'Uint8Array') return invalid;
+      // A private copy in a fresh intrinsic buffer, read from the source's
+      // internal slots. Unlike `slice`, no species constructor is consulted, so
+      // the snapshot can never alias bytes the caller can still change.
+      const length = Reflect.apply(typedArrayLength, suppliedBytes, []) as number;
+      contentBytes = new Uint8Array(length);
+      Reflect.apply(typedArraySet, contentBytes, [suppliedBytes]);
     } catch {
       return invalid;
     }
