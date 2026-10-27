@@ -1,0 +1,74 @@
+# Frontera Authority synthetic pilot — the HOST machine (AUTH-04D2A).
+#
+# An override of the PROD-03 kit (deploy/pilot/compose.yaml), never a copy:
+#
+#   docker compose -f deploy/pilot/compose.yaml -f deploy/authority-pilot/compose.host.yaml ...
+#
+# Stage 1 (this file alone): the Host, its stores and the synthetic policy,
+# against the witness on ANOTHER machine. The human-decision authority stays
+# disabled (the Host's default). Stage 2 adds compose.authority.yaml at the
+# founder-approved cutover, and only then.
+#
+# Fixed here, so .env cannot weaken it:
+#   - the witness is remote: COMPOSE_PROFILES must not enable reference-witness,
+#     and the endpoint is https (the Host refuses plain http off loopback);
+#   - shutdown timings that satisfy AUTH-04D1R (docs/deployment/AUTHORITY_PILOT_DEPLOYMENT.md §5):
+#       witness calls per decision    9  (three witnessed transitions × three calls)
+#       9 × 2000 ms × 1 attempt   = 18 s  <  AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS 20 s
+#       stop_grace_period 75 s    >= 2 × 20 s (HTTP drain + authority drain) + 35 s margin
+#   - the synthetic, evidence-free policy whose only executor target can never
+#     resolve (governed-actions.synthetic-pilot.json);
+#   - no witness material on this machine: the PROD-03 witness services and
+#     their volume are REMOVED from the project (`!reset null`, Docker Compose
+#     2.24 or later), not merely left behind a profile. `run witness-init` and
+#     `--profile reference-witness` answer "no such service" here; the witness
+#     receipt key is generated only on the witness machine (compose.witness.yaml).
+#     Every line carrying `!reset` belongs to this isolation, and CI proves that
+#     the project without them is refused (job authority-pilot-config).
+
+services:
+  witness-init: !reset null
+  authority-witness: !reset null
+
+  frontera:
+    # PROD-03 waits for authority-witness when its profile is enabled; that service no longer exists here.
+    depends_on: !reset {}
+    environment: &authority-pilot-host
+      AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS: "20000"
+      AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TIMEOUT_MS: "2000"
+      AOC_ENTERPRISE_AUTHORITY_FRESHNESS_MAX_ATTEMPTS: "1"
+      # The remote witness, from .env: https://<witness host>:443. Never the bundled reference witness.
+      AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT: ${AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT:?set the remote witness https endpoint in .env}
+    volumes:
+      - ../authority-pilot/governed-actions.synthetic-pilot.json:/etc/frontera/governed-actions.json:ro,z
+    stop_grace_period: 75s
+
+  config-check:
+    environment: *authority-pilot-host
+    volumes:
+      - ../authority-pilot/governed-actions.synthetic-pilot.json:/etc/frontera/governed-actions.json:ro,z
+
+  pilot-readiness:
+    environment: *authority-pilot-host
+    volumes:
+      - ../authority-pilot/governed-actions.synthetic-pilot.json:/etc/frontera/governed-actions.json:ro,z
+
+  authority-init:
+    # docker compose ... run --rm -T authority-init --secret FRONTERA_OPERATOR_KEY_ADMIN ... >> <secret store>
+    # The Host's half of the split initialization: the authority signing key,
+    # its verification set and the operator credentials. Never a witness key.
+    # The marker on the state volume refuses a second run.
+    image: ${FRONTERA_IMAGE:-frontera-host:pilot}
+    profiles: ["tools"]
+    network_mode: none
+    entrypoint: ["node", "scripts/deploy/generate-pilot-secrets.mjs", "--authority-only"]
+    command: []
+    environment:
+      FRONTERA_AUTHORITY_INIT_MARKER: /var/lib/frontera/.authority-initialized
+    volumes:
+      - frontera-state:/var/lib/frontera
+    healthcheck:
+      disable: true
+
+volumes:
+  frontera-witness: !reset null

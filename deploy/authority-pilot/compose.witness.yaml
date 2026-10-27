@@ -1,0 +1,66 @@
+# Frontera Authority synthetic pilot — the WITNESS machine (AUTH-04D2A).
+#
+# The CORE-07 reference authority-state witness on its own machine, volume and
+# failure domain, never beside the Host's stores:
+#
+#   docker compose -f deploy/authority-pilot/compose.witness.yaml --env-file deploy/authority-pilot/.env.witness ...
+#
+# The reference witness binds loopback only (it refuses anything else), so it
+# shares this machine's network namespace and listens on 127.0.0.1:8444. TLS,
+# and the allow-list that admits
+# the Host machine and nobody else, belong to the ingress on this machine
+# (deploy/authority-pilot/nginx/witness.conf) and to the machine's firewall.
+# It holds no Host secret: its own receipt key (generated here with
+# `witness-init`, --witness-only) and the credential the Host presents.
+#
+# The REFERENCE witness: a separate process with its own key and database. NOT
+# a ledger, an HSM or a timestamping authority. Its state must never be lost
+# or rolled back (a stale copy reads as a fork and is refused): keep
+# FRONTERA_WITNESS_DATA_DIR on replicated block storage, never on a snapshot
+# schedule shared with the Host.
+
+name: frontera-authority-witness
+
+x-frontera-image: &frontera-image
+  image: ${FRONTERA_IMAGE:-frontera-host:pilot}
+
+services:
+  authority-witness:
+    <<: *frontera-image
+    command: ["node", "scripts/run-reference-authority-state-witness.mjs"]
+    environment:
+      FRONTERA_REFERENCE_WITNESS_DB: /var/lib/frontera-witness/witness.sqlite
+      FRONTERA_REFERENCE_WITNESS_KEY_FILE: /var/lib/frontera-witness/receipt-key.pem
+      FRONTERA_REFERENCE_WITNESS_HOST: 127.0.0.1
+      FRONTERA_REFERENCE_WITNESS_PORT: "8444"
+      # From witness-init --witness-only. Empty values are refused by the witness itself at start.
+      FRONTERA_REFERENCE_WITNESS_ID: ${AOC_ENTERPRISE_AUTHORITY_FRESHNESS_WITNESS_ID:-}
+      FRONTERA_REFERENCE_WITNESS_TOKEN: ${AOC_ENTERPRISE_AUTHORITY_FRESHNESS_TOKEN:-}
+    # This machine's loopback: the TLS ingress here is the one way in; no port is published.
+    network_mode: host
+    volumes:
+      - ${FRONTERA_WITNESS_DATA_DIR:?set the replicated-volume mount point in .env.witness}:/var/lib/frontera-witness
+    healthcheck:
+      test: ["CMD", "node", "scripts/deploy/probe.mjs", "tcp", "8444"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  witness-init:
+    # docker compose ... run --rm -T witness-init --witness-only
+    # The witness's half of the split initialization: persists the receipt key
+    # here and prints only the witness id, credential and PUBLIC key. No network.
+    <<: *frontera-image
+    profiles: ["tools"]
+    network_mode: none
+    entrypoint: ["node", "scripts/deploy/generate-pilot-secrets.mjs", "--witness-only"]
+    command: []
+    environment:
+      FRONTERA_REFERENCE_WITNESS_KEY_FILE: /var/lib/frontera-witness/receipt-key.pem
+    volumes:
+      - ${FRONTERA_WITNESS_DATA_DIR:?set the replicated-volume mount point in .env.witness}:/var/lib/frontera-witness
+    healthcheck:
+      disable: true

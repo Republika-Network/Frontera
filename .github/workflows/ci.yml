@@ -145,6 +145,84 @@ jobs:
           echo "- Artifact: ${ARTIFACT_URL}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Artifact zip digest: ${ARTIFACT_DIGEST}" >> "$GITHUB_STEP_SUMMARY"
 
+  authority-pilot-config:
+    # AUTH-04D2A: the synthetic Authority pilot's deployment configuration
+    # (deploy/authority-pilot/), qualified with no cloud resource, DNS name,
+    # real certificate or secret: the Compose overlays as Compose resolves them,
+    # then each machine's nginx ingress (the distribution package, as the
+    # runbook installs it, with a throwaway self-signed certificate) against a
+    # stub upstream on loopback. Not a deployment.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build:authority-web
+      - name: Compose overlays resolve as intended (nothing is built, pulled or started)
+        run: |
+          cp deploy/authority-pilot/host.env.example deploy/pilot/.env
+          cp deploy/authority-pilot/witness.env.example "$RUNNER_TEMP/witness.env"
+          # Synthetic values where the templates hold placeholders the configuration's syntax depends on.
+          sed -i "s#^AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT=.*#AOC_ENTERPRISE_AUTHORITY_FRESHNESS_ENDPOINT='https://frontera-witness.invalid'#" deploy/pilot/.env
+          sed -i "s#^FRONTERA_WITNESS_DATA_DIR=.*#FRONTERA_WITNESS_DATA_DIR=/srv/frontera-witness-ci#" "$RUNNER_TEMP/witness.env"
+          # Every PROD-03 profile is enabled on the Host side: a service hidden behind a profile still counts.
+          host="docker compose -f deploy/pilot/compose.yaml -f deploy/authority-pilot/compose.host.yaml --profile tools --profile reference-witness"
+          $host config --format json > "$RUNNER_TEMP/host.json"
+          $host -f deploy/authority-pilot/compose.authority.yaml config --format json > "$RUNNER_TEMP/cutover.json"
+          docker compose -f deploy/authority-pilot/compose.witness.yaml --env-file "$RUNNER_TEMP/witness.env" --profile tools config --format json > "$RUNNER_TEMP/witness.json"
+          node scripts/deploy/qualify-authority-pilot.mjs compose host "$RUNNER_TEMP/host.json"
+          node scripts/deploy/qualify-authority-pilot.mjs compose cutover "$RUNNER_TEMP/cutover.json"
+          node scripts/deploy/qualify-authority-pilot.mjs compose witness "$RUNNER_TEMP/witness.json"
+          # The witness services cannot be invoked through the Host project (dry run: nothing is created).
+          for service in witness-init authority-witness; do
+            if $host --dry-run run --rm --no-deps "$service" > "$RUNNER_TEMP/invoke.log" 2>&1; then cat "$RUNNER_TEMP/invoke.log"; echo "::error::$service can be run on the Host"; exit 1; fi
+            grep -q "no such service: $service" "$RUNNER_TEMP/invoke.log" || { cat "$RUNNER_TEMP/invoke.log"; exit 1; }
+            echo "  ok  Host: run $service -> no such service"
+          done
+          # Adversarial regression: the Host overlay without its isolation (every `!reset` line,
+          # i.e. the overlay as first proposed) must be refused on its resolved form.
+          grep -v '!reset' deploy/authority-pilot/compose.host.yaml > deploy/authority-pilot/compose.host.unisolated.yaml
+          docker compose -f deploy/pilot/compose.yaml -f deploy/authority-pilot/compose.host.unisolated.yaml --profile tools --profile reference-witness config --format json > "$RUNNER_TEMP/unisolated.json"
+          rm deploy/authority-pilot/compose.host.unisolated.yaml
+          if node scripts/deploy/qualify-authority-pilot.mjs compose host "$RUNNER_TEMP/unisolated.json" > "$RUNNER_TEMP/unisolated.log" 2>&1; then cat "$RUNNER_TEMP/unisolated.log"; echo "::error::the unisolated Host configuration was accepted"; exit 1; fi
+          grep -q 'FAIL — Host: no witness-init service' "$RUNNER_TEMP/unisolated.log" || { cat "$RUNNER_TEMP/unisolated.log"; exit 1; }
+          echo "  ok  the unisolated Host configuration is refused: $(grep FAIL "$RUNNER_TEMP/unisolated.log")"
+          rm deploy/pilot/.env
+      - name: Install nginx from the distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nginx
+          nginx -v
+      - name: Host machine ingress, installed as the runbook installs it
+        run: |
+          sudo rm -f /etc/nginx/sites-enabled/default
+          sudo mkdir -p /etc/nginx/frontera /srv/frontera-authority-web /var/www/frontera-acme /etc/letsencrypt/live/authority.frontera-systems.com
+          sudo cp deploy/authority-pilot/nginx/authority.conf /etc/nginx/conf.d/frontera-authority.conf
+          sudo cp deploy/authority-pilot/nginx/authority-gateway-proxy.conf deploy/authority-pilot/nginx/authority-web-headers.conf /etc/nginx/frontera/
+          sudo cp -r apps/authority-web/dist/. /srv/frontera-authority-web/
+          sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=authority.frontera-systems.com" -addext "subjectAltName=DNS:authority.frontera-systems.com" -keyout /etc/letsencrypt/live/authority.frontera-systems.com/privkey.pem -out /etc/letsencrypt/live/authority.frontera-systems.com/fullchain.pem
+          sudo install -m 644 /etc/letsencrypt/live/authority.frontera-systems.com/fullchain.pem "$RUNNER_TEMP/authority-ca.pem"
+          sudo nginx -t
+          sudo systemctl restart nginx
+          node scripts/deploy/qualify-authority-pilot.mjs ingress --ca "$RUNNER_TEMP/authority-ca.pem"
+          sudo install -m 644 /var/log/nginx/frontera-authority.access.log "$RUNNER_TEMP/authority-access.log"
+          node scripts/deploy/qualify-authority-pilot.mjs logs "$RUNNER_TEMP/authority-access.log"
+      - name: Witness machine ingress (the Host ingress removed first; they are different machines)
+        run: |
+          sudo rm -f /etc/nginx/conf.d/frontera-authority.conf
+          sudo mkdir -p /etc/letsencrypt/live/frontera-witness.invalid
+          sudo cp deploy/authority-pilot/nginx/witness.conf /etc/nginx/conf.d/frontera-witness.conf
+          sudo cp deploy/authority-pilot/nginx/witness-allowlist.conf /etc/nginx/frontera/
+          sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=frontera-witness.invalid" -addext "subjectAltName=DNS:frontera-witness.invalid" -keyout /etc/letsencrypt/live/frontera-witness.invalid/privkey.pem -out /etc/letsencrypt/live/frontera-witness.invalid/fullchain.pem
+          sudo install -m 644 /etc/letsencrypt/live/frontera-witness.invalid/fullchain.pem "$RUNNER_TEMP/witness-ca.pem"
+          sudo nginx -t
+          sudo systemctl restart nginx
+          node scripts/deploy/qualify-authority-pilot.mjs witness --ca "$RUNNER_TEMP/witness-ca.pem"
+
   authority-web-preview:
     # AUTH-04C: reproducible build of the Frontera Authority web client (static
     # files, browser ES modules) and a private CI artifact for review. Not a
