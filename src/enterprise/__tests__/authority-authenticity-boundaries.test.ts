@@ -179,9 +179,11 @@ describe('Authority authenticity — signer and verifier are distinct capabiliti
     // resumes a withheld decision into a grant).
     // TRADE-04C-S1 adds one verification — of the delegated-offer signing capability, under its own domain. Still no signing member.
     // G-02B adds one more verification — of a generic execution capability, under its own domain.
-    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyApprovalState', 'verifyDelegatedOfferCapability', 'verifyExecutionCapability', 'verifyGrant', 'verifyObligationDischargeState', 'verifyRevocation', 'verifyRevocationState']);
+    // AUTH-03 adds one more — of the human identity store's signed state (TD-5 narrowed by the founder to exactly that commitment).
+    assert.deepEqual(Object.keys(verifier).sort(), ['trustedKeyIds', 'verifyApprovalState', 'verifyDelegatedOfferCapability', 'verifyExecutionCapability', 'verifyGrant', 'verifyHumanIdentityState', 'verifyObligationDischargeState', 'verifyRevocation', 'verifyRevocationState']);
     // TRADE-04C-S1: and one structured signing operation — a capability, signed only after the issuance rule accepts it. No key member, no byte signing.
-    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signApprovalState', 'signDelegatedOfferCapability', 'signGrant', 'signObligationDischargeState', 'signRevocation', 'signRevocationState']);
+    // AUTH-03: and the human identity store's state commitment — a store head, never a passport or credential.
+    assert.deepEqual(Object.keys(signer).sort(), ['activeKeyId', 'algorithm', 'signApprovalState', 'signDelegatedOfferCapability', 'signGrant', 'signHumanIdentityState', 'signObligationDischargeState', 'signRevocation', 'signRevocationState']);
     // G-02B: the execution-capability operation exists only on a signer built with its own issuance policy.
     assert.equal('signExecutionCapability' in signer, false);
   });

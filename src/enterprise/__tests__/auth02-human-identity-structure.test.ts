@@ -19,10 +19,10 @@ const code = (file: string): string => read(file).replace(/\/\*[\s\S]*?\*\//g, '
 
 describe('AUTH-02 structure — the human identity module', () => {
   it('is the module the tests expect', () => {
-    assert.deepEqual(files.map((file) => file.slice(MODULE.length + 1)).sort(), ['chain.ts', 'contracts.ts', 'index.ts', 'relying-party.ts', 'service.ts', 'sqlite-human-identity-store.ts', 'webauthn.ts']);
+    assert.deepEqual(files.map((file) => file.slice(MODULE.length + 1)).sort(), ['chain.ts', 'contracts.ts', 'decision-challenge.ts', 'index.ts', 'relying-party.ts', 'service.ts', 'sqlite-human-identity-store.ts', 'webauthn.ts']);
   });
 
-  it('imports only node builtins, its own files, better-sqlite3, the WebAuthn library and the operator principal type', () => {
+  it('imports only node builtins, its own files, better-sqlite3, the WebAuthn library, the operator principal type and (AUTH-03) the CORE-02 signer and CORE-07 freshness boundaries', () => {
     for (const file of files) {
       for (const [, specifier] of code(file).matchAll(/(?:from|import\()\s*'([^']+)'/g)) {
         const allowed =
@@ -31,7 +31,14 @@ describe('AUTH-02 structure — the human identity module', () => {
           specifier === 'better-sqlite3' ||
           specifier === '@simplewebauthn/server' ||
           specifier === '@simplewebauthn/server/helpers' ||
-          specifier === '../operator-control/operator-authenticator.js';
+          specifier === '../operator-control/operator-authenticator.js' ||
+          // AUTH-03: the signed head (CORE-02) and its witness (CORE-07), exactly as CORE-05's store uses them.
+          specifier === '../authority-authenticity/custody.js' ||
+          specifier === '../authority-authenticity/signer.js' ||
+          specifier === '../authority-authenticity/verifier.js' ||
+          specifier === '../authority-state-freshness/checkpoint.js' ||
+          specifier === '../authority-state-freshness/errors.js' ||
+          specifier === '../authority-state-freshness/session.js';
         assert.ok(allowed, `${file} imports '${specifier!}'`);
       }
     }
@@ -54,9 +61,11 @@ describe('AUTH-02 structure — the human identity module', () => {
     }
   });
 
-  it('handles no private key material: it never generates, imports, exports or uses a private key, and never signs', () => {
+  it('handles no private key material: it never generates, imports, exports or uses a private key, and signs only through the authority signer', () => {
     for (const file of files) {
       assert.equal(/createPrivateKey|generateKeyPair|privateKey|pkcs8|\bsign\(|createSign/.test(code(file)), false, file);
+      // AUTH-03 (TD-5 as narrowed by the founder): the one signing operation reached is the store-state commitment.
+      for (const [operation] of code(file).matchAll(/\.sign[A-Z]\w*/g)) assert.equal(operation, '.signHumanIdentityState', `${file} reaches ${operation}`);
     }
   });
 

@@ -18,15 +18,18 @@
  *   *may*.
  * - **Not a session.** Recognizing a human returns a value; it issues no
  *   cookie, token or bearer, and nothing here is reachable over HTTP.
- * - **Not approval signing.** Binding a passkey assertion to one exact
- *   approval subject is AUTH-03.
+ * - **Decision authorization (AUTH-03)** binds a passkey assertion to one exact
+ *   approve or reject of one exact CORE-05 subject (`decision-challenge.ts`),
+ *   and yields decision evidence. Whether that verdict counts is still
+ *   CORE-05's: the command is given to CORE-05, which re-checks standing.
  *
  * Private key material never exists here: a passkey's private key stays in
  * the user's authenticator. Only public keys, identifiers, counters and
  * verifiers of random secrets are stored.
  */
 
-export const HUMAN_IDENTITY_STORE_SCHEMA_VERSION = 1;
+/** v2 (AUTH-03): the signed head. v1 stores (AUTH-02, never composed by any Host) are refused, never migrated. */
+export const HUMAN_IDENTITY_STORE_SCHEMA_VERSION = 2;
 
 export type HumanPrincipalState = 'active' | 'revoked';
 
@@ -159,7 +162,11 @@ export type HumanIdentityErrorCode =
   /** The store's history does not verify, or the file belongs to another organization or schema. Nothing is believed. */
   | 'HUMAN_IDENTITY_STORE_CORRUPT'
   /** The store could not commit (for example, another writer holds the lock). Nothing was recorded. */
-  | 'HUMAN_IDENTITY_STORE_UNAVAILABLE';
+  | 'HUMAN_IDENTITY_STORE_UNAVAILABLE'
+  /** The store needs an authority signer that signs human identity state, and its verifier; or the file is of another schema. */
+  | 'HUMAN_IDENTITY_STORE_UNSUPPORTED'
+  /** The decision challenge was already consumed by an authorized decision. Its outcome can be read; it never authorizes again. */
+  | 'HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED';
 
 export class HumanIdentityError extends Error {
   constructor(

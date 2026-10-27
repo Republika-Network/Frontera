@@ -1,6 +1,7 @@
 import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
+import type { HumanIdentityStateCommitment } from '../human-identity/chain.js';
 
 /**
  * CORE-07 — the one checkpoint model every rollback-sensitive authority store
@@ -90,11 +91,18 @@ export type AuthorityStoreKind = (typeof AUTHORITY_STORE_KINDS)[number];
  *   initiate (and each rail payment identity to one execution), whose rollback
  *   could make a payment already initiated look new, and so initiable twice.
  *
+ * And one authority-material state kept outside the authority-store ceremony:
+ *
+ * - `human-identity-state` (AUTH-03): the signed history of human approvers,
+ *   their passkeys and every consumed ceremony and decision challenge, whose
+ *   rollback could resurrect a revoked passkey or a used decision challenge,
+ *   and so let a human decision be authorized again.
+ *
  * The witness treats each exactly like any other slot. This module knows
  * nothing else about them: each store lives in its own payment composition
  * edge, outside CORE, and maps itself onto a checkpoint.
  */
-export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations'] as const;
+export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations', 'human-identity-state'] as const;
 
 export type AuthorityStateKind = (typeof AUTHORITY_STATE_KINDS)[number];
 
@@ -275,6 +283,11 @@ export function obligationDischargeStateCheckpoint(state: ObligationDischargeSta
 }
 
 /** The approval store's signed chain head (CORE-05). Organization-bound by the head itself. */
+/** AUTH-03: the human identity store's signed head, anchored exactly like an authority store's. */
+export function humanIdentityStateCheckpoint(state: HumanIdentityStateCommitment): AuthorityStateCheckpoint {
+  return { stateKind: 'human-identity-state', organizationId: state.organizationId, storeId: state.storeId, sequence: state.sequence, stateDigest: state.chainDigest };
+}
+
 export function approvalStateCheckpoint(state: ApprovalStateCommitment): AuthorityStateCheckpoint {
   return { stateKind: 'approval-state', organizationId: state.organizationId, storeId: state.storeId, sequence: state.sequence, stateDigest: state.chainDigest };
 }
