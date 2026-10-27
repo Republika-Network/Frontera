@@ -762,7 +762,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     ]) {
       const answer = await rawExchange(executor.port, `POST /v1/deployments/${SYNTHETIC_ENV} HTTP/1.1\r\n${headers}Connection: close\r\n\r\n${payload}`);
       const status = statusOf(answer);
-      assert.ok(status >= 400 && status < 500, `refused without a capability: ${answer.slice(0, 120)}`);
+      assert.ok(status >= 400 && 500 > status, `refused without a capability: ${answer.slice(0, 120)}`);
     }
     assert.equal(effects(), effectsBefore);
   });
