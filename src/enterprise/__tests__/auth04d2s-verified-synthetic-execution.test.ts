@@ -369,8 +369,10 @@ async function provision(baseUrl: string): Promise<World> {
   const org = await provisionOrganization(baseUrl);
   const syntheticCredential = await onboardSyntheticAgent(baseUrl);
   await standing(baseUrl, await operatorActor(baseUrl, CTO.operatorId), APPROVE_RELEASE, [PROD, SYNTHETIC_ENV], 'approval-standing-cto');
-  // approver-a and approver-b already have their Kernel-Authority actors (CTRL-04's provisioning): one more standing each.
-  for (const operatorId of ['approver-a', 'approver-b']) await standing(baseUrl, `operator:${operatorId}`, APPROVE_RELEASE, [SYNTHETIC_ENV], `approval-standing-${operatorId}-synthetic`);
+  // Two humans whose only approve-release standing is over the synthetic environment: approver-e (CTRL-04 gave it
+  // execution standing only, its actor exists) and approver-nostanding (no actor yet).
+  await standing(baseUrl, 'operator:approver-e', APPROVE_RELEASE, [SYNTHETIC_ENV], 'approval-standing-approver-e-synthetic');
+  await standing(baseUrl, await operatorActor(baseUrl, 'approver-nostanding'), APPROVE_RELEASE, [SYNTHETIC_ENV], 'approval-standing-approver-nostanding-synthetic');
   return { releaseCredential: org.agentCredential, syntheticCredential };
 }
 
@@ -536,7 +538,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     dir = workspace.dir();
     booted = await boot(dir, witness, domain.publicKeyPem, true);
     world = await provision(booted.baseUrl);
-    for (const operatorId of [CTO.operatorId, 'approver-a', 'approver-b']) humans.set(operatorId, await enrol(booted.authority, operatorId));
+    for (const operatorId of [CTO.operatorId, 'approver-a', 'approver-e', 'approver-nostanding']) humans.set(operatorId, await enrol(booted.authority, operatorId));
     route = relay.target;
   });
 
@@ -716,11 +718,11 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
 
   it('12 — revoked human standing after the passkey verdict withdraws the unused approval: the retry does not execute', async () => {
     const before = footprint();
-    const approver = human('approver-b');
+    const approver = human('approver-nostanding');
     const { key, view } = await pendingSynthetic('auth04d2s-standing');
     const { decided } = await decide(await signedIn(booted.gatewayPort, approver), approver, view, 'approve');
     assert.equal(decided.status, 200, decided.text);
-    const revoked = await call(booted.baseUrl, 'POST', '/api/admin/authority/entities/authority-grant/approval-standing-approver-b-synthetic/revoke', { authorization: AUTH.responder, body: { reason: 'left the change board' } });
+    const revoked = await call(booted.baseUrl, 'POST', '/api/admin/authority/entities/authority-grant/approval-standing-approver-nostanding-synthetic/revoke', { authorization: AUTH.responder, body: { reason: 'left the change board' } });
     assert.equal(revoked.status, 200, revoked.text);
     assert.equal((await viewOf(view.requestId))?.state.status, 'pending', 'CORE-05 re-resolves standing at every read');
     assertAwaitingApproval(await govern(booted.baseUrl, world.syntheticCredential, synthetic(key)));
@@ -731,17 +733,17 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
   it('13–14 — a revoked passkey credential cannot decide, and a replayed assertion records nothing new', async () => {
     const before = footprint();
     // 14. Replay: the same assertion submitted twice records exactly one verdict.
-    const approverA = human('approver-a');
+    const approverE = human('approver-e');
     const replayed = await pendingSynthetic('auth04d2s-replay');
-    const browser = await signedIn(booted.gatewayPort, approverA);
-    const first = await decide(browser, approverA, replayed.view, 'reject');
+    const browser = await signedIn(booted.gatewayPort, approverE);
+    const first = await decide(browser, approverE, replayed.view, 'reject');
     assert.equal(first.decided.status, 200, first.decided.text);
     const again = await browser.send('POST', '/authority/v1/decisions', { assertion: first.assertion });
     assert.equal(again.status, 409, again.text);
     assert.equal((again.body['error'] as Record<string, unknown> | undefined)?.['code'], 'HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED');
     assert.equal((await viewOf(replayed.view.requestId))?.state.verdicts.length, 1);
     // 13. Revocation: a credential revoked between challenge and submission decides nothing.
-    const lost = await enrol(booted.authority, 'approver-a');
+    const lost = await enrol(booted.authority, 'approver-e');
     const target = await pendingSynthetic('auth04d2s-revoked-credential');
     const session = await signedIn(booted.gatewayPort, lost);
     const challenge = await session.send('POST', `/authority/v1/approvals/${encodeURIComponent(target.view.approvalRequestId)}/decision-challenges`, { subjectDigest: target.view.subjectDigest, verdict: 'approve' });
