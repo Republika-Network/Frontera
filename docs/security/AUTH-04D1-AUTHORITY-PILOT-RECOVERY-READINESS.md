@@ -122,7 +122,7 @@ Proven on the shipped Host by `auth04d1-authority-recovery-host.test.ts`:
 | Wrong organization | **Refused** before any file is read |
 | **Old identity state, witness advanced** (backup S0 from before a revocation and a decision) | Restore succeeds (it cannot know freshness). **The Host refuses to start** with `AUTHORITY_FRESHNESS_ROLLBACK_DETECTED`. No authority was handed out (zero adapter calls), and the witness is byte-identical before and after. |
 | **Revoked credential** (S0 holds the lost device active) | It cannot come back, because S0 is refused as above. On the current restore, the revoked device's sign-in is refused. |
-| **Consumed decision challenge** | On the current restore, replaying the original assertion is refused with `HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED` (consumption is checked against the verified history, before expiry). CORE-05 still holds exactly one verdict. Under an old restore, the Host never starts. |
+| **Consumed decision challenge** | On the current restore, replaying the original assertion is refused: the decision channel refuses it because the request is already decided, and the restored identity store refuses it with `HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED` (consumption is checked against the verified history, before expiry). CORE-05 still holds exactly one verdict. Under an old restore, the Host never starts. |
 | S1, after one more sign-in on the recovered Host | **Refused** (`ROLLBACK_DETECTED`): every sign-in appends a witnessed `credential_used` row |
 | Stale identity store alone, or stale approval store alone, inside an otherwise current restore | **Refused** (`ROLLBACK_DETECTED`) |
 | Witness unreachable | **Refused** (`AUTHORITY_FRESHNESS_UNAVAILABLE`) |
