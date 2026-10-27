@@ -78,6 +78,7 @@ test('the contract carries no secret and configures no infrastructure', () => {
   assert.equal(/Bearer [A-Za-z0-9._~+/-]{16}|BEGIN [A-Z ]*KEY|fre1\.|[0-9a-f]{64}|AOC_ENTERPRISE_API_KEYS|_TOKEN"/.test(text), false);
   assert.equal(/password/i.test(text), false);
   assert.equal(/\b(\d{1,3}\.){3}\d{1,3}\b/.test(text.replace(/127\.0\.0\.1/g, '')), false, 'no address other than loopback');
-  assert.deepEqual(readdirSync(join(ROOT, 'deploy/authority-pilot')), ['ingress-contract.json'], 'a contract, not a deployment kit');
+  // AUTH-04D2A added the pilot's configuration beside the contract; nothing here deploys (tests/authority-pilot-deployment-kit.structure.test.mjs).
+  assert.deepEqual(readdirSync(join(ROOT, 'deploy/authority-pilot')).sort(), ['compose.authority.yaml', 'compose.host.yaml', 'compose.witness.yaml', 'governed-actions.synthetic-pilot.json', 'host.env.example', 'ingress-contract.json', 'nginx', 'witness.env.example']);
   assert.match(contract['//'], /not a deployment/);
 });

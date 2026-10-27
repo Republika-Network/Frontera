@@ -1,0 +1,41 @@
+# Frontera Authority synthetic pilot — CUTOVER overlay (AUTH-04D2A).
+#
+# Added only after every acceptance gate and the founder's cutover approval
+# (docs/deployment/AUTHORITY_PILOT_DEPLOYMENT.md §8, §11):
+#
+#   docker compose -f deploy/pilot/compose.yaml -f deploy/authority-pilot/compose.host.yaml \
+#                  -f deploy/authority-pilot/compose.authority.yaml ...
+#
+# It enables the human-decision authority (AUTH-04A) and its gateway (AUTH-04B)
+# for exactly one relying party and origin. The Host refuses every
+# human-authority variable without the mode, so removing this file disables
+# the authority completely (the rollback of the cutover).
+#
+# The identity store is created only with AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE=true
+# in .env, once, at the first cutover start; set it back to false at once
+# (runbook step 3). The gateway is published on loopback only: the ingress on
+# this machine is its one public path (deploy/authority-pilot/nginx/authority.conf).
+
+services:
+  network:
+    ports:
+      # The Authority gateway listener. Loopback only; never a public address.
+      - "127.0.0.1:8788:8788"
+
+  frontera:
+    environment: &authority-pilot-cutover
+      AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE: enabled
+      AOC_ENTERPRISE_HUMAN_IDENTITY_SQLITE_PATH: /var/lib/frontera/human-identity.sqlite
+      AOC_ENTERPRISE_HUMAN_AUTHORITY_RP_ID: authority.frontera-systems.com
+      AOC_ENTERPRISE_HUMAN_AUTHORITY_ALLOWED_ORIGINS: https://authority.frontera-systems.com
+      AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE: ${AOC_ENTERPRISE_HUMAN_AUTHORITY_INITIALIZE:-false}
+      AOC_ENTERPRISE_AUTHORITY_GATEWAY_MODE: enabled
+      AOC_ENTERPRISE_AUTHORITY_GATEWAY_HOST: 0.0.0.0
+      AOC_ENTERPRISE_AUTHORITY_GATEWAY_PORT: "8788"
+      AOC_ENTERPRISE_AUTHORITY_GATEWAY_PUBLIC_ORIGIN: https://authority.frontera-systems.com
+
+  config-check:
+    environment: *authority-pilot-cutover
+
+  pilot-readiness:
+    environment: *authority-pilot-cutover
