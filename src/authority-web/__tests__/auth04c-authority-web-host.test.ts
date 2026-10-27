@@ -195,9 +195,9 @@ async function enrolAndSignIn(pilot: Pilot, operatorId: string): Promise<Client>
   human.controller.showEnrolment();
   human.controller.setInvitation(await invite(pilot, operatorId));
   await human.controller.enrol();
-  assert.equal(human.controller.state().screen.name, 'enrolled', human.controller.state().notice?.message);
+  assert.equal(human.controller.state().screen.name, 'enrolled', human.controller.state().notice?.message ?? '');
   await human.controller.signIn();
-  assert.equal(human.controller.state().screen.name, 'inbox', human.controller.state().notice?.message);
+  assert.equal(human.controller.state().screen.name, 'inbox', human.controller.state().notice?.message ?? '');
   return human;
 }
 
@@ -238,11 +238,11 @@ describe('AUTH-04C — the Authority web client on the shipped Host, through one
     human.controller.showEnrolment();
     human.controller.setInvitation(await invite(pilot, 'approver-a'));
     await human.controller.enrol();
-    assert.equal(human.controller.state().screen.name, 'enrolled', human.controller.state().notice?.message);
+    assert.equal(human.controller.state().screen.name, 'enrolled', human.controller.state().notice?.message ?? '');
     assert.equal(human.browser.jar.has('__Host-frontera_authority_session'), false, 'no session cookie after registration');
     assert.equal((await human.browser.transport('GET', '/authority/v1/session', undefined, undefined)).status, 401);
     await human.controller.signIn();
-    assert.equal(human.controller.state().screen.name, 'inbox', human.controller.state().notice?.message);
+    assert.equal(human.controller.state().screen.name, 'inbox', human.controller.state().notice?.message ?? '');
     assert.equal(human.controller.state().session?.operatorId, 'approver-a');
     assert.ok(human.browser.jar.has('__Host-frontera_authority_session'), 'the session is the server-set HttpOnly cookie');
   });
@@ -288,7 +288,7 @@ describe('AUTH-04C — the Authority web client on the shipped Host, through one
     human.controller.chooseVerdict('approve');
     await human.controller.confirmDecision();
     const state = human.controller.state();
-    assert.equal(state.screen.name, 'result', state.notice?.message);
+    assert.equal(state.screen.name, 'result', state.notice?.message ?? '');
     assert.equal(state.status?.decision, 'approved');
     assert.equal(state.status?.request?.status, 'approved');
     assert.equal(state.status?.execution, 'not_observed');
@@ -306,7 +306,7 @@ describe('AUTH-04C — the Authority web client on the shipped Host, through one
     await human.controller.openRequest(approvalRequestId);
     human.controller.chooseVerdict('reject');
     await human.controller.confirmDecision();
-    assert.equal(human.controller.state().status?.decision, 'rejected', human.controller.state().notice?.message);
+    assert.equal(human.controller.state().status?.decision, 'rejected', human.controller.state().notice?.message ?? '');
     assert.equal(human.controller.state().status?.request?.status, 'rejected');
   });
 
@@ -326,7 +326,7 @@ describe('AUTH-04C — the Authority web client on the shipped Host, through one
     human.controller.chooseVerdict('approve');
     human.browser.loseNextResponse((method, path) => method === 'POST' && path === '/authority/v1/decisions');
     await human.controller.confirmDecision();
-    assert.equal(human.controller.state().status?.decision, 'approved', human.controller.state().notice?.message);
+    assert.equal(human.controller.state().status?.decision, 'approved', human.controller.state().notice?.message ?? '');
     assert.equal(await verdictCount(pilot, approvalRequestId), 1);
   });
 
@@ -378,7 +378,7 @@ describe('AUTH-04C — expiry and session lifetime against the real gateway', ()
     human.controller.chooseVerdict('approve');
     gate.delayMs = 1_600; // the human takes longer than the decision window
     await human.controller.confirmDecision();
-    assert.equal(human.controller.state().notice?.code, 'HUMAN_IDENTITY_CHALLENGE_INVALID', human.controller.state().notice?.message);
+    assert.equal(human.controller.state().notice?.code, 'HUMAN_IDENTITY_CHALLENGE_INVALID', human.controller.state().notice?.message ?? '');
     assert.equal(await verdictCount(pilot, approvalRequestId), 0);
     await sleep(4_500);
     await human.controller.loadInbox();
