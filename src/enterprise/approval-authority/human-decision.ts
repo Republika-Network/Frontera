@@ -110,6 +110,8 @@ export interface HumanDecisionChannel {
   outcome(commitment: string): Promise<HumanDecisionStatus | undefined>;
   /** Settles consumed decisions with no recorded outcome that are not in flight. Records outcomes only — never a verdict. */
   reconcile(): Promise<readonly HumanDecisionReconciliation[]>;
+  /** AUTH-04D1R: resolves once every decide() running in this process has run to its end (recorded, refused or failed). Starts nothing. */
+  settled(): Promise<void>;
 }
 
 const PERMISSION = { approve: 'approval.approve', reject: 'approval.restrict' } as const;
@@ -129,6 +131,8 @@ export function createHumanDecisionChannel(options: HumanDecisionChannelOptions)
 
   // Commitments whose decide() may still reach CORE-05 in this process. Added before the challenge is consumed, removed after the outcome is settled.
   const inFlight = new Set<string>();
+  // AUTH-04D1R: every decide() still running, so a graceful shutdown can wait for each to reach its end.
+  const running = new Set<Promise<void>>();
 
   const find = async (approvalRequestId: string): Promise<ApprovalRequestView | undefined> => (await approvals.list()).find((view) => view.approvalRequestId === approvalRequestId);
 
@@ -162,16 +166,30 @@ export function createHumanDecisionChannel(options: HumanDecisionChannelOptions)
     },
 
     async decide(assertion) {
-      const { contract, commitment: peeked } = identity.peekDecision(assertion);
-      await admissible(contract);
-      // A second submission of the same decision in this process is refused by the identity store either way; only the first owns the in-flight mark.
-      const owner = !inFlight.has(peeked);
-      if (owner) inFlight.add(peeked);
+      let finished: () => void = () => undefined;
+      const done = new Promise<void>((resolveDone) => {
+        finished = resolveDone;
+      });
+      running.add(done);
       try {
-        return await decideAuthorized(assertion, contract);
+        const { contract, commitment: peeked } = identity.peekDecision(assertion);
+        await admissible(contract);
+        // A second submission of the same decision in this process is refused by the identity store either way; only the first owns the in-flight mark.
+        const owner = !inFlight.has(peeked);
+        if (owner) inFlight.add(peeked);
+        try {
+          return await decideAuthorized(assertion, contract);
+        } finally {
+          if (owner) inFlight.delete(peeked);
+        }
       } finally {
-        if (owner) inFlight.delete(peeked);
+        running.delete(done);
+        finished();
       }
+    },
+
+    async settled() {
+      await Promise.all([...running]);
     },
 
     async outcome(commitment) {

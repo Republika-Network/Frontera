@@ -219,7 +219,17 @@ export interface HumanIdentityStore {
   challenge(challenge: string): CeremonyChallenge | undefined;
   saveDecisionChallenge(challenge: StoredDecisionChallenge): void;
   decisionChallenge(challenge: string): StoredDecisionChallenge | undefined;
+  /** Closes at once. A write still between its witness prepare and its local commit fails closed (pending recovery at the witness). */
   close(): void;
+  /**
+   * AUTH-04D1R — graceful shutdown. From this call on, every write not yet
+   * accepted is refused before anything is signed, prepared or written. Writes
+   * already accepted run to their end: each completes its witness transition and
+   * local commit, or fails exactly as it would have. The store then closes.
+   * `interrupted`: a write was still running after `timeoutMs`; the store is
+   * closed anyway and that write fails closed, as a crash at that instant would.
+   */
+  closeWhenSettled(timeoutMs: number): Promise<'settled' | 'interrupted'>;
 }
 
 function corrupt(message: string): never {
@@ -380,8 +390,14 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
   const updateHead = db.prepare('UPDATE human_identity_head SET sequence = ?, chain_digest = ?, signature_json = ?, updated_at = ? WHERE id = 1 AND sequence = ?');
 
   let closed = false;
+  // AUTH-04D1R: shutting down — no new write is accepted; accepted writes settle.
+  let draining = false;
   const open = (): void => {
     if (closed) throw new HumanIdentityError('HUMAN_IDENTITY_STORE_UNAVAILABLE', 'The human identity store is closed.');
+  };
+  const accepting = (): void => {
+    open();
+    if (draining) throw new HumanIdentityError('HUMAN_IDENTITY_STORE_UNAVAILABLE', 'The human identity store is shutting down; nothing was recorded.');
   };
 
   const challengeUsable = (consume: { readonly challenge: string; readonly ceremony: CeremonyKind; readonly at: string }): boolean => {
@@ -471,12 +487,18 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
     history: () => (open(), verifiedState().rows),
     head: () => (open(), verifiedState().state),
     append(row, guard, consume) {
+      // Refused before it is queued: a write that was never accepted is never signed or prepared.
+      try {
+        accepting();
+      } catch (error) {
+        return Promise.reject(error);
+      }
       const result = tail.then(() => appendOnce(row, guard, consume));
       tail = result.catch(() => undefined);
       return result;
     },
     saveChallenge(challenge) {
-      open();
+      accepting();
       try {
         db.prepare('INSERT INTO human_identity_challenges (challenge, ceremony, operator_id, enrolment_id, target_credential_id, issued_at, expires_at, consumed_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)').run(
           challenge.challenge,
@@ -508,7 +530,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
       };
     },
     saveDecisionChallenge({ challenge, contract }) {
-      open();
+      accepting();
       try {
         db.prepare(
           'INSERT INTO human_decision_challenges (challenge, format, organization_id, approval_request_id, subject_digest, verdict, operator_id, nonce, issued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -527,6 +549,20 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
         closed = true;
         db.close();
       }
+    },
+    async closeWhenSettled(timeoutMs) {
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'closeWhenSettled needs a positive whole number of milliseconds.');
+      draining = true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<'interrupted'>((resolveDeadline) => {
+        // Not unref'd: a draining store keeps the process alive until its writes settle or the bound passes.
+        timer = setTimeout(() => resolveDeadline('interrupted'), timeoutMs);
+      });
+      // `tail` settles after the last accepted write has run to its end (it never rejects).
+      const result = await Promise.race([tail.then(() => 'settled' as const), deadline]);
+      clearTimeout(timer);
+      store.close();
+      return result;
     },
   };
   // CORE-02: which custody signs for this store (software or external).

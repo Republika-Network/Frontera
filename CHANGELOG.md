@@ -4,6 +4,15 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Security — AUTH-04D1R graceful shutdown of the human-decision authority
+- **Drain before close**: `Enterprise.close()`/`stop()` first drain the human authority while every store is still open:
+  - the port refuses new work;
+  - running passkey decisions settle (identity consumption, CORE-05 verdict, outcome);
+  - the identity store refuses writes not yet accepted (before they are signed or prepared), lets accepted ones finish, then closes.
+  Previously a clean shutdown could close the store between a write's witness prepare and its local commit, leaving `AUTHORITY_FRESHNESS_PENDING_RECOVERY` (reproduced in CI).
+- **Bound**: `AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS`, the Host's existing shutdown knob. Past it a write fails closed as a crash would (`enterprise.human_authority.drain_incomplete`). Witness timeouts and the supervisor's stop grace must be sized against it; the pilot kit's 45 s grace needs adjusting before human authority is enabled (AUTH-04D2). New `HumanIdentityStore.closeWhenSettled`, `HumanDecisionChannel.settled`, `ComposedHumanAuthority.drain`. No witness protocol, signing format, schema, route or public surface change.
+- **Recovery design** (not implemented): failure modes F1–F6, three strategies compared, and the pilot recommendation (replicated storage, drain, sealed cold backups, degraded mode; an audited re-founding ceremony later, needing separate authorization). `docs/security/AUTH-04D1R-HUMAN-AUTHORITY-RECOVERY-AND-SHUTDOWN-SAFETY.md`.
+
 ### Operations — AUTH-04D1 Authority pilot recovery and deployment readiness
 - **backup:v1 covers the human identity store**: `human-identity` is a registry store (condition `human-authority-enabled`, signed head, CORE-07 slot `human-identity-state`) instead of an exclusion. It is copied with the Online Backup API, bound to the organization, and verified under the trusted keys on restore. The coverage record gains `humanAuthorityEnabled`; as with PAY-03 and TRADE-04C, older manifests are refused by this build (restore them with their recorded build). `storeEnvironmentFor(dir, requirements)` names the identity path only for a deployment that composes it, because the Host's strict AUTH-04A rule is unchanged.
 - **Authority pilot profile** (`npm run authority-pilot:backup -- keygen|backup|verify|restore|inspect`): backup:v1 and restore:v1 with the authority enabled, the witness external, cold only, complete only and trusted-key verification only, sealed as `frontera.authority-pilot.sealed-backup.v1` (AES-256-GCM, authenticated public header binding organization, store ids, signed heads and sequences). Node built-in crypto; no dependency. Never contacts, resets or enrolls the witness.

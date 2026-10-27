@@ -348,6 +348,8 @@ Evidence per row: device model, iOS and Safari versions, time, screen recording 
 
 ## 11. Unresolved availability limitations
 
+(AUTH-04D1R: the graceful-shutdown race is fixed, and the remaining modes are characterized, in `docs/security/AUTH-04D1R-HUMAN-AUTHORITY-RECOVERY-AND-SHUTDOWN-SAFETY.md`.)
+
 1. **Zero-transition RPO.** For the identity and approval stores, a backup is restorable only until the next witnessed transition. Disaster recovery after losing the live volume depends on that volume's own durability.
 2. **Losing the identity file** after its newest backup has gone stale leaves human authority permanently unavailable for the organization at that witness (degraded operator-plane mode only). Re-founding needs a founder-approved CORE-07 ceremony.
 3. **Losing the witness database** leaves the identity store unbound. There is no enrolment ceremony for `human-identity-state`. Witness durability is a hard pilot requirement.

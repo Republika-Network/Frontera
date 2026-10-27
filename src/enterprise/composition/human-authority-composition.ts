@@ -147,6 +147,23 @@ export interface ComposedHumanAuthority {
   readonly reconciled: readonly HumanDecisionReconciliation[];
   /** AUTH-04B2: enrolment administration for the private operator plane — identity only, never authority. */
   readonly enrolmentAdministration: PasskeyEnrolmentAdministrationPort;
+  /**
+   * AUTH-04D1R — graceful shutdown, bounded by `timeoutMs`:
+   * 1. the port refuses every new decision, inbox read and enrolment-administration call;
+   * 2. every decision already running settles (identity consumption, the CORE-05 verdict, its outcome);
+   * 3. the identity store refuses new writes, lets accepted ones finish, and closes.
+   * Nothing is retried or replayed. A write still running at the deadline is
+   * cut off and fails closed, exactly as a crash would; startup reconciliation
+   * and CORE-07 handle it as they handle a crash.
+   */
+  drain(timeoutMs: number): Promise<HumanAuthorityDrainResult>;
+}
+
+export interface HumanAuthorityDrainResult {
+  /** Whether every running decision reached its end before the deadline. */
+  readonly decisions: 'settled' | 'interrupted';
+  /** Whether every accepted identity write reached its end before the store closed. */
+  readonly writes: 'settled' | 'interrupted';
 }
 
 /** AUTH-04B2: invitations live at most 15 minutes on a Host, whatever the AUTH-02 module allows. */
@@ -260,7 +277,9 @@ export async function composeHumanAuthority(input: ComposeHumanAuthorityInput): 
     });
     // Recovery after restart: nothing is in flight in a process that just started.
     const reconciled = await channel.reconcile();
-    const ready = <T>(run: () => Promise<T>): Promise<T> => (input.isReady() ? run() : Promise.reject(input.notReady()));
+    // AUTH-04D1R: a draining authority starts nothing new, whatever the lifecycle says.
+    let draining = false;
+    const ready = <T>(run: () => Promise<T>): Promise<T> => (!draining && input.isReady() ? run() : Promise.reject(input.notReady()));
     const port: HumanAuthorityPort = Object.freeze({
       organizationId: input.organizationId,
       relyingParty: input.relyingParty,
@@ -314,7 +333,21 @@ export async function composeHumanAuthority(input: ComposeHumanAuthorityInput): 
         ),
       describeHuman: (operatorId: string) => ready(async () => humanView(operatorId)),
     });
-    return { store, port, reconciled, enrolmentAdministration };
+    const drain = async (timeoutMs: number): Promise<HumanAuthorityDrainResult> => {
+      draining = true;
+      const deadline = Date.now() + timeoutMs;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const decisions = await Promise.race([
+        channel.settled().then(() => 'settled' as const),
+        new Promise<'interrupted'>((resolveDeadline) => {
+          timer = setTimeout(() => resolveDeadline('interrupted'), timeoutMs);
+        }),
+      ]);
+      clearTimeout(timer);
+      const writes = await store.closeWhenSettled(Math.max(1, deadline - Date.now()));
+      return { decisions, writes };
+    };
+    return { store, port, reconciled, enrolmentAdministration, drain };
   } catch (error) {
     store.close();
     throw error;
