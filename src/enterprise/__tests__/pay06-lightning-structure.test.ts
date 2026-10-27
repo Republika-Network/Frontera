@@ -100,7 +100,7 @@ describe('PAY-06 structure — CORE does not know Lightning exists', () => {
 
   it('CORE-07 gains exactly one neutral slot for PAY-06, and names no Lightning concept', () => {
     const checkpoint = readFileSync('src/enterprise/authority-state-freshness/checkpoint.ts', 'utf8');
-    assert.match(checkpoint, /'payment-refund-state', 'payment-initiation-reservations'\] as const/);
+    assert.match(checkpoint, /'payment-refund-state', 'payment-initiation-reservations'(?:, '[a-z-]+')*\] as const/);
     assert.equal(LIGHTNING_VOCABULARY.test(checkpoint), false);
   });
 });

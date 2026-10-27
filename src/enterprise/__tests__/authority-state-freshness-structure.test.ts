@@ -26,6 +26,8 @@ const STORES = [
   'src/enterprise/bounded-grant-store/sqlite-bounded-grant-store.ts',
   'src/enterprise/obligation-discharge/sqlite-obligation-discharge-store.ts',
   'src/enterprise/approval-authority/sqlite-approval-store.ts',
+  // AUTH-03: the signed human identity store, anchored the same way.
+  'src/enterprise/human-identity/sqlite-human-identity-store.ts',
 ];
 
 /** The text of the balanced `(...)` argument list that starts at `open` (the index of `(`). */

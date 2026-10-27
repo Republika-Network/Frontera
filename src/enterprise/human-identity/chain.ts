@@ -10,16 +10,11 @@ import { createHash } from 'node:crypto';
  * committed state. Every read recomputes the chain over every row and refuses
  * a history that does not end at the head.
  *
- * **What this does not yet give.** CORE-05 signs its head with the
- * deployment's authority key; this head is **not signed** in AUTH-02, because
- * a new signed artifact kind extends the CORE-02 signer contract (domains,
- * the signer and verifier interfaces, the external signer protocol), which
- * needs a separate founder decision. Until it is signed, a database-only
- * writer who rewrites the whole chain consistently is not detected, and a
- * restored older copy of the file is not detected across a restart. Both are
- * AUTH-03 prerequisites, because in AUTH-03 a registered public key becomes
- * authority material. The commitment below is already the exact shape a
- * signature would cover, so signing it later changes no stored data.
+ * **Signed since AUTH-03.** The head is signed by the deployment's authority
+ * key under `frontera:authority-artifact:human-identity-state:v1` (CORE-02,
+ * TD-5 narrowed by the founder to exactly this store-state commitment), and is
+ * anchored at the CORE-07 witness when freshness is composed — see
+ * `sqlite-human-identity-store.ts`.
  *
  * This file is a leaf: pure serialization and hashing.
  */
@@ -34,13 +29,19 @@ export type HumanIdentityRecordKind =
   | 'credential_registered'
   | 'credential_used'
   | 'credential_counter_anomaly'
-  | 'credential_revoked';
+  | 'credential_revoked'
+  /** AUTH-03: a human decision challenge consumed by a verified, user-verified assertion — the decision evidence, before CORE-05 records the verdict. */
+  | 'decision_authorized'
+  /** AUTH-03: what CORE-05 did with an authorized decision (recorded, or refused), recorded best-effort after the command. */
+  | 'decision_outcome';
 
 export const HUMAN_IDENTITY_RECORD_KINDS: readonly HumanIdentityRecordKind[] = [
   'credential_counter_anomaly',
   'credential_registered',
   'credential_revoked',
   'credential_used',
+  'decision_authorized',
+  'decision_outcome',
   'enrolment_authorized',
   'enrolment_revoked',
   'principal_created',

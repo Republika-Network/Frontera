@@ -213,7 +213,12 @@ describe('CORE-02 / TD-5 — the authority key is never a passport key', () => {
   it('the authority signer exposes no passport, identity or generic operation', () => {
     const signer = codeOf('src/enterprise/authority-authenticity/signer.ts');
     const iface = block(signer, 'export interface AuthorityArtifactSigner');
-    assert.equal(/passport|identity|credential|seal/i.test(iface), false);
+    // AUTH-03 — TD-5 narrowed by a founder decision to exactly one identity artifact: the human identity
+    // store's state commitment (a store head, like approvalState), optional, and not on the external protocol.
+    // Anything else naming a passport, identity, credential or seal is still refused.
+    const narrowed = iface.replace(/^\s+signHumanIdentityState\?\(state: HumanIdentityStateCommitment\): Promise<AuthoritySignature>;$/m, '');
+    assert.notEqual(narrowed, iface, 'the one narrowed operation has exactly the store-state shape');
+    assert.equal(/passport|identity|credential|seal/i.test(narrowed), false);
     assert.deepEqual([...iface.matchAll(/^\s+(sign\w*)\(/gm)].map((match) => match[1]).sort(), ['signApprovalState', 'signGrant', 'signObligationDischargeState', 'signRevocation', 'signRevocationState']);
   });
 

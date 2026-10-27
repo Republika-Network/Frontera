@@ -4,6 +4,7 @@ import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
+import type { HumanIdentityStateCommitment } from '../human-identity/chain.js';
 import { registerAuthoritySignerCustody } from './custody.js';
 import { assessDelegatedOfferCapabilityIssuance, type DelegatedOfferCapabilityIssuanceRequest } from './delegated-offer-capability.js';
 import { AuthorityAuthenticityConfigurationError, AuthoritySigningUnavailableError } from './errors.js';
@@ -24,6 +25,7 @@ import {
   isSupportedAuthoritySignatureAlgorithm,
   revocationSigningBytes,
   approvalStateSigningBytes,
+  humanIdentityStateSigningBytes,
   obligationDischargeStateSigningBytes,
   revocationStateSigningBytes,
   type AuthoritySignature,
@@ -128,6 +130,18 @@ export interface AuthorityArtifactSigner {
    * rule refuses.
    */
   signExecutionCapability?(request: ExecutionCapabilityIssuanceRequest): Promise<AuthoritySignature>;
+  /**
+   * AUTH-03: signs the human identity store's state commitment
+   * `{storeId, organizationId, sequence, chainDigest}` — the head of an
+   * authority-material store (its registered passkeys can authorize CORE-05
+   * verdicts), exactly as `signApprovalState` signs the approval log's head.
+   * A store-state commitment only: never a passport, credential or identity
+   * assertion (TD-5, narrowed by the founder for AUTH-03). Optional, because
+   * it is an extension: a custody boundary that does not offer it (the
+   * external signer, until its protocol carries it) leaves the human identity
+   * store unopenable — it never falls back to an unsigned mode.
+   */
+  signHumanIdentityState?(state: HumanIdentityStateCommitment): Promise<AuthoritySignature>;
 }
 
 export interface SoftwareAuthorityArtifactSignerOptions {
@@ -223,6 +237,9 @@ export function createSoftwareAuthorityArtifactSigner(options: SoftwareAuthority
     },
     async signApprovalState(state: ApprovalStateCommitment): Promise<AuthoritySignature> {
       return signBytes(approvalStateSigningBytes(state));
+    },
+    async signHumanIdentityState(state: HumanIdentityStateCommitment): Promise<AuthoritySignature> {
+      return signBytes(humanIdentityStateSigningBytes(state));
     },
     async signDelegatedOfferCapability(request: DelegatedOfferCapabilityIssuanceRequest): Promise<AuthoritySignature> {
       const assessment = assessDelegatedOfferCapabilityIssuance(request, { verifyGrant: (grant, storeId, signature) => ownVerifier.verifyGrant(grant, storeId, signature), activeKeyId: keyId, now: now() });

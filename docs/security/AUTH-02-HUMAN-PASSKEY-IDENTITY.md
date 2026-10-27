@@ -144,27 +144,15 @@ The store is `openSqliteHumanIdentityStore`, one SQLite file of its own.
 
 **Production migrations.** None: this is a new, separate file.
 
-### Not yet: signed head and cross-restart rollback (AUTH-03 prerequisite)
+### Signed head and cross-restart rollback (delivered by AUTH-03)
 
-CORE-05 signs its head with the deployment authority key and anchors it with
-the CORE-07 freshness witness. **This store's head is not signed.** Adding a
-signed artifact kind extends the CORE-02 signing contract:
-- the signing domains;
-- the signer and verifier interfaces and all their implementations;
-- the external signer protocol;
-- CORE-07 checkpoints.
-
-That is an existing security invariant, so it is left for a founder decision.
-
-Until then:
-- a database-only writer who rewrites the whole chain consistently is not detected;
-- a restored older copy of the file is not detected across a restart.
-
-In AUTH-03 a registered public key becomes authority material, because a
-writer who can insert their own key could approve. **Signing this head and
-composing CORE-07 freshness for it are therefore AUTH-03 prerequisites.**
-`serializeHumanIdentityStateCommitment` already produces the exact bytes a
-signature would cover, so no stored data changes.
+AUTH-03 signs this store's head with the deployment authority key, under its
+own domain (`frontera:authority-artifact:human-identity-state:v1`), after a
+founder decision narrowing CORE-02 TD-5 to exactly this store-state commitment.
+Every read verifies the signature and the whole chain, and the head is
+anchored at the CORE-07 witness (state kind `human-identity-state`) when
+freshness is composed. The store is now schema v2; a v1 file is refused, never
+migrated. See `AUTH-03-DECISION-BOUND-HUMAN-AUTHORITY.md` §3–§4.
 
 ## 6. Revocation
 
@@ -248,8 +236,8 @@ the tree is GHSA-6hxq-p678-4hr2 (Low), affecting `@simplewebauthn/server`
 
 ## 9. AUTH-03 prerequisites
 
-1. **Signed identity head and CORE-07 freshness.** A founder decision on extending CORE-02 with a human-identity-state artifact (§5).
-2. **Decision-bound challenge.** A challenge derived from `{org, approvalRequestId, subjectDigest, verdict, operatorId, nonce, expiry}`, verified with the same `verifyAssertion` path, before CORE-05 records the verdict. The CORE-05 actor stays `operator:<operatorId>`.
+1. **Signed identity head and CORE-07 freshness.** Delivered by AUTH-03 (§5).
+2. **Decision-bound challenge.** Delivered by AUTH-03 (`AUTH-03-DECISION-BOUND-HUMAN-AUTHORITY.md`). The CORE-05 actor stays `operator:<operatorId>`.
 3. **Operator-plane wiring.** How a recognized human reaches the CORE-05 command without a static bearer becoming the approval authority. This needs a reviewed decision on the session or BFF boundary (AUTH-04) and on routes.
 4. **Composition.** Opening this store in `bootEnterpriseHost` (path, permissions, backup per PROD-02), with the relying-party configuration from deployment configuration.
 5. **Separation of duties.** The pilot CTO holds no agent credential and no administrator role (AUTH-00 G).

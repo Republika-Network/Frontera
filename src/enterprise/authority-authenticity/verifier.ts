@@ -2,6 +2,7 @@ import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime
 import type { RevocationStateCommitment } from '../bounded-grant-store/bounded-grant-record.js';
 import type { ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import type { ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
+import type { HumanIdentityStateCommitment } from '../human-identity/chain.js';
 import { isWellFormedDelegatedOfferCapability, type DelegatedOfferCapability } from './delegated-offer-capability.js';
 import {
   delegatedOfferCapabilitySigningBytes,
@@ -9,6 +10,7 @@ import {
   revocationSigningBytes,
   approvalStateSigningBytes,
   obligationDischargeStateSigningBytes,
+  humanIdentityStateSigningBytes,
   revocationStateSigningBytes,
   type AuthoritySignature,
 } from './authority-signature.js';
@@ -79,6 +81,8 @@ export interface AuthorityArtifactVerifier {
    * and consumption are the standalone verifier's and the executor's (`execution-capability/verifier.ts`).
    */
   verifyExecutionCapability(capability: ExecutionCapability, signature: unknown): AuthoritySignatureVerification;
+  /** AUTH-03: the human identity store's signed head. */
+  verifyHumanIdentityState(state: HumanIdentityStateCommitment, signature: unknown): AuthoritySignatureVerification;
   /** The key ids this verifier trusts, for composition checks and diagnostics. Ids only — never key material. */
   readonly trustedKeyIds: readonly string[];
 }
@@ -113,6 +117,9 @@ export function createAuthorityArtifactVerifier(keys: readonly TrustedVerificati
     verifyExecutionCapability(capability: ExecutionCapability, signature: unknown): AuthoritySignatureVerification {
       if (!isWellFormedExecutionCapability(capability)) return { verified: false, failure: 'AUTHORITY_SIGNATURE_MALFORMED' };
       return verify(executionCapabilitySigningBytes(capability), signature);
+    },
+    verifyHumanIdentityState(state: HumanIdentityStateCommitment, signature: unknown): AuthoritySignatureVerification {
+      return verify(humanIdentityStateSigningBytes(state), signature);
     },
   });
 }

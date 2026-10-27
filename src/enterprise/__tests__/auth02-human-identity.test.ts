@@ -21,6 +21,7 @@ import {
   type RelyingPartyInput,
 } from '../human-identity/index.js';
 import type { EnterpriseOperatorPrincipal } from '../operator-control/operator-authenticator.js';
+import { testSigner, testVerifier } from './authority-authenticity-fixture.js';
 import { SoftwareAuthenticator, cbor, offCurveCoseKey, truncatedCoseKey, type Cbor } from './auth02-software-authenticator.js';
 
 /**
@@ -82,6 +83,7 @@ async function openService(path: string, clock: Clock, options: { readonly creat
   const store = await openSqliteHumanIdentityStore(path, {
     organizationId: options.organizationId ?? ORG,
     now: () => clock.now().toISOString(),
+    authenticity: { signer: testSigner(), verifier: testVerifier() },
     ...(options.create === true ? { create: true } : {}),
     ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }),
   });
@@ -112,8 +114,8 @@ async function refused(code: HumanIdentityErrorCode, run: () => unknown): Promis
 
 /** Creates the human (if absent), authorizes one enrolment, and registers `authenticator` through the full ceremony. */
 async function enrol(w: World, authenticator: SoftwareAuthenticator, operatorId = 'cto') {
-  if (w.service.principal(operatorId) === undefined) w.service.createPrincipal(w.admin, { operatorId, displayName: `Human ${operatorId}` });
-  const issued = w.service.authorizeEnrolment(w.admin, operatorId);
+  if (w.service.principal(operatorId) === undefined) await w.service.createPrincipal(w.admin, { operatorId, displayName: `Human ${operatorId}` });
+  const issued = await w.service.authorizeEnrolment(w.admin, operatorId);
   const options = w.service.beginRegistration(issued.enrolmentToken);
   const credential = await w.service.finishRegistration(issued.enrolmentToken, authenticator.register(options));
   return { issued, options, credential };
@@ -159,7 +161,7 @@ describe('AUTH-02 relying party — explicit, closed, fail-closed configuration'
 describe('AUTH-02 principals and administration — identity is not authority', () => {
   it('an organization administrator creates a named human for a configured operator', async () => {
     const w = await world();
-    const human = w.service.createPrincipal(w.admin, { operatorId: 'cto', displayName: 'Chief Technology Officer' });
+    const human = await w.service.createPrincipal(w.admin, { operatorId: 'cto', displayName: 'Chief Technology Officer' });
     assert.deepEqual(
       { operatorId: human.operatorId, actorRef: human.actorRef, organizationId: human.organizationId, state: human.state, createdBy: human.createdBy, revokedAt: human.revokedAt },
       { operatorId: 'cto', actorRef: 'operator:cto', organizationId: ORG, state: 'active', createdBy: 'operator-plane:ops-admin', revokedAt: null },
@@ -209,8 +211,8 @@ describe('AUTH-02 enrolment and registration', () => {
   });
 
   async function opened(w: World) {
-    w.service.createPrincipal(w.admin, { operatorId: 'cto', displayName: 'CTO' });
-    const issued = w.service.authorizeEnrolment(w.admin, 'cto');
+    await w.service.createPrincipal(w.admin, { operatorId: 'cto', displayName: 'CTO' });
+    const issued = await w.service.authorizeEnrolment(w.admin, 'cto');
     return { issued, options: w.service.beginRegistration(issued.enrolmentToken) };
   }
 
@@ -265,7 +267,7 @@ describe('AUTH-02 enrolment and registration', () => {
   it('an expired challenge, and a challenge issued for another enrolment, are refused', async () => {
     const w = await world();
     const { issued, options } = await opened(w);
-    const other = w.service.authorizeEnrolment(w.admin, 'cto');
+    const other = await w.service.authorizeEnrolment(w.admin, 'cto');
     await refused('HUMAN_IDENTITY_CHALLENGE_INVALID', () => w.service.finishRegistration(other.enrolmentToken, device().register(options)));
     w.clock.advance(301);
     await refused('HUMAN_IDENTITY_CHALLENGE_INVALID', () => w.service.finishRegistration(issued.enrolmentToken, device().register(options)));
@@ -276,8 +278,8 @@ describe('AUTH-02 enrolment and registration', () => {
     const { issued } = await opened(w);
     await refused('HUMAN_IDENTITY_ENROLMENT_INVALID', () => w.service.beginRegistration('fre1.nope'));
     await refused('HUMAN_IDENTITY_ENROLMENT_INVALID', () => w.service.beginRegistration(`${issued.enrolmentToken.slice(0, -4)}AAAA`));
-    const revocable = w.service.authorizeEnrolment(w.admin, 'cto');
-    assert.equal(w.service.revokeEnrolment(w.admin, revocable.enrolmentId, 'sent to the wrong address').state, 'revoked');
+    const revocable = await w.service.authorizeEnrolment(w.admin, 'cto');
+    assert.equal((await w.service.revokeEnrolment(w.admin, revocable.enrolmentId, 'sent to the wrong address')).state, 'revoked');
     await refused('HUMAN_IDENTITY_ENROLMENT_INVALID', () => w.service.beginRegistration(revocable.enrolmentToken));
     await refused('HUMAN_IDENTITY_ALREADY_REVOKED', () => w.service.revokeEnrolment(w.admin, revocable.enrolmentId, 'again'));
     w.clock.advance(901);
@@ -290,7 +292,7 @@ describe('AUTH-02 enrolment and registration', () => {
     const original = device();
     const { credential } = await enrol(w, original);
     await refused('HUMAN_IDENTITY_CREDENTIAL_DUPLICATE', () => enrol(w, device({ credentialId: original.credentialId }), 'approver-b'));
-    w.service.revokeCredential(w.admin, credential.credentialId, 'device lost');
+    await w.service.revokeCredential(w.admin, credential.credentialId, 'device lost');
     await refused('HUMAN_IDENTITY_CREDENTIAL_DUPLICATE', () => enrol(w, device({ credentialId: original.credentialId })));
   });
 
@@ -340,9 +342,9 @@ describe('AUTH-02 enrolment and registration', () => {
     assert.equal(w.service.credentialsOf('cto').length, 1);
 
     const shared = randomBytes(32);
-    w.service.createPrincipal(w.admin, { operatorId: 'approver-b', displayName: 'Approver B' });
-    const a = w.service.authorizeEnrolment(w.admin, 'cto');
-    const b = w.service.authorizeEnrolment(w.admin, 'approver-b');
+    await w.service.createPrincipal(w.admin, { operatorId: 'approver-b', displayName: 'Approver B' });
+    const a = await w.service.authorizeEnrolment(w.admin, 'cto');
+    const b = await w.service.authorizeEnrolment(w.admin, 'approver-b');
     const raced = await Promise.allSettled([
       w.service.finishRegistration(a.enrolmentToken, device({ credentialId: shared }).register(w.service.beginRegistration(a.enrolmentToken))),
       peer.service.finishRegistration(b.enrolmentToken, device({ credentialId: shared }).register(peer.service.beginRegistration(b.enrolmentToken))),
@@ -449,7 +451,7 @@ describe('AUTH-02 revocation and recovery', () => {
     const w = await world();
     const authenticator = device();
     const { credential } = await enrol(w, authenticator);
-    const revoked = w.service.revokeCredential(w.admin, credential.credentialId, 'device reported lost');
+    const revoked = await w.service.revokeCredential(w.admin, credential.credentialId, 'device reported lost');
     assert.deepEqual([revoked.state, revoked.revokedBy, revoked.revocationReason], ['revoked', 'operator-plane:ops-admin', 'device reported lost']);
     assert.ok(revoked.revokedAt !== null);
     await refused('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', () => w.service.finishAuthentication(authenticator.assert(w.service.beginAuthentication())));
@@ -464,7 +466,7 @@ describe('AUTH-02 revocation and recovery', () => {
     const w = await world();
     const lost = device();
     const { credential } = await enrol(w, lost);
-    w.service.revokeCredential(w.admin, credential.credentialId, 'device lost');
+    await w.service.revokeCredential(w.admin, credential.credentialId, 'device lost');
     const replacement = device();
     await enrol(w, replacement);
     assert.equal((await w.service.finishAuthentication(replacement.assert(w.service.beginAuthentication()))).operatorId, 'cto');
@@ -492,8 +494,8 @@ describe('AUTH-02 revocation and recovery', () => {
     const w = await world();
     const authenticator = device();
     await enrol(w, authenticator);
-    const pending = w.service.authorizeEnrolment(w.admin, 'cto');
-    assert.equal(w.service.revokePrincipal(w.admin, 'cto', 'left the company').state, 'revoked');
+    const pending = await w.service.authorizeEnrolment(w.admin, 'cto');
+    assert.equal((await w.service.revokePrincipal(w.admin, 'cto', 'left the company')).state, 'revoked');
     await refused('HUMAN_IDENTITY_ALREADY_REVOKED', () => w.service.revokePrincipal(w.admin, 'cto', 'again'));
     await refused('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', () => w.service.finishAuthentication(authenticator.assert(w.service.beginAuthentication())));
     await refused('HUMAN_IDENTITY_PRINCIPAL_REVOKED', () => w.service.beginRegistration(pending.enrolmentToken));

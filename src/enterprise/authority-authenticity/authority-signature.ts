@@ -7,6 +7,7 @@ import {
 import type { BoundedGrant, GrantRevocation } from '../../features/grant-runtime/index.js';
 import { serializeApprovalStateCommitment, type ApprovalStateCommitment } from '../approval-authority/state-commitment.js';
 import { serializeObligationDischargeStateCommitment, type ObligationDischargeStateCommitment } from '../obligation-discharge/state-commitment.js';
+import { serializeHumanIdentityStateCommitment, type HumanIdentityStateCommitment } from '../human-identity/chain.js';
 import { serializeDelegatedOfferCapability, type DelegatedOfferCapability } from './delegated-offer-capability.js';
 import { EXECUTION_CAPABILITY_SIGNING_DOMAIN, executionCapabilitySigningBytes, type ExecutionCapability } from '../execution-capability/capability.js';
 import type { AuthoritySignatureAlgorithm } from './signature-envelope.js';
@@ -96,6 +97,13 @@ export const AUTHORITY_SIGNING_DOMAINS = {
   delegatedOfferCapability: 'frontera:authority-artifact:xrpl-delegated-offer-capability:v1\n',
   /** G-02A: a generic, single-use execution capability presented to an independent executor (`execution-capability/capability.ts`). Verified by the standalone execution-capability verifier; signed only in custody, after the G-02B issuance rule (`execution-capability-issuance.ts`). */
   executionCapability: EXECUTION_CAPABILITY_SIGNING_DOMAIN,
+  /**
+   * AUTH-03: the signed head of the human identity store — authority-material,
+   * because a registered passkey can authorize a CORE-05 verdict. A store-state
+   * commitment exactly like `approvalState`; never a passport, credential or
+   * identity assertion (TD-5, as narrowed by the founder for AUTH-03).
+   */
+  humanIdentityState: 'frontera:authority-artifact:human-identity-state:v1\n',
 } as const;
 
 export type AuthorityArtifactKind = keyof typeof AUTHORITY_SIGNING_DOMAINS;
@@ -147,6 +155,11 @@ export function approvalStateSigningBytes(state: ApprovalStateCommitment): Buffe
   return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.approvalState}${serializeApprovalStateCommitment(state)}`, 'utf8');
 }
 
+/** The exact bytes the human identity store's committed head is signed and verified over (AUTH-03). Its own domain. */
+export function humanIdentityStateSigningBytes(state: HumanIdentityStateCommitment): Buffer {
+  return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.humanIdentityState}${serializeHumanIdentityStateCommitment(state)}`, 'utf8');
+}
+
 /** The exact bytes a delegated-offer signing capability is signed and verified over (TRADE-04C-S1). Its own domain, so no grant or state signature can stand in for one, nor one for them. */
 export function delegatedOfferCapabilitySigningBytes(capability: DelegatedOfferCapability): Buffer {
   return Buffer.from(`${AUTHORITY_SIGNING_DOMAINS.delegatedOfferCapability}${serializeDelegatedOfferCapability(capability)}`, 'utf8');
@@ -161,7 +174,8 @@ export function authoritySigningBytes(
     | { readonly kind: 'obligationDischargeState'; readonly state: ObligationDischargeStateCommitment }
     | { readonly kind: 'approvalState'; readonly state: ApprovalStateCommitment }
     | { readonly kind: 'delegatedOfferCapability'; readonly capability: DelegatedOfferCapability }
-    | { readonly kind: 'executionCapability'; readonly capability: ExecutionCapability },
+    | { readonly kind: 'executionCapability'; readonly capability: ExecutionCapability }
+    | { readonly kind: 'humanIdentityState'; readonly state: HumanIdentityStateCommitment },
 ): Buffer {
   switch (artifact.kind) {
     case 'grant':
@@ -178,5 +192,7 @@ export function authoritySigningBytes(
       return delegatedOfferCapabilitySigningBytes(artifact.capability);
     case 'executionCapability':
       return executionCapabilitySigningBytes(artifact.capability);
+    case 'humanIdentityState':
+      return humanIdentityStateSigningBytes(artifact.state);
   }
 }

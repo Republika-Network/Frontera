@@ -19,6 +19,7 @@ export {
   AUTHORITY_STORE_KINDS,
   NAMESPACED_AUTHORITY_STATE_KINDS,
   approvalStateCheckpoint,
+  humanIdentityStateCheckpoint,
   authorityStateBindingProblem,
   authorityStateCheckpointProblem,
   isAuthorityStateKind,
