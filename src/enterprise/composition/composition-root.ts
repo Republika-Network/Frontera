@@ -3062,6 +3062,31 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     })(),
   });
 
+  /**
+   * AUTH-04D1R — graceful shutdown of the human-decision authority, before any
+   * other store closes: new decisions and identity writes are refused, running
+   * ones settle, then the identity store closes (its WAL checkpointed, so a
+   * stopped Host's data directory is cold-backup ready).
+   *
+   * The bound is the Host's shutdown timeout (`AOC_ENTERPRISE_SHUTDOWN_TIMEOUT_MS`),
+   * but never shorter than the longest a running decision can take on its own:
+   * three witnessed transitions in sequence (identity consumption, the CORE-05
+   * verdict, the decision outcome), each at most three witness calls of
+   * `timeoutMs × maxAttempts`. Cutting a write between its witness prepare and
+   * its local commit would turn a recoverable outcome into a pending recovery,
+   * so a healthy-but-slow write is always waited for. A write still running past
+   * that (a hung signer or database) is cut off and fails closed, as a crash would.
+   */
+  const drainHumanAuthority = async (): Promise<void> => {
+    if (humanAuthority === undefined) return;
+    const freshness = configuration.authorityFreshness;
+    const witnessCallMs = freshness?.mode === 'external' ? freshness.witness.timeoutMs * freshness.witness.maxAttempts : 0;
+    const boundMs = Math.max(configuration.lifecycle.shutdownTimeoutMs, 9 * witnessCallMs + 5_000);
+    const drained = await humanAuthority.drain(boundMs);
+    if (drained.decisions === 'settled' && drained.writes === 'settled') logger.info('enterprise.human_authority.drained', { status: 'settled' });
+    else logger.warn('enterprise.human_authority.drain_incomplete', { status: `decisions:${drained.decisions};writes:${drained.writes}` });
+  };
+
   const enterprise: AocEnterprise = {
     configuration: toPublicEnterpriseConfiguration(configuration),
     kernel,
@@ -3180,6 +3205,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     lifecycleState: () => lifecycle.lifecycleState(),
     modules: () => lifecycle.modules(),
     close: async () => {
+      // AUTH-04D1R: first, while every store is still open, let running human decisions and identity writes settle, then close the identity store.
+      await drainHumanAuthority();
       await lifecycle.shutdown();
       unsubscribeLifecyclePersistence();
       await evidenceStore.close();
@@ -3190,10 +3217,10 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       await closeComposedExecutionOutcomeStore();
       await closeComposedExecutionResolutionStore();
       await closeComposedGovernedStateStores();
-      // AUTH-04D1: the human identity store this root opened. Left open, its WAL outlived a clean shutdown and no cold backup was possible.
-      humanAuthority?.store.close();
     },
     stop: async () => {
+      // AUTH-04D1R: first, while every store is still open, let running human decisions and identity writes settle, then close the identity store.
+      await drainHumanAuthority();
       await lifecycle.shutdown();
       unsubscribeLifecyclePersistence();
       await evidenceStore.close();
@@ -3204,8 +3231,6 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
       await closeComposedExecutionOutcomeStore();
       await closeComposedExecutionResolutionStore();
       await closeComposedGovernedStateStores();
-      // AUTH-04D1: the human identity store this root opened. Left open, its WAL outlived a clean shutdown and no cold backup was possible.
-      humanAuthority?.store.close();
     },
   };
 
