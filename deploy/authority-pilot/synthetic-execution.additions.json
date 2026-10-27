@@ -36,6 +36,7 @@
     "timeoutMs": 10000
   },
   "route": { "action": "synthetic.deploy-release", "adapterId": "synthetic-executor-verified" },
+  "auditor": { "auditorId": "pilot-execution-verifier", "apiKeyEnv": "FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER" },
   "executionCapabilities": {
     "issuer": "frontera-authority-pilot-host",
     "issuanceLedgerPath": "/var/lib/frontera/execution-capability-issuance.sqlite",

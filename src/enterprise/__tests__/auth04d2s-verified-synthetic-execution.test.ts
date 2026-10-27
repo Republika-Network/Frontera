@@ -1,6 +1,9 @@
 import dns from 'node:dns';
 import https from 'node:https';
-import { mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { request } from 'node:http';
 import { connect, createServer as createNetServer } from 'node:net';
 import { join } from 'node:path';
@@ -24,7 +27,7 @@ import { createSyntheticExecutionVerifier, type SyntheticExecutionVerification, 
 import { SoftwareAuthenticator } from './auth02-software-authenticator.js';
 import { AUTHORITY_KEY_A, trustedKeyOf } from './authority-authenticity-fixture.js';
 import { freshnessEnv, startWitness, type StartedWitness } from './core07-freshness-fixture.js';
-import { capturingLogger, create, recordingAdapter } from './ctrl02-host-fixture.js';
+import { SECRETS, capturingLogger, create, recordingAdapter } from './ctrl02-host-fixture.js';
 import {
   APPROVE_RELEASE,
   AUTH,
@@ -435,6 +438,8 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
   let world: World;
   const humans = new Map<string, Human>();
   const human = (operatorId: string): Human => humans.get(operatorId) ?? assert.fail(`no enrolled human ${operatorId}`);
+  /** Request ids of the scenarios above, for the AUTH-04D2V operator verifier to read back. */
+  const scenario: Record<string, string> = {};
 
   const verifier = (): ReturnType<typeof createSyntheticExecutionVerifier> =>
     createSyntheticExecutionVerifier({
@@ -591,6 +596,8 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     const resumed = await govern(booted.baseUrl, world.syntheticCredential, synthetic(key));
     assert.equal(resumed.body['status'], 'executed', resumed.text);
     const executionId = resumed.body['executionId'] as string;
+    scenario['success'] = view.requestId;
+    scenario['successExecution'] = executionId;
     await eventually(async () => (await evidenceOf(executionId)).observations.length > 0);
     assert.deepEqual([issuanceRows() - issuedBefore, requestsSeen() - requestsBefore, effects() - effectsBefore], [1, 1, 1], 'one capability, one presentation, one synthetic effect');
 
@@ -745,6 +752,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
   it('9 — missing authorization: an unapproved request never reaches the executor, and nothing unapproved is ever called authorized', async () => {
     const before = footprint();
     const { key, view } = await pendingSynthetic('auth04d2s-missing');
+    scenario['pending'] = view.requestId;
     assertAwaitingApproval(await govern(booted.baseUrl, world.syntheticCredential, synthetic(key)));
     const verification = await verify(view.requestId);
     assert.equal(verification.status, 'NOT_AUTHORIZED');
@@ -827,6 +835,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     assertAwaitingApproval(withheld);
     const view = await viewOf(withheld.body['requestId'] as string);
     assert.ok(view !== null);
+    scenario['invalid'] = view.requestId;
     const { decided } = await decide(await signedIn(booted.gatewayPort, approverA), approverA, view, 'approve');
     assert.equal(decided.status, 200, decided.text);
     const authorized = await verify(view.requestId);
@@ -849,6 +858,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
   it('18 — lost executor response: the executor acted, the Host stays unconfirmed, and the verification is EXECUTION_UNKNOWN — never success', async () => {
     const cto = human(CTO.operatorId);
     const { key, view } = await pendingSynthetic('auth04d2s-lost');
+    scenario['lost'] = view.requestId;
     assert.equal((await decide(await signedIn(booted.gatewayPort, cto), cto, view, 'approve')).decided.status, 200);
     route = lossyRelay.target;
     const effectsBefore = effects();
@@ -879,6 +889,171 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     assert.notEqual(verification.status, 'SIMULATED_SUCCESS');
     assert.ok(['EXECUTION_UNKNOWN', 'DELIVERY_FAILED'].includes(verification.status), JSON.stringify(verification));
     assert.equal(verification.receipt, null);
+  });
+
+
+  // ── AUTH-04D2V: the pilot operator's read-only verifier, against this Host ───────────────────────
+
+  interface CliRun {
+    readonly status: number | null;
+    readonly stdout: string;
+    readonly stderr: string;
+  }
+
+  /** The pinned public configuration, as `synthetic-execution-render` writes it: the Host policy and the executor's trust. */
+  function pinnedDirectory(overrides: { readonly executorKey?: string; readonly authorityKey?: string; readonly organizationId?: string; readonly issuancePath?: string; readonly evidencePath?: string } = {}): string {
+    const pinned = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-pinned-'));
+    const policy = governedFile(dir, overrides.executorKey ?? domain.publicKeyPem) as { executionCapabilities: { issuanceLedgerPath: string; receiptEvidence: { storePath: string; trustedExecutors: { organizationIds: string[] }[] } } };
+    if (overrides.issuancePath !== undefined) policy.executionCapabilities.issuanceLedgerPath = overrides.issuancePath;
+    if (overrides.evidencePath !== undefined) policy.executionCapabilities.receiptEvidence.storePath = overrides.evidencePath;
+    if (overrides.organizationId !== undefined) for (const entry of policy.executionCapabilities.receiptEvidence.trustedExecutors) entry.organizationIds = [overrides.organizationId];
+    writeFileSync(join(pinned, 'governed-actions.json'), JSON.stringify({ ...policy, trustDomainId: TRUST_DOMAIN }));
+    const authority = overrides.authorityKey === undefined ? trustedKeyOf(AUTHORITY_KEY_A) : { keyId: AUTHORITY_KEY_A.keyId, algorithm: 'ed25519-v1', publicKeyPem: overrides.authorityKey };
+    writeFileSync(join(pinned, 'synthetic-executor.json'), JSON.stringify({ trustedIssuers: [{ issuer: CAPABILITY_ISSUER, keys: [authority] }], syntheticExecution: { syntheticActions: [SYNTHETIC] } }));
+    return pinned;
+  }
+
+  /** The tool as the `execution-verifier` service runs it — a separate process; async, so this Host keeps answering. */
+  function runVerifier(args: readonly string[], env: Record<string, string>): Promise<CliRun> {
+    return new Promise((resolveRun) => {
+      const child = spawn(process.execPath, ['scripts/deploy/verify-synthetic-execution.mjs', ...args], { env: { PATH: process.env['PATH'] ?? '', ...env } });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
+      child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+      child.on('close', (status) => resolveRun({ status, stdout, stderr }));
+    });
+  }
+
+  const operatorEnv = (pinned: string, overrides: Record<string, string> = {}): Record<string, string> => ({
+    FRONTERA_VERIFIER_HOST: booted.baseUrl,
+    FRONTERA_SYNTHETIC_EXECUTION_DIR: pinned,
+    FRONTERA_OPERATOR_KEY_OBSERVER: SECRETS.observer,
+    // The organization-scoped API key this Host configures plays the pilot auditor's part (AOC_ENTERPRISE_API_KEYS).
+    FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER: SECRETS.legacyKey,
+    ...overrides,
+  });
+
+  const statementOf = (run: CliRun): SyntheticExecutionVerification => {
+    assert.equal(run.status, 0, run.stderr);
+    const marker = run.stdout.indexOf('\n--- statement (');
+    assert.ok(marker !== -1, run.stdout);
+    return JSON.parse(run.stdout.slice(run.stdout.indexOf('\n', marker + 1) + 1)) as SyntheticExecutionVerification;
+  };
+
+  const SECRET_VALUES = (): readonly string[] => [SECRETS.observer, SECRETS.legacyKey, CREDENTIAL_TOKEN, CTO_SECRET];
+  function assertNoLeak(run: CliRun): void {
+    for (const text of [run.stdout, run.stderr]) {
+      for (const secret of SECRET_VALUES()) assert.equal(text.includes(secret), false, 'no credential in the output');
+      assert.equal(/PRIVATE KEY|-----BEGIN/.test(text), false, 'no key material');
+      assert.equal(/frontera\.execution-capability\.v1|"ledgerState"|"consumption"|"signature"/.test(text), false, 'no capability, receipt or signature artifact');
+    }
+  }
+
+  /** Every Host store the verifier could touch, as rows: equal before and after means it wrote nothing. */
+  function storeContents(): string {
+    const dump = (path: string): string => {
+      const db = new Database(path, { readonly: true });
+      try {
+        const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { readonly name: string }[];
+        return tables.map(({ name }) => `${name}:${JSON.stringify(db.prepare(`SELECT * FROM ${name}`).all())}`).join('\n');
+      } finally {
+        db.close();
+      }
+    };
+    return [join(dir, 'execution-capability-issuance.sqlite'), join(dir, 'evidence', 'receipt-evidence.sqlite')].map(dump).join('\n');
+  }
+
+  it('AUTH-04D2V — the operator verifier reports exactly the AUTH-04D2S statement for success, failed delivery, pending and lost response; it reads only, and prints no secret', async () => {
+    const pinned = pinnedDirectory();
+    const before = storeContents();
+    const footprintBefore = footprint();
+
+    // Valid synthetic execution: the same statement, byte for byte, as the verifier computes in process.
+    const success = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned));
+    assertNoLeak(success);
+    const statement = statementOf(success);
+    assert.deepEqual([statement.status, statement.reason], ['SIMULATED_SUCCESS', 'VERIFIED']);
+    assert.equal(statement.verificationDigest, (await verify(scenario['success'] ?? '')).verificationDigest, 'the operator path and the in-process verification agree exactly');
+    assert.match(success.stdout, /SYNTHETIC ONLY/);
+    assert.match(success.stdout, /SIMULATED success/);
+    // By execution id: the same request, resolved by recomputing every approval's execution identity.
+    const byExecution = statementOf(await runVerifier(['--execution', scenario['successExecution'] ?? ''], operatorEnv(pinned)));
+    assert.equal(byExecution.verificationDigest, statement.verificationDigest);
+    // Re-running is a replay of a read: the identical statement.
+    assert.equal(statementOf(await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned))).verificationDigest, statement.verificationDigest);
+
+    // The .invalid scenario: DELIVERY_FAILED, never success. Pending: NOT_AUTHORIZED, never shown as executed. Lost response: EXECUTION_UNKNOWN.
+    const invalid = await runVerifier(['--request', scenario['invalid'] ?? ''], operatorEnv(pinned));
+    assertNoLeak(invalid);
+    assert.deepEqual([statementOf(invalid).status, statementOf(invalid).reason], ['DELIVERY_FAILED', 'DELIVERY_NOT_COMPLETED']);
+    assert.match(invalid.stdout, /delivery FAILED/);
+    const pending = statementOf(await runVerifier(['--request', scenario['pending'] ?? ''], operatorEnv(pinned)));
+    assert.equal(pending.status, 'NOT_AUTHORIZED');
+    assert.equal(pending.receipt, null);
+    const lost = statementOf(await runVerifier(['--request', scenario['lost'] ?? ''], operatorEnv(pinned)));
+    assert.equal(lost.status, 'EXECUTION_UNKNOWN', 'never converted into success');
+
+    // No write operation: every store row, and everything downstream, is exactly as it was.
+    assert.equal(storeContents(), before, 'the verifier wrote nothing to the Host stores');
+    assert.deepEqual(footprint(), footprintBefore, 'nothing issued, presented or performed');
+  });
+
+  it('AUTH-04D2V — wrong or untrusted keys, another organization, missing or tampered evidence, and an unknown execution never yield success; refused access prints no secret', async () => {
+    const request = scenario['success'] ?? '';
+    const other = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const untrustedExecutor = statementOf(await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ executorKey: other }))));
+    assert.deepEqual([untrustedExecutor.status, untrustedExecutor.reason], ['EXECUTION_UNKNOWN', 'RECEIPT_INVALID']);
+    const untrustedAuthority = statementOf(await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ authorityKey: other }))));
+    assert.deepEqual([untrustedAuthority.status, untrustedAuthority.reason], ['EXECUTION_UNKNOWN', 'CAPABILITY_SIGNATURE_INVALID']);
+    const otherOrganization = await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ organizationId: 'org-elsewhere' })));
+    assert.equal(statementOf(otherOrganization).status, 'EXECUTION_UNKNOWN');
+    assert.match(otherOrganization.stdout, /another organization than the pinned one/);
+    const missing = statementOf(await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ issuancePath: join(dir, 'absent-issuance.sqlite'), evidencePath: join(dir, 'evidence', 'absent.sqlite') }))));
+    assert.deepEqual([missing.status, missing.reason], ['EXECUTION_UNKNOWN', 'CAPABILITY_MISSING']);
+
+    // A tampered copy of the evidence store (a privileged writer altered the stored receipt): never success.
+    const copyDir = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-tampered-'));
+    mkdirSync(join(copyDir, 'evidence'), { mode: 0o700 });
+    const live = new Database(join(dir, 'evidence', 'receipt-evidence.sqlite'), { readonly: true });
+    try {
+      await live.backup(join(copyDir, 'evidence', 'receipt-evidence.sqlite'));
+    } finally {
+      live.close();
+    }
+    const tamper = new Database(join(copyDir, 'evidence', 'receipt-evidence.sqlite'));
+    try {
+      tamper.exec('DROP TRIGGER IF EXISTS receipt_evidence_never_updated');
+      tamper.prepare("UPDATE receipt_evidence SET canonical = replace(canonical, 'completed-observed', 'failed-observed') WHERE execution_id = ?").run(scenario['successExecution'] ?? '');
+    } finally {
+      tamper.close();
+    }
+    const tampered = await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ evidencePath: join(copyDir, 'evidence', 'receipt-evidence.sqlite') })));
+    assert.notEqual(statementOf(tampered).status, 'SIMULATED_SUCCESS');
+    assert.equal(statementOf(tampered).status, 'EXECUTION_UNKNOWN');
+
+    // An exact id that resolves to nothing.
+    const unknown = await runVerifier(['--execution', 'aoc.exec:00000000000000000000000000000000'], operatorEnv(pinnedDirectory()));
+    assert.equal(unknown.status, 2);
+    assert.match(unknown.stderr, /EXECUTION_NOT_FOUND/);
+    const unknownRequest = await runVerifier(['--request', 'request-that-does-not-exist'], operatorEnv(pinnedDirectory()));
+    assert.equal(unknownRequest.status, 2);
+
+    // Missing or unauthorized private access: refused, nothing verified, no secret echoed.
+    const pinned = pinnedDirectory();
+    for (const env of [
+      operatorEnv(pinned, { FRONTERA_OPERATOR_KEY_OBSERVER: '' }),
+      operatorEnv(pinned, { FRONTERA_OPERATOR_KEY_OBSERVER: 'not-the-observer-credential' }),
+      operatorEnv(pinned, { FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER: SECRETS.observer }),
+      operatorEnv(pinned, { FRONTERA_VERIFIER_HOST: 'http://authority.frontera-systems.com:443' }),
+    ]) {
+      const refused = await runVerifier(['--request', request], env);
+      assert.equal(refused.status, 2, refused.stdout);
+      assert.equal(refused.stdout, '', 'no statement without verified access');
+      assertNoLeak(refused);
+    }
+    // No argument can supply an approval view or a key.
+    assert.equal((await runVerifier(['--request', request, '--approval', '{}'], operatorEnv(pinned))).status, 2);
   });
 
   // ── Temporal authorization: the execution point (A) versus current authority (B) ──────────────────
@@ -912,6 +1087,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
 
   it('21 — the approval revoked after the execution: never re-read as NOT_AUTHORIZED; EXECUTION_UNKNOWN (APPROVAL_WITHDRAWN_ORDER_UNPROVEN); nothing re-executes', async () => {
     const { key, view, executionId } = await executedBy(CTO.operatorId, 'auth04d2s-revoked-after');
+    scenario['revokedAfter'] = view.requestId;
     const effectsBefore = effects();
     const revoked = await call(booted.baseUrl, 'POST', `/api/admin/approvals/${encodeURIComponent(view.approvalRequestId)}/revoke`, { authorization: bearer(CTO_SECRET), body: { subjectDigest: view.subjectDigest, reason: 'withdrawn after the release' } });
     assert.equal(revoked.status, 200, revoked.text);
@@ -928,6 +1104,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
 
   it('22 — the approver’s standing withdrawn after the execution: EXECUTION_UNKNOWN (APPROVAL_WITHDRAWN_ORDER_UNPROVEN); that human decides nothing new', async () => {
     const { view } = await executedBy('approver-d', 'auth04d2s-standing-after');
+    scenario['standingAfter'] = view.requestId;
     const revoked = await call(booted.baseUrl, 'POST', '/api/admin/authority/entities/authority-grant/approval-standing-approver-d-synthetic/revoke', { authorization: AUTH.responder, body: { reason: 'left the change board after the release' } });
     assert.equal(revoked.status, 200, revoked.text);
     const after = await verify(view.requestId);
@@ -945,6 +1122,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     try {
       const cto = human(CTO.operatorId);
       const { key, view } = await pendingSynthetic('auth04d2s-presented-after');
+      scenario['presentedAfter'] = view.requestId;
       assert.equal((await decide(await signedIn(booted.gatewayPort, cto), cto, view, 'approve')).decided.status, 200);
       route = delayRelay.target;
       const effectsBefore = effects();
@@ -969,6 +1147,20 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
       route = relay.target;
       await delayRelay.close();
     }
+  });
+
+  it('AUTH-04D2V — approval withdrawal after execution: the operator verifier reports EXECUTION_UNKNOWN, never NOT_AUTHORIZED and never success', async () => {
+    const pinned = pinnedDirectory();
+    for (const name of ['revokedAfter', 'standingAfter', 'presentedAfter']) {
+      const run = await runVerifier(['--request', scenario[name] ?? ''], operatorEnv(pinned));
+      assertNoLeak(run);
+      const statement = statementOf(run);
+      assert.deepEqual([statement.status, statement.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN'], name);
+      assert.match(run.stdout, /Execution UNKNOWN/);
+    }
+    // The first success, whose approver's standing was revoked since (test 23): history is not rewritten into NOT_AUTHORIZED.
+    const first = statementOf(await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned)));
+    assert.equal(first.status, 'EXECUTION_UNKNOWN');
   });
 });
 

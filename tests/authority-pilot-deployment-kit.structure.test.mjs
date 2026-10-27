@@ -142,7 +142,7 @@ describe('AUTH-04D2A — synthetic Authority pilot deployment configuration', ()
 
   it('nothing in the kit names a cloud provider, a personal path or a payment rail, or holds a secret', () => {
     const files = ['compose.host.yaml', 'compose.authority.yaml', 'compose.executor.yaml', 'compose.witness.yaml', 'governed-actions.synthetic-pilot.json', 'synthetic-execution.additions.json', 'host.env.example', 'witness.env.example', 'nginx/authority.conf', 'nginx/authority-gateway-proxy.conf', 'nginx/authority-web-headers.conf', 'nginx/synthetic-executor.conf', 'nginx/synthetic-executor-allowlist.conf', 'nginx/witness.conf', 'nginx/witness-allowlist.conf'].map((file) => `${KIT}/${file}`);
-    files.push('scripts/deploy/qualify-authority-pilot.mjs', 'scripts/deploy/synthetic-execution-pilot.mjs');
+    files.push('scripts/deploy/qualify-authority-pilot.mjs', 'scripts/deploy/synthetic-execution-pilot.mjs', 'scripts/deploy/verify-synthetic-execution.mjs');
     for (const file of files) {
       const text = read(file);
       assert.equal(/C:\\Users|\/mnt\/c\/|vicvalch|\bWSL\b|digitalocean|hetzner|lightsail|amazonaws|\bAWS\b|\bAzure\b|\bGCP\b|vercel/i.test(text), false, `${file}: provider or personal path`);

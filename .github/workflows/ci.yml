@@ -193,7 +193,7 @@ jobs:
           grep -q 'FAIL — Host: no witness-init service' "$RUNNER_TEMP/unisolated.log" || { cat "$RUNNER_TEMP/unisolated.log"; exit 1; }
           echo "  ok  the unisolated Host configuration is refused: $(grep FAIL "$RUNNER_TEMP/unisolated.log")"
           # AUTH-04D2S: stage 3 (the synthetic executor) on top of the cutover, every profile enabled. Public, synthetic values only.
-          printf '%s\n' "FRONTERA_SYNTHETIC_EXECUTION_DIR=/srv/frontera-synthetic-execution-ci" "FRONTERA_SYNTHETIC_EXECUTOR_TOKEN=synthetic-ci-not-a-secret" "AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS='[]'" >> deploy/pilot/.env
+          printf '%s\n' "FRONTERA_SYNTHETIC_EXECUTION_DIR=/srv/frontera-synthetic-execution-ci" "FRONTERA_SYNTHETIC_EXECUTOR_TOKEN=synthetic-ci-not-a-secret" "AOC_ENTERPRISE_AUTHORITY_VERIFICATION_KEYS='[]'" "FRONTERA_OPERATOR_KEY_OBSERVER=synthetic-ci-not-a-secret" "FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER=synthetic-ci-not-a-secret" >> deploy/pilot/.env
           $host -f deploy/authority-pilot/compose.authority.yaml -f deploy/authority-pilot/compose.executor.yaml config --format json > "$RUNNER_TEMP/executor.json"
           node scripts/deploy/qualify-authority-pilot.mjs compose executor "$RUNNER_TEMP/executor.json"
           # Stage 1 and the cutover stay exactly as they were: the executor exists only with its overlay.
