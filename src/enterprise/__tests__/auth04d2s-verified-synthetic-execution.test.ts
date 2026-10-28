@@ -2,7 +2,7 @@ import dns from 'node:dns';
 import https from 'node:https';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { request } from 'node:http';
 import { connect, createServer as createNetServer } from 'node:net';
@@ -1115,7 +1115,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
       // …and no record was issued, presented, performed or signed.
       assert.deepEqual(footprint(), recordsBefore);
 
-      // Host stopped: its connections close, SQLite folds and removes the WAL. The verifier fails closed with exit 2 and creates nothing.
+      // Host stopped: the verifier's running check (the private listener) fails closed with exit 2; it creates nothing.
       await booted.host.close();
       const stopped = filesystemSnapshot(dir);
       const down = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned));
@@ -1207,7 +1207,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
 
   const walState = (root: string): readonly boolean[] => STORE_FILES.flatMap((file) => ['-wal', '-shm'].map((suffix) => existsSync(join(root, `${file}${suffix}`))));
 
-  it('AUTH-04D2V — separate processes: the Host process holds its stores in WAL; the verifier reads them through a read-only mount — running, repeated, across an unrelated transition, across a restart; stopped and WAL-less fail closed', async (t) => {
+  it('AUTH-04D2V — separate processes: the Host process holds its stores in WAL; the verifier reads them through a read-only mount — running, repeated, across an unrelated transition, across a restart; Host stopped and WAL-less stores fail closed with exit 2', async (t) => {
     const mount = readOnlyMount(dir);
     if (mount === undefined) {
       assert.notEqual(process.env['CI'], 'true', 'CI runners must provide the read-only mount; this test is never skipped there');
@@ -1259,12 +1259,46 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
       assert.equal(down.stdout, '');
       assert.equal(filesystemSnapshot(dir), stopped, 'nothing created or repaired while stopped');
 
-      // F. WAL absent: SQLite itself cannot read the stopped Host's stores through the read-only mount — the precondition
-      // is SQLite's own requirement, not a stricter one. The verifier refuses before opening anything.
-      assert.deepEqual(walState(dir), [false, false, false, false], 'a clean shutdown left no WAL read state');
-      await assert.rejects(openExecutionReceiptEvidenceStore(join(mount.path, STORE_FILES[1] ?? ''), { issuer: CAPABILITY_ISSUER, organizationId: ORG, trustDomain: TRUST_DOMAIN, clock: Date.now }), 'the shared opener cannot open a WAL-less store read-only');
-      await assert.rejects(openExecutionCapabilityIssuanceLedger(join(mount.path, STORE_FILES[0] ?? ''), { issuer: CAPABILITY_ISSUER, clock: Date.now }), 'nor the issuance ledger');
-      assert.equal(filesystemSnapshot(dir), stopped, 'the refused opens changed nothing');
+      // Observed: a clean shutdown of the Host process left both stores' -wal and -shm in place. So "WAL files present"
+      // does not mean "Host running"; the verifier's running check is the private listener (E above), not the files.
+      const afterStop = walState(dir);
+
+      // F. WAL read state absent: a copy of both stores in WAL mode, checkpointed and closed so that it has no -wal or
+      // -shm, served through a read-only mount. The shared openers cannot open it read-only (SQLite cannot create the
+      // companions there), so the verifier's precondition is SQLite's own requirement, not a stricter one; and the
+      // verifier refuses with exit 2 before opening anything.
+      const copies = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-walless-'));
+      mkdirSync(join(copies, 'evidence'), { mode: 0o700 });
+      for (const file of STORE_FILES) {
+        const source = new Database(join(dir, file), { readonly: true });
+        try {
+          await source.backup(join(copies, file));
+        } finally {
+          source.close();
+        }
+        const holder = new Database(join(copies, file));
+        holder.pragma('journal_mode = WAL');
+        holder.pragma(`user_version = ${Number(holder.pragma('user_version', { simple: true }))}`);
+        holder.pragma('wal_checkpoint(TRUNCATE)');
+        holder.close();
+        // On this copy only, after the checkpoint and with no connection open: the companions go, the WAL-mode file stays.
+        for (const suffix of ['-wal', '-shm']) rmSync(join(copies, `${file}${suffix}`), { force: true });
+      }
+      assert.deepEqual(walState(copies), [false, false, false, false]);
+      const walless = readOnlyMount(copies);
+      assert.ok(walless !== undefined);
+      cleanup.push(() => walless.release());
+      const wallessSnapshot = filesystemSnapshot(copies);
+      await assert.rejects(openExecutionReceiptEvidenceStore(join(walless.path, STORE_FILES[1] ?? ''), { issuer: CAPABILITY_ISSUER, organizationId: ORG, trustDomain: TRUST_DOMAIN, clock: Date.now }), 'the shared opener cannot open a WAL-less store read-only');
+      await assert.rejects(openExecutionCapabilityIssuanceLedger(join(walless.path, STORE_FILES[0] ?? ''), { issuer: CAPABILITY_ISSUER, clock: Date.now }), 'nor the issuance ledger');
+      // The verifier, with a running Host, against those WAL-less stores: exit 2, a precondition — never a verdict.
+      hostProcess = await spawnHostProcess();
+      const refused = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinnedDirectory({ issuancePath: join(walless.path, STORE_FILES[0] ?? ''), evidencePath: join(walless.path, STORE_FILES[1] ?? '') }), { FRONTERA_VERIFIER_HOST: hostProcess.baseUrl }));
+      assert.equal(refused.status, 2, refused.stdout);
+      assert.match(refused.stderr, /PRECONDITION_UNAVAILABLE/);
+      assert.equal(refused.stdout, '');
+      assert.equal(filesystemSnapshot(copies), wallessSnapshot, 'nothing created or repaired');
+      assert.ok(afterStop.length === 4);
     } finally {
       if (hostProcess.running()) await hostProcess.stop().catch(() => undefined);
       for (const step of cleanup.reverse()) await step();

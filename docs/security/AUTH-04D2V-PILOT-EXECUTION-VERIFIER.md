@@ -35,7 +35,23 @@
 - **Not proven:**
   - **Database-level read-only behavior.** The protection comes entirely from the mount. If the tool were run with a writable mount, against this design, the openers' connections would be read-write. The tool still calls only read methods.
   - **Concurrency under live writes.** The byte checks ran with the Host quiescent. While the Host writes, its own changes to those files are expected and are not attributable to the verifier.
-  - **That the WAL read state lasts the Host's whole life in the pilot.** The Host opens both stores at boot and closes them at shutdown (`composition-root.ts`). In CI, though, the Host runs inside the test process, and after that process's own read-write opens and closes, a store was seen without its `-wal` while the Host kept running. The verifier then correctly exited 2. In the pilot the Host is a separate process and the only read-write connection, and the verifier's mount is read-only, so this is expected not to occur, but it is **not proven in CI**. If it does occur, the tool fails closed with exit 2; it never gives a wrong verdict. The withdrawal-after-execution regression therefore reads a consistent snapshot of the stores held in WAL mode, while the live read path is proven by the read-only-mount test.
+  - **Behavior while the Host writes the two stores themselves during a read.** The separate-process test's unrelated transition writes other stores (governance, approvals). A concurrent issuance or receipt write during a verifier read relies on SQLite's documented WAL reader isolation; it is not exercised.
+
+### Separate-process WAL lifecycle (qualified in CI)
+
+`scripts/run-enterprise-host.mjs`, the pilot image's command, ran as its own operating-system process on the real state. It opened and held the issuance ledger and evidence store exactly as the pilot startup path does. The verifier read them through a real read-only bind mount.
+
+| Case | Result |
+|---|---|
+| A. Host running | Both stores have `-wal` and `-shm`, held by the Host process. `SIMULATED_SUCCESS` (identical to the in-process statement) and `DELIVERY_FAILED` |
+| B. Repeated verification | Identical statements. Main-file, `-wal` and `-shm` bytes, the directory tree and the witness operation counts are unchanged. No record added |
+| C. Unrelated permitted transition between reads | A new request is withheld for approval. Same verdict; WAL read state intact |
+| D. Host restart | A new Host process. WAL read state held again; same verdict |
+| E. Host stopped | Exit 2 (private listener unreachable); nothing created |
+| F. WAL read state absent | A WAL-mode copy with no `-wal` or `-shm`, served read-only. **Both shared openers fail to open it**, so the precondition is SQLite's own requirement on a read-only mount, not a stricter check. The verifier exits 2 (`PRECONDITION_UNAVAILABLE`) before opening anything, and creates nothing |
+
+- **Observed:** after a clean shutdown of the Host process, both stores' `-wal` and `-shm` **remained**. File presence therefore says nothing about whether the Host runs. The verifier's running check is the private listener.
+- **In-process tests:** where the Host runs inside the test process, that process's own read-write opens and closes were seen to leave a store without its `-wal` while the Host kept running. The pilot's separate process is not affected (case A–D). The in-process withdrawal regression reads a consistent snapshot held in WAL mode.
 
 ## 2. Trust model
 
