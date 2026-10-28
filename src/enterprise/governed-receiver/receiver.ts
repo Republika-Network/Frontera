@@ -171,15 +171,26 @@ export function createGovernedSovereignReceiver(options: GovernedSovereignReceiv
         // existing flow's already-consumed one, from durable state; current asset eligibility must never turn that
         // into a definitive refusal, and nothing is loaded, verified or decided again. The atomic claim stays the
         // race-safe enforcement point: an unconsumed capability is still claimed below, or refused there.
+        const consumedNow = (): boolean => ledger.read(capability.capabilityId).state !== 'absent' || ledger.readExecution(capability.issuer, capability.executionId).state !== 'absent';
         let consumed: boolean;
         try {
-          consumed = ledger.read(capability.capabilityId).state !== 'absent' || ledger.readExecution(capability.issuer, capability.executionId).state !== 'absent';
+          consumed = consumedNow();
         } catch {
           return unavailable(eligible.bindingDigest);
         }
         if (!consumed) {
           const outcome = await gate.evaluate({ action: capability.action, resource: capability.resource, expiresAtMs: Date.parse(capability.expiresAt) });
-          if (!outcome.ok) return refusalOf(outcome, eligible.bindingDigest);
+          if (!outcome.ok) {
+            // The gate awaited: a concurrent delivery may have claimed (and attempted) this capability meanwhile. Read
+            // again before refusing; a consumption found now keeps its already-consumed answer from the flow below.
+            let consumedMeanwhile: boolean;
+            try {
+              consumedMeanwhile = consumedNow();
+            } catch {
+              return unavailable(eligible.bindingDigest);
+            }
+            if (!consumedMeanwhile) return refusalOf(outcome, eligible.bindingDigest);
+          }
         }
       }
 

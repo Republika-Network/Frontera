@@ -14,13 +14,13 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - RSDK-01 and `@aoc/protocol` are never imported by the module (structure-pinned), so the shipped runtime keeps Protocol type-only.
   - No new Host endpoint, capability or receipt schema, signer or custody code; no Host module imports the receiver. `ALLOWED_PROTOCOL_SUBPATHS` is unchanged.
 - **Tests**:
-  - `rsdk02-governed-receiver.test.ts`: 56 unit and adversarial tests (the resource predicate, the absolute deadline, replay semantics, the precomputed verdict, capability forgery and substitution, asset refusals, deadlines, replay, crash after claim, honest outcomes).
+  - `rsdk02-governed-receiver.test.ts`: 59 unit and adversarial tests (the resource predicate, the absolute deadline, replay semantics, the precomputed verdict, capability forgery and substitution, asset refusals, deadlines, replay, crash after claim, honest outcomes).
   - `rsdk02-governed-receiver-structure.test.ts`: 9 structure tests.
   - `tests/rsdk02-governed-receiver.e2e.test.mjs`: a loopback PUSH demonstration with real RSDK-01, the Host's real transport and independent receipt verification.
   - The fixture is generated inside the RSDK-01 package (`scripts/generate-governed-receiver-fixture.mjs`); no private key is written.
 - **RSDK-02D corrections** (Codex review):
   - *Absolute deadline.* The gate re-reads its one budget whenever it accepts a stage's result, and before an eligible decision, so a stage that blocks past the deadline is a timeout even if its timer never fired.
-  - *Replay semantics.* After G-02 verification, an already-consumed capability or execution (read with the verified ids only) skips the asset gate and keeps the flow's `already-consumed` answer, so an uncertain attempt is never reported as a definitive refusal. An unreadable ledger fails closed with `claim-unavailable`.
+  - *Replay semantics.* After G-02 verification, an already-consumed capability or execution (read with the verified ids only) skips the asset gate and keeps the flow's `already-consumed` answer, so an uncertain attempt is never reported as a definitive refusal. The ledger is read again before any gate refusal, so a concurrent delivery's consumption is preserved too. An unreadable ledger fails closed with `claim-unavailable`.
 - **Not claimed**: freshness, revocation, exactly-once effects, multi-instance single use beyond one shared local ledger, production readiness. See `docs/architecture/ADR-RSDK-02-GOVERNED-RECEIVER.md`.
 
 ### Security — AUTH-04D1R graceful shutdown of the human-decision authority

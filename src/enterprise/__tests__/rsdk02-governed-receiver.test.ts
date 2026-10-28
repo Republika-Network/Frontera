@@ -971,6 +971,67 @@ describe('RSDK-02D — a consumed capability keeps its consumed answer, whatever
     assert.equal(w.events.filter((event) => event.startsWith('effect-start')).length, 1);
   });
 
+  it('a delivery held in the gate while a duplicate claims and attempts it keeps the consumed answer, not a refusal (the reported interleaving)', async () => {
+    const held = deferred();
+    let calls = 0;
+    const w = await world({
+      observe: () => 'unknown',
+      policy: async (input) => {
+        calls += 1;
+        if (calls === 1) {
+          await held.promise;
+          return { decision: 'ineligible', reason: 'CHANGED_WHILE_HELD' };
+        }
+        return demonstrationPolicy(input);
+      },
+    });
+    const observed = governed();
+    const first = w.handle(observed);
+    for (let i = 0; i < 50 && calls < 1; i += 1) await flush();
+    const duplicate = await w.handle(observed);
+    assert.equal(duplicate.record.outcome, 'attempted-outcome-unknown');
+    assert.equal(duplicate.status, 502);
+    held.resolve();
+    const answer = await first;
+    assert.equal(answer.record.outcome, 'already-consumed', JSON.stringify(answer.record));
+    assert.equal(answer.status, 202);
+    assert.equal(answer.record.ledgerState, 'outcome-unknown', 'the persisted uncertain state is what the held delivery reports');
+    assert.equal(w.events.filter((event) => event.startsWith('effect-start')).length, 1);
+  });
+
+  it('a sibling capability for the same execution consumed while this delivery is held is preserved too', async () => {
+    const held = deferred();
+    let calls = 0;
+    const w = await world({
+      policy: async (input) => {
+        calls += 1;
+        if (calls === 1) {
+          await held.promise;
+          return { decision: 'ineligible', reason: 'CHANGED_WHILE_HELD' };
+        }
+        return demonstrationPolicy(input);
+      },
+    });
+    const executionId = 'aoc.exec:rsdk02d-held-sibling';
+    const first = w.handle(governed(ASSET, { executionId }));
+    for (let i = 0; i < 50 && calls < 1; i += 1) await flush();
+    assert.equal((await w.handle(governed(ASSET, { executionId }))).record.outcome, 'completed-observed');
+    held.resolve();
+    const answer = await first;
+    assert.equal(answer.record.outcome, 'already-consumed', JSON.stringify(answer.record));
+    assert.equal(answer.record.code, 'EXECUTION_CONSUMED');
+  });
+
+  it('if the re-read after the gate fails, the refusal is withheld: claim-unavailable, never a definitive rejection', async () => {
+    let reads = 0;
+    const w = await world({ readThrows: () => (reads += 1) > 1, policy: () => ({ decision: 'ineligible', reason: 'NOT_NOW' }) });
+    const answer = await w.handle(governed());
+    assert.equal(answer.record.outcome, 'claim-unavailable');
+    assert.equal(answer.status, 503);
+    assert.equal(w.events.includes('claim'), false);
+    assert.equal(w.events.some((event) => event.startsWith('effect')), false);
+  });
+
   it('a ledger that cannot be inspected fails closed: nothing is gated, claimed or performed, and nothing is stated as final', async () => {
     const w = await world({ readThrows: () => true });
     const answer = await w.handle(governed());
