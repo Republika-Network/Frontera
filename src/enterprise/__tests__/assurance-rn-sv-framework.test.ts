@@ -413,6 +413,74 @@ describe('rn.sv 0.1.0 integrity', () => {
   });
 });
 
+/**
+ * Independent-review follow-up (F01, F02). These tests pin CURRENT engine
+ * behaviour that is NOT acceptable for commercial conclusions; they exist so
+ * ASSURE-SEC-01 has to change them deliberately, not to endorse the behaviour.
+ */
+describe('rn.sv 0.1.0 commercial-use limits (known gaps, ASSURE-SEC-01 blockers)', () => {
+  it('F01: currently accepts and scores a PASS review that cites no evidence -- not permitted for commercial conclusions', async () => {
+    const harness = rnSvHarness();
+    // No evidence collected at all: nothing could support a pass.
+    const evaluated = await evaluateRnSv(harness, []);
+    assert.equal(evaluated.evidenceReferences.length, 0);
+
+    const review = await harness.service.recordManualReview(ASSURANCE_ORG, {
+      assessmentId: evaluated.assessmentId,
+      controlId: 'SV-08',
+      reviewerId: 'reviewer-1',
+      reviewerRole: RN_SV_REVIEWER_ROLE,
+      outcome: 'pass',
+      rationale: 'Unsupported pass recorded to pin the known gap.',
+    });
+    assert.equal(review.outcome, 'pass');
+    assert.deepEqual(review.evidenceReferenceIds, []);
+
+    const { 'SV-08': _alreadyReviewed, ...remaining } = allControls('pass');
+    await recordReviews(harness, evaluated.assessmentId, remaining, false);
+    const reevaluated = await harness.service.evaluateAssessment(ASSURANCE_ORG, evaluated.assessmentId);
+    assert.deepEqual(Object.values(statusesOf(reevaluated)), SV_CONTROL_IDS.map(() => 'pass'));
+    assert.equal(reevaluated.score.normalizedScore, 100);
+
+    // The unsupported assessment completes and verifies: integrity is not truthfulness.
+    const completed = await harness.service.completeAssessment(ASSURANCE_ORG, evaluated.assessmentId);
+    assert.equal(completed.status, 'completed');
+    assert.equal(verifyAssuranceAssessment({ assessment: completed, framework: RN_SV_FRAMEWORK_V0_1, now: harness.now }).valid, true);
+
+    // Nothing in the engine prevents this; only the documented restriction does.
+    const commercialUse = RN_SV_FRAMEWORK_V0_1.metadata?.['commercialUse'] as Readonly<Record<string, unknown>>;
+    assert.equal(commercialUse['status'], 'restricted');
+    assert.ok(RN_SV_FRAMEWORK_V0_1.controls.every((control) => control.criteria.type === 'manual_review' && control.criteria.requiredEvidenceRequirementIds === undefined));
+  });
+
+  it('F02: status active means available to register and assess, not commercially authorized; commercialUse is informative only', async () => {
+    assert.equal(RN_SV_FRAMEWORK_V0_1.status, 'active');
+    const commercialUse = RN_SV_FRAMEWORK_V0_1.metadata?.['commercialUse'] as Readonly<Record<string, unknown>>;
+    assert.equal(commercialUse['status'], 'restricted');
+
+    // `active` is what makes the definition assessable at all: a draft is refused outright.
+    const registry = createAssuranceFrameworkRegistry();
+    registry.register(RN_SV_FRAMEWORK_V0_1);
+    assert.equal(resolveFrameworkForAssessment(registry, RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_VERSION), RN_SV_FRAMEWORK_V0_1);
+    const draftRegistry = createAssuranceFrameworkRegistry();
+    draftRegistry.register({ ...RN_SV_FRAMEWORK_V0_1, status: 'draft' });
+    assert.throws(
+      () => resolveFrameworkForAssessment(draftRegistry, RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_VERSION),
+      (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_FRAMEWORK_VERSION_UNSUPPORTED',
+    );
+
+    // `restricted` is not enforced: an assessment runs to completion regardless, and nothing in it
+    // carries a commercial authorization -- no eligibility result is produced.
+    const harness = rnSvHarness();
+    const evaluated = await evaluateRnSv(harness, SYNTHETIC_EVIDENCE);
+    await recordReviews(harness, evaluated.assessmentId, allControls('pass'), true);
+    await harness.service.evaluateAssessment(ASSURANCE_ORG, evaluated.assessmentId);
+    const completed = await harness.service.completeAssessment(ASSURANCE_ORG, evaluated.assessmentId);
+    assert.equal(completed.status, 'completed');
+    assert.deepEqual(completed.eligibility, []);
+  });
+});
+
 describe('rn.sv 0.1.0 end-to-end (synthetic data only)', () => {
   it('completes a synthetic assessment under valid reviews, and it verifies', async () => {
     const harness = rnSvHarness();

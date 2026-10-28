@@ -35,6 +35,19 @@ import type { AssuranceControlDefinition, AssuranceEvidenceRequirement, Assuranc
  * ASSURE-SEC-01 lands, results recorded under this framework must not be
  * issued as commercial conclusions without controlled external review.
  *
+ * `status: 'active'` vs `commercialUse.status: 'restricted'`: `active` is the
+ * registry lifecycle state and only means the definition is available to
+ * register and to assess against (`resolveFrameworkForAssessment` refuses a
+ * `draft`). It is not an authorization to issue commercial assessments.
+ * `metadata.commercialUse` is informative only -- no engine component reads
+ * or enforces it; the restriction is procedural until ASSURE-SEC-01.
+ *
+ * Known engine gap (SEC-01 mandatory blocker, pinned by a negative test):
+ * because the criteria omit `requiredEvidenceRequirementIds`, the service
+ * accepts a `pass` review that cites no evidence at all, and the evaluator
+ * scores it as a full pass. Such a result is not a valid basis for any
+ * commercial conclusion. CAT-01 does not change the service or evaluator.
+ *
  * This framework version is immutable -- every change to controls, questions,
  * weights, or thresholds requires `rn.sv` 0.2.0+. The golden digest test in
  * `assurance-rn-sv-framework.test.ts` enforces it.
