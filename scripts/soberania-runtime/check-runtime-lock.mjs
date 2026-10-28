@@ -2,11 +2,22 @@
 // Validates soberania-runtime-consumer.lock.json and the vendored Soberanía runtime artifacts it
 // pins (FRONTERA-SOBE-PILOT-01A): lock shape and policy, every vendored tarball's bytes and file
 // inventory, no unlisted artifact in the vendor directory, and no Frontera source importing the
-// runtime yet. Reads only; installs and writes nothing.
+// runtime yet. Since FRONTERA-SOBE-PILOT-01C0 it also checks the installation: only the closure
+// workspace declares the runtime, and package-lock.json installs exactly the locked artifacts as
+// production dependencies. Reads only; installs and writes nothing.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { RUNTIME_VENDOR_DIR, findRuntimeImports, tarballIdentityErrors, validateRuntimeLock } from './lib-runtime-artifacts.mjs';
+import {
+  CLOSURE_WORKSPACE_DIR,
+  RUNTIME_VENDOR_DIR,
+  closureManifestErrors,
+  findRuntimeImports,
+  foreignManifestErrors,
+  installedGraphErrors,
+  tarballIdentityErrors,
+  validateRuntimeLock,
+} from './lib-runtime-artifacts.mjs';
 
 const root = process.cwd();
 const failures = [];
@@ -23,6 +34,24 @@ if (Array.isArray(lock.packages)) {
     if (file.endsWith('.tgz') && !listed.has(file)) failures.push(`${RUNTIME_VENDOR_DIR}/${file} is not pinned by the lock.`);
   }
 }
+
+const readJson = (path) => JSON.parse(readFileSync(resolve(root, path), 'utf8'));
+const rootPkg = readJson('package.json');
+failures.push(...foreignManifestErrors(rootPkg, 'package.json'));
+for (const workspaceRoot of ['packages', 'apps']) {
+  for (const name of readdirSync(resolve(root, workspaceRoot))) {
+    const manifest = `${workspaceRoot}/${name}/package.json`;
+    let pkg;
+    try {
+      pkg = readJson(manifest);
+    } catch {
+      continue;
+    }
+    if (`${workspaceRoot}/${name}` === CLOSURE_WORKSPACE_DIR) failures.push(...closureManifestErrors(pkg, lock, rootPkg, root).map((error) => `${manifest}: ${error}`));
+    else failures.push(...foreignManifestErrors(pkg, manifest));
+  }
+}
+failures.push(...installedGraphErrors(readJson('package-lock.json'), lock).map((error) => `package-lock.json: ${error}`));
 
 const SOURCE_ROOTS = ['src', 'packages', 'apps', 'types'];
 const SOURCE_EXT = /\.(ts|mts|cts|tsx|js|mjs|cjs)$/;

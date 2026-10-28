@@ -1,0 +1,17 @@
+{
+  "name": "@aoc-enterprise/soberania-runtime-closure",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Installs the approved Soberanía runtime closure (FRONTERA-SOBE-PILOT-01C0) as production dependencies: the five executable runtimes, their two declaration packages and the @aoc/protocol candidate that @aoc-runtime/crypto requires at run time. Contains no code and exports nothing. No Frontera source consumes these packages yet, and the published @aoc-enterprise/runtime artifact neither depends on nor carries them.",
+  "files": [],
+  "dependencies": {
+    "@aoc-runtime/authorization-runtime": "file:../../vendor/soberania-runtime/aoc-runtime-authorization-runtime-0.1.0.tgz",
+    "@aoc-runtime/capability-runtime": "file:../../vendor/soberania-runtime/aoc-runtime-capability-runtime-0.1.0.tgz",
+    "@aoc-runtime/consent-runtime": "file:../../vendor/soberania-runtime/aoc-runtime-consent-runtime-0.1.0.tgz",
+    "@aoc-runtime/crypto": "file:../../vendor/soberania-runtime/aoc-runtime-crypto-0.1.0.tgz",
+    "@aoc-runtime/governance-runtime": "file:../../vendor/soberania-runtime/aoc-runtime-governance-runtime-0.1.0.tgz",
+    "@aoc-runtime/provider-interfaces": "file:../../vendor/soberania-runtime/aoc-runtime-provider-interfaces-0.1.0.tgz",
+    "@aoc-runtime/shared-types": "file:../../vendor/soberania-runtime/aoc-runtime-shared-types-0.1.0.tgz",
+    "@aoc/protocol": "file:../../vendor/aoc-protocol-0.2.0-rc.3.tgz"
+  }
+}

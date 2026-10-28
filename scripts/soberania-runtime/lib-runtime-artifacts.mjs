@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 import { INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS } from '../protocol/lib-protocol-artifact.mjs';
 
@@ -43,6 +43,101 @@ export const ALLOWED_RUNTIME_REQUIRES = Object.freeze([
 ]);
 
 export const RUNTIME_VENDOR_DIR = 'vendor/soberania-runtime';
+
+/**
+ * The one workspace that installs the approved closure (FRONTERA-SOBE-PILOT-01C0). It holds no code;
+ * its production dependencies put the closure, and the @aoc/protocol candidate crypto requires, into
+ * the lockfile as non-dev, so the Host's `npm ci --omit=dev` installs them. The published
+ * @aoc-enterprise/runtime artifact neither depends on nor carries it, and no other manifest may
+ * declare a Soberanía runtime package.
+ */
+export const CLOSURE_WORKSPACE_DIR = 'packages/soberania-runtime-closure';
+export const CLOSURE_WORKSPACE_NAME = '@aoc-enterprise/soberania-runtime-closure';
+
+const isRuntimePackageName = (name) => name.startsWith('@aoc-runtime/') || EXCLUDED_RUNTIME_PACKAGES.includes(name);
+
+/** The absolute path a `file:` specifier declared in the manifest at `manifestDir` points at, or undefined. */
+function fileSpecTarget(spec, manifestDir) {
+  return typeof spec === 'string' && spec.startsWith('file:') ? resolve(manifestDir, spec.slice('file:'.length)) : undefined;
+}
+
+/**
+ * Errors (empty when none) for the closure workspace's package.json. It must declare exactly the seven
+ * locked tarballs and @aoc/protocol, and its @aoc/protocol must be the very artifact the root pins
+ * (`devDependencies["@aoc/protocol"]`, itself verified against protocol-consumer.lock.json), so the
+ * runtime closure and Frontera always resolve one Protocol package.
+ */
+export function closureManifestErrors(pkg, lock, rootPkg, rootDir) {
+  const errors = [];
+  if (pkg?.name !== CLOSURE_WORKSPACE_NAME) errors.push(`closure workspace must be named ${CLOSURE_WORKSPACE_NAME}.`);
+  if (pkg?.private !== true) errors.push('closure workspace must be private.');
+  for (const field of ['main', 'types', 'exports', 'bin', 'scripts', 'bundleDependencies', 'bundledDependencies']) {
+    if (pkg?.[field] !== undefined) errors.push(`closure workspace must not declare "${field}": it holds no code.`);
+  }
+  for (const field of ['devDependencies', 'peerDependencies', 'optionalDependencies']) {
+    if (Object.keys(pkg?.[field] ?? {}).length > 0) errors.push(`closure workspace must not declare "${field}".`);
+  }
+  const declared = pkg?.dependencies ?? {};
+  const pinned = new Map((lock.packages ?? []).map((entry) => [entry.name, `file:../../${entry.tarball.vendoredAt}`]));
+  for (const [name, spec] of pinned) {
+    if (declared[name] !== spec) errors.push(`closure workspace must depend on ${name} as "${spec}" (found ${JSON.stringify(declared[name])}).`);
+  }
+  const closureDir = resolve(rootDir, CLOSURE_WORKSPACE_DIR);
+  const protocolTarget = fileSpecTarget(declared['@aoc/protocol'], closureDir);
+  const rootProtocolTarget = fileSpecTarget(rootPkg?.devDependencies?.['@aoc/protocol'], rootDir);
+  if (protocolTarget === undefined || rootProtocolTarget === undefined || protocolTarget !== rootProtocolTarget) {
+    errors.push('closure workspace must depend on @aoc/protocol through a file: specifier naming the same artifact as the root devDependency.');
+  }
+  for (const name of Object.keys(declared)) {
+    if (!pinned.has(name) && name !== '@aoc/protocol') errors.push(`closure workspace declares ${name}, which is outside the approved closure.`);
+  }
+  return errors;
+}
+
+/** Errors (empty when none) for any manifest other than the closure workspace's: it may declare no Soberanía runtime package. */
+export function foreignManifestErrors(pkg, label) {
+  const errors = [];
+  for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies', 'bundleDependencies', 'bundledDependencies']) {
+    const names = Array.isArray(pkg?.[field]) ? pkg[field] : Object.keys(pkg?.[field] ?? {});
+    for (const name of names) if (isRuntimePackageName(name)) errors.push(`${label} ${field}: ${name} may be declared only by ${CLOSURE_WORKSPACE_DIR}.`);
+  }
+  return errors;
+}
+
+/**
+ * Errors (empty when none) for the installed graph package-lock.json records: exactly the seven approved
+ * packages, each installed once at the top level from its vendored tarball with the locked integrity and
+ * as a production (non-dev) package; @aoc/protocol installed as production too; nothing excluded anywhere.
+ */
+export function installedGraphErrors(packageLock, lock) {
+  const errors = [];
+  const byName = new Map((lock.packages ?? []).map((entry) => [entry.name, entry]));
+  const seen = new Set();
+  for (const [key, entry] of Object.entries(packageLock?.packages ?? {})) {
+    const at = key.lastIndexOf('node_modules/');
+    if (at === -1) continue;
+    const name = key.slice(at + 'node_modules/'.length);
+    if (EXCLUDED_RUNTIME_PACKAGES.includes(name)) errors.push(`${key}: excluded package ${name} is installed.`);
+    if (!name.startsWith('@aoc-runtime/')) continue;
+    const pinned = byName.get(name);
+    if (pinned === undefined) {
+      errors.push(`${key}: ${name} is not an approved package.`);
+      continue;
+    }
+    if (key !== `node_modules/${name}`) errors.push(`${key}: ${name} must be installed once, at the top level.`);
+    seen.add(name);
+    if (entry.resolved !== `file:${pinned.tarball.vendoredAt}`) errors.push(`${key}: resolved ${entry.resolved}, expected file:${pinned.tarball.vendoredAt}.`);
+    if (entry.integrity !== pinned.tarball.integrity) errors.push(`${key}: integrity differs from the runtime lock.`);
+    if (entry.version !== pinned.version) errors.push(`${key}: version ${entry.version}, expected ${pinned.version}.`);
+    if (entry.dev === true || entry.devOptional === true || entry.optional === true) errors.push(`${key}: must be a production dependency.`);
+    if (entry.link === true) errors.push(`${key}: must be installed from its tarball, not linked.`);
+  }
+  for (const name of byName.keys()) if (!seen.has(name)) errors.push(`${name} is not installed.`);
+  const protocol = packageLock?.packages?.['node_modules/@aoc/protocol'];
+  if (protocol === undefined) errors.push('@aoc/protocol is not installed.');
+  else if (protocol.dev === true || protocol.devOptional === true) errors.push('@aoc/protocol must be a production dependency: @aoc-runtime/crypto requires it at run time.');
+  return errors;
+}
 
 /** Errors (empty when none) for the shape and policy of soberania-runtime-consumer.lock.json. */
 export function validateRuntimeLock(lock) {

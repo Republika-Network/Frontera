@@ -1,11 +1,11 @@
 {
-  "$comment": "NOT an npm lockfile. Auditable record of the Soberanía runtime artifacts Frontera vendors for the private pilot (FRONTERA-SOBE-PILOT-01A). It authorizes nothing by itself: no Frontera source consumes these packages yet, and none is installed into Frontera's dependency graph. Validate with `npm run check:soberania-runtime-lock`; see docs/integration/SOBERANIA_RUNTIME_CONSUMPTION.md.",
+  "$comment": "NOT an npm lockfile. Auditable record of the Soberanía runtime artifacts Frontera vendors for the private pilot (FRONTERA-SOBE-PILOT-01A, updated by FRONTERA-SOBE-PILOT-01C0). It authorizes nothing by itself. Since 01C0 the artifacts are installed as production dependencies through the private closure workspace packages/soberania-runtime-closure (package-lock.json must match the integrity below); no Frontera source consumes them yet, and the published @aoc-enterprise/runtime artifact neither depends on nor carries them. Validate with `npm run check:soberania-runtime-lock`; see docs/integration/SOBERANIA_RUNTIME_CONSUMPTION.md.",
   "contract": "frontera.soberania-runtime-consumption",
   "contractVersion": "1.0.0",
   "sourceRepository": "Republika-Network/Soberania_Protocol",
-  "sourceCommit": "1112c63d93875400aeae8e01d85f3c8543be51d4",
-  "sourceTree": "ae1f68ef9169620dca7c50c53c20ad7614e9dc69",
-  "sourceNote": "Public main of Soberanía Protocol after the merge of the fix for GHSA-52j9-7x43-3qc4 (published 2026-10-26). The repository's root package `aoc-runtime` is not certified for distribution and is not vendored.",
+  "sourceCommit": "e85cf1bbb76e844fee7ff6ad5dd5389d26a5f180",
+  "sourceTree": "526df04132d0cb0b5dac293c298eae1a104223db",
+  "sourceNote": "Public main of Soberanía Protocol after the squash merge of PR #396 (SOBE-TYPES-01: authorization-runtime declarations no longer import audit-runtime or trust-registry-runtime). Tree identical to the qualified PR head 74f901c25a4c867219994d79752fc6d899b02309; merged by the founder through an organization-admin ruleset bypass with no approving review. Relative to the previous pin (1112c63), only @aoc-runtime/authorization-runtime changed, and its dist/index.js is byte-identical; the other six artifacts repack byte-identically. The repository's root package `aoc-runtime` is not certified for distribution and is not vendored.",
   "packaging": {
     "method": "npm pack --pack-destination <dir> ./<package dir>, for each package below, from a clean checkout of sourceCommit after npm ci and npm run build",
     "toolchain": {
@@ -45,10 +45,10 @@
       "tarball": {
         "filename": "aoc-runtime-authorization-runtime-0.1.0.tgz",
         "vendoredAt": "vendor/soberania-runtime/aoc-runtime-authorization-runtime-0.1.0.tgz",
-        "sha256": "02d40c4c3377b06a2f27dfb31d4c28848fef424ce4bafee680d866f7b198ce4f",
-        "sha512": "9f307206703b3bcb3dc615bb49667a704279bfe4dfad371a4fba0d7f3e35aee4a3a223ff79b02cfc260a4338b62e58bc938111f1edad05a5f5f0ea7bbc6657f2",
-        "integrity": "sha512-nzByBnA7O8s9xhW7SWZ6cEJ5v+TfrTcaT7oNfz41ruSjoiP/ebAs/CYKQzi2Lli8k4ER8e2tBaX18Op7vGZX8g==",
-        "sizeBytes": 16755,
+        "sha256": "cf8ebb7f07d49da4ae3630d88ed99bbe98d4bf6a876fc0653d101436e4fb6e51",
+        "sha512": "0e09fb16d15f0fe2a152f4a315ca7198100f6f28f4e4575e12cd77c95d6f47c268010c6602e3371f2bfa99a27e1f28241a1c9a18ce6b49d1326203a4ec27e9a4",
+        "integrity": "sha512-Dgn7FtFfD+KhUvSjFcpxmBAPbyj05FdeEs13yV1vR8JoAQxmAuM3Hyv6maJ+HygkGhyaGM5rSdEyYgOk7CfppA==",
+        "sizeBytes": 13903,
         "fileCount": 7
       },
       "runtimeRequires": [],
@@ -266,17 +266,18 @@
       "reason": "Not part of the approved authorization closure."
     }
   ],
-  "declarationGaps": [
+  "resolvedDeclarationGaps": [
     {
       "package": "@aoc-runtime/authorization-runtime",
-      "unresolvedTypeImports": [
+      "previouslyUnresolvedTypeImports": [
         "@aoc-runtime/audit-runtime",
         "@aoc-runtime/trust-registry-runtime"
       ],
-      "effect": "Type-only: the compiled module requires neither. With skipLibCheck (Frontera's tsconfig.base.json) the AuditRuntime and federated-authority types read as `any`; without it the declarations do not type-check. Recorded as a FRONTERA-SOBE-PILOT-01B input, not resolved here."
+      "resolvedBy": "Soberanía Protocol PR #396, merge commit e85cf1bbb76e844fee7ff6ad5dd5389d26a5f180",
+      "resolution": "The constructor's audit and federated-verifier parameters are typed by structural ports declared in the package itself (AuthorizationDecisionFinalizer, FederatedAuthorityVerifierPort). The declarations import only approved closure packages, and a strict consumer with skipLibCheck: false type-checks (tests/soberania-runtime-consumption.test.mjs)."
     }
   ],
   "approvedUse": "Private pilot only. AuthorizationRuntime with GovernanceRuntime, CapabilityRuntime and ConsentRuntime; no federated authority; evaluation time from a trusted server clock passed as both `at` and `now`; governance scope, namespace and actor derived server-side. Other exports present in these artifacts (e.g. crypto encryptObject/decryptObject, governance-runtime bootstrap-brief and resource-accounting helpers) are not approved for pilot use.",
-  "validatedAt": "2026-10-26",
-  "validationEvidence": "docs/release/SOBERANIA_RUNTIME_ARTIFACTS_EVIDENCE.md"
+  "validatedAt": "2026-10-27",
+  "validationEvidence": "docs/release/SOBERANIA_RUNTIME_DEPENDENCY_CLOSURE_EVIDENCE_01C0.md"
 }

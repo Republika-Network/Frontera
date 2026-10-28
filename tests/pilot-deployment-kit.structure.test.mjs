@@ -169,7 +169,7 @@ describe('PROD-03-03 pilot deployment kit', () => {
       assert.equal(/\.env|\.git\b|deploy|docs|tests|\.data/.test(allowed), false, `${allowed} must not be admitted`);
     }
     // What the build needs is admitted: the lockfile and the workspace manifests.
-    for (const needed of ['!package.json', '!package-lock.json', '!src/', '!packages/', '!apps/*/package.json', '!vendor/*.tgz', '!scripts/', '!release/api-surface.v1.json']) {
+    for (const needed of ['!package.json', '!package-lock.json', '!src/', '!packages/', '!apps/*/package.json', '!vendor/*.tgz', '!vendor/soberania-runtime/*.tgz', '!scripts/', '!release/api-surface.v1.json']) {
       assert.ok(lines.includes(needed), needed);
     }
   });

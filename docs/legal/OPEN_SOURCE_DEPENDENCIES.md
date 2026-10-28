@@ -20,6 +20,12 @@ dependencies (see `docs/legal/IP_OVERVIEW.md`). `@aoc/protocol` is
 likewise excluded — it is a peer dependency on the separate Soberanía Protocol
 project, not a conventional open-source dependency (see
 `docs/legal/PROTOCOL_ENTERPRISE_BOUNDARY.md`).
+So are the seven `@aoc-runtime/*` packages (FRONTERA-SOBE-PILOT-01C0): they are
+Soberanía Protocol project artifacts, vendored as checksummed tarballs and
+pinned by `soberania-runtime-consumer.lock.json`, installed only through the
+private `packages/soberania-runtime-closure` workspace, and never carried by the
+published `@aoc-enterprise/runtime` artifact (see
+`docs/integration/SOBERANIA_RUNTIME_CONSUMPTION.md`).
 
 The root lockfile is the single source of truth for the whole npm
 workspaces monorepo (`workspaces: ["packages/*", "apps/*"]`) and
