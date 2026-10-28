@@ -125,3 +125,50 @@ authoritative status. Anyone who handles the bundle can add or remove one.
   they are not reported as separately issuer-verified claims.
 - **Older content.** Content of manifest versions other than the current one is not checked.
 - **Later work.** PUSH execution, enforcement and content access.
+
+## Document-use eligibility (FV-P2, opt-in)
+
+`verifyDocumentUseEligibility` is a separate, additive entry point for assets declared under the
+Soberanía `soberania.document-use/1` profile (PROPOSED). `verifyReceivedSovereignAsset`, its options,
+its reasons and its result are unchanged; existing callers (RSDK-02B) are not affected.
+
+```ts
+import { verifyDocumentUseEligibility } from '@aoc-enterprise/sovereign-receiver-verification';
+
+const result = await verifyDocumentUseEligibility(bundleText, {
+  verificationKeyResolver,  // required
+  expectedSovereignAssetId, // required here (optional in RSDK-01)
+  expectedIssuer,           // optional, passed to RSDK-01
+  contentBytes,             // required: a document asset must commit to its bytes
+});
+```
+
+It first runs RSDK-01 with the profile's own, fixed compatibility declaration (`Authorship` claims,
+the four licensing declaration concepts and the profile's four action concepts; nothing else). Only a
+`verified` bundle is then checked against the eligibility preconditions RSDK-01 does not cover:
+
+| Precondition | Refusal |
+|---|---|
+| The caller names the expected asset | `EXPECTED_ASSET_REQUIRED` |
+| The current manifest is `active` and commits to content | `MANIFEST_STATE_NOT_ACTIVE`, `CONTENT_IDENTITY_NOT_DECLARED` |
+| The bundle carries exactly one claim, and it is a terms claim | `TERMS_MISSING`, `TERMS_AMBIGUOUS`, `TERMS_UNEXPECTED_CLAIM` |
+| The terms pass Protocol's `validateLicenseTermsClaim` | `TERMS_STRUCTURE_INVALID` |
+| The terms are about the expected asset | `TERMS_SUBJECT_MISMATCH` |
+| The terms issuer is the verified registrant, re-verified with Protocol's expected-issuer binding | `TERMS_ISSUER_NOT_REGISTRANT`, `KEY_RESOLVER_FAILED` |
+| Every rule names a concept from the profile's table | `TERMS_CONCEPT_UNSUPPORTED` |
+
+`result.outcome` is `eligible_for_evaluation` or `ineligible`. An ineligible result names its `stage`
+(`options`, `artifact_verification` or `eligibility`) and carries only codes from
+`DOCUMENT_USE_INELIGIBILITY_REASONS`, which contains every RSDK-01 reason. Options are read once, as
+plain own data properties only (accessors, inherited and unknown keys are refused), and the same
+snapshot is handed to RSDK-01. The caller cannot supply `consumerSupport`.
+
+**Eligible is not allowed.** `eligible_for_evaluation` means the terms are authentic, authoritative,
+well-formed and unambiguous, and returns them as plain data for a later evaluator. It is not a policy
+decision: `policyEvaluation`, `authorization`, `revocation`, `freshness`, `temporalValidity` and
+`audience` are all `not_evaluated`. Expired or not-yet-effective terms are still eligible: their
+instants are reported, never compared with a clock. Rule semantics (ALLOWED / DENIED / WITHHELD),
+approval evidence, audience matching, replay of older terms and revocation are later work.
+
+Protocol access: this entry point needs `@aoc/protocol/licensing`, added to this package's scoped
+allowance for FV-P2 (see `docs/integration/PROTOCOL_PACKAGE_CONSUMPTION.md`).

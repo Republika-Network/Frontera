@@ -1,4 +1,4 @@
-// RSDK-01: the package-scoped @aoc/protocol allowance admits exactly four subpaths, only inside
+// RSDK-01 (licensing added by FV-P2): the package-scoped @aoc/protocol allowance admits exactly five subpaths, only inside
 // packages/sovereign-receiver-verification/, and cannot be used from any other Frontera path.
 //
 // Fixture sources below are assembled from template strings, so this file never contains a
@@ -22,10 +22,9 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PKG_DIR = 'packages/sovereign-receiver-verification/';
-const SCOPED = ['identity', 'manifest', 'portability', 'interoperability'].map((name) => `@aoc/protocol/${name}`);
+const SCOPED = ['identity', 'manifest', 'portability', 'interoperability', 'licensing'].map((name) => `@aoc/protocol/${name}`);
 const NOT_SCOPED = [
   '@aoc/protocol/canonical',
-  '@aoc/protocol/licensing',
   '@aoc/protocol/governance-compatibility',
   '@aoc/protocol/sovereignty-capabilities',
   '@aoc/protocol/manifest/verify',
@@ -50,7 +49,7 @@ test('the global allowlist is unchanged and disjoint from the package-scoped sub
   }
 });
 
-test('exactly one package holds an allowance, for exactly the four approved subpaths, and it is frozen', () => {
+test('exactly one package holds an allowance, for exactly the five approved subpaths, and it is frozen', () => {
   assert.equal(PACKAGE_SCOPED_PROTOCOL_SUBPATHS.length, 1);
   const [entry] = PACKAGE_SCOPED_PROTOCOL_SUBPATHS;
   assert.equal(entry.package, '@aoc-enterprise/sovereign-receiver-verification');

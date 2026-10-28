@@ -176,8 +176,9 @@ export const ALLOWED_PROTOCOL_SUBPATHS = Object.freeze([
 export const INTERNAL_DEPENDENCY_PROTOCOL_SUBPATHS = Object.freeze(['@aoc/protocol/canonical']);
 
 // Protocol subpaths one named package may import, approved by the founder for RSDK-01
-// (RSDK-00B). The allowance is keyed to the package's directory and nothing else: no other
-// Frontera source, package or test may use it, and ALLOWED_PROTOCOL_SUBPATHS is unchanged.
+// (RSDK-00B); @aoc/protocol/licensing added for FV-P2 (document-use terms validation). The
+// allowance is keyed to the package's directory and nothing else: no other Frontera source,
+// package or test may use it, and ALLOWED_PROTOCOL_SUBPATHS is unchanged.
 // Recorded in protocol-consumer.lock.json -> packageScopedPublicExports, which must equal this
 // value exactly (validateCompatibilityLock).
 export const PACKAGE_SCOPED_PROTOCOL_SUBPATHS = Object.freeze([
@@ -189,6 +190,7 @@ export const PACKAGE_SCOPED_PROTOCOL_SUBPATHS = Object.freeze([
       '@aoc/protocol/manifest',
       '@aoc/protocol/portability',
       '@aoc/protocol/interoperability',
+      '@aoc/protocol/licensing',
     ]),
   }),
 ]);
