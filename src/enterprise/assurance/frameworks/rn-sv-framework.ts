@@ -21,8 +21,10 @@ import type { AssuranceControlDefinition, AssuranceEvidenceRequirement, Assuranc
  * - The criteria deliberately omit `requiredEvidenceRequirementIds`: the
  *   service enforces it for every outcome, which would make an
  *   `insufficient_evidence` review unrecordable when evidence is missing.
- *   Citing evidence for pass/partial/fail is a procedural duty of the
- *   reviewer until ASSURE-SEC-01 makes it outcome-aware.
+ *   Omitting it selects the engine's `control_bound` review policy
+ *   (ASSURE-SEC-01A, `manual-review-evidence.ts`): pass/partial/fail must
+ *   cite accepted evidence explicitly bound to the control's own requirement,
+ *   while `insufficient_evidence` needs none.
  * - Requirements never set `mustBeVerified`: the `verified` flag on manually
  *   supplied evidence is self-declared by its supplier today, so demanding it
  *   would add false confidence rather than assurance.
@@ -42,11 +44,11 @@ import type { AssuranceControlDefinition, AssuranceEvidenceRequirement, Assuranc
  * `metadata.commercialUse` is informative only -- no engine component reads
  * or enforces it; the restriction is procedural until ASSURE-SEC-01.
  *
- * Known engine gap (SEC-01 mandatory blocker, pinned by a negative test):
- * because the criteria omit `requiredEvidenceRequirementIds`, the service
- * accepts a `pass` review that cites no evidence at all, and the evaluator
- * scores it as a full pass. Such a result is not a valid basis for any
- * commercial conclusion. CAT-01 does not change the service or evaluator.
+ * Review finding F01 (a `pass` review citing no evidence was accepted and
+ * scored) is closed in the engine by ASSURE-SEC-01A: the service rejects it,
+ * the evaluator ignores such a stored review, and verification flags a
+ * definitive manual result with no bound evidence. Binding is structural; it
+ * does not prove evidence authentic or a conclusion correct.
  *
  * This framework version is immutable -- every change to controls, questions,
  * weights, or thresholds requires `rn.sv` 0.2.0+. The golden digest test in

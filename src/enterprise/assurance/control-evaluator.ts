@@ -11,6 +11,7 @@ import type {
   AssuranceScoringModel,
 } from './contracts.js';
 import { ASSURANCE_EVALUATOR_VERSION } from './contracts.js';
+import { checkManualReviewEvidence } from './manual-review-evidence.js';
 
 /**
  * The deterministic Assurance Control Evaluator (mission section 17). For
@@ -434,6 +435,41 @@ export function createAssuranceControlEvaluator(): AssuranceControlEvaluator {
               questions: criteria.questions,
               ...(criteria.requiredReviewerRole !== undefined ? { requiredReviewerRole: criteria.requiredReviewerRole } : {}),
               reason: 'Automated evidence cannot produce a defensible result for this control.',
+            },
+          );
+        }
+        // Defense in depth (ASSURE-SEC-01A): a stored review is re-checked against
+        // the evidence in hand. A review that no longer has bound evidence -- or
+        // never had it -- resolves nothing; the control stays pending.
+        const evidenceCheck = checkManualReviewEvidence({
+          control,
+          criteria,
+          outcome: review.outcome,
+          citedEvidenceReferenceIds: review.evidenceReferenceIds,
+          resolutions: evidence,
+          organizationId: scope.subject.organizationId,
+        });
+        if (!evidenceCheck.valid) {
+          const reasonCodes = ['CONTROL_MANUAL_REVIEW_PENDING', 'CONTROL_MANUAL_REVIEW_EVIDENCE_INVALID'];
+          return finish(
+            'manual_review_required',
+            [
+              {
+                criteriaType: 'manual_review',
+                description: `manual review over ${criteria.questions.length} question(s)`,
+                satisfied: null,
+                expected: 'attributable manual review supported by evidence bound to the control',
+                actual: `review '${review.reviewId}' -> ${review.outcome} rejected: ${evidenceCheck.violation ?? 'invalid'}`,
+                reasonCodes,
+              },
+            ],
+            reasonCodes,
+            `Control '${control.controlId}' requires manual review; review '${review.reviewId}' is not supported by bound evidence (${evidenceCheck.violation ?? 'invalid'}).`,
+            {
+              reviewType: 'control_review',
+              questions: criteria.questions,
+              ...(criteria.requiredReviewerRole !== undefined ? { requiredReviewerRole: criteria.requiredReviewerRole } : {}),
+              reason: evidenceCheck.message ?? 'The recorded review is not supported by evidence bound to this control.',
             },
           );
         }

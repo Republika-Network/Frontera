@@ -58,7 +58,7 @@ export interface CreateEvidenceResolverOptions {
   readonly maxCandidatesPerType?: number;
 }
 
-const MANUAL_EVIDENCE_TYPES: readonly AssuranceEvidenceType[] = ['control_attestation', 'external_artifact_reference', 'passport_view'];
+export const MANUAL_EVIDENCE_TYPES: readonly AssuranceEvidenceType[] = ['control_attestation', 'external_artifact_reference', 'passport_view'];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

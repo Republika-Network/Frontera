@@ -39,7 +39,10 @@ const SYNTHETIC_SUBJECT: AssuranceSubject = {
   displayName: 'Synthetic Platform',
 };
 
-/** Synthetic customer artifact reference -- deliberately `verified: false`: nothing here vouches for it except the reviewer. */
+/**
+ * Synthetic customer artifact reference -- deliberately `verified: false`: nothing here vouches for it except the reviewer.
+ * It is explicitly bound to its own control's requirement (ASSURE-SEC-01A), so it supports a conclusion on that control only.
+ */
 function syntheticArtifact(controlId: string): AssuranceEvidenceReference {
   return {
     evidenceReferenceId: `synthetic-evidence-${controlId}`,
@@ -51,6 +54,7 @@ function syntheticArtifact(controlId: string): AssuranceEvidenceReference {
     occurredAt: '2026-06-10T00:00:00.000Z',
     collectedAt: '2026-06-14T00:00:00.000Z',
     verified: false,
+    requirementIds: [`rn.sv.req.${controlId.toLowerCase()}`],
     provenance: {
       sourceSystem: 'synthetic-test-fixture',
       sourceType: 'external_artifact_reference',
@@ -414,42 +418,43 @@ describe('rn.sv 0.1.0 integrity', () => {
 });
 
 /**
- * Independent-review follow-up (F01, F02). These tests pin CURRENT engine
- * behaviour that is NOT acceptable for commercial conclusions; they exist so
- * ASSURE-SEC-01 has to change them deliberately, not to endorse the behaviour.
+ * Independent-review follow-up (F01, F02). F01 pinned the gap CAT-01 shipped
+ * with (no evidence -> ten PASS reviews -> 100 -> a valid assessment);
+ * ASSURE-SEC-01A closed it in the engine, so F01 now fails on any regression
+ * that lets an unsupported PASS back in. F02 is unchanged.
  */
-describe('rn.sv 0.1.0 commercial-use limits (known gaps, ASSURE-SEC-01 blockers)', () => {
-  it('F01: currently accepts and scores a PASS review that cites no evidence -- not permitted for commercial conclusions', async () => {
+describe('rn.sv 0.1.0 commercial-use limits', () => {
+  it('F01 (fixed by ASSURE-SEC-01A): a PASS review citing no evidence is rejected, persists nothing, and cannot score or complete', async () => {
     const harness = rnSvHarness();
     // No evidence collected at all: nothing could support a pass.
     const evaluated = await evaluateRnSv(harness, []);
     assert.equal(evaluated.evidenceReferences.length, 0);
 
-    const review = await harness.service.recordManualReview(ASSURANCE_ORG, {
-      assessmentId: evaluated.assessmentId,
-      controlId: 'SV-08',
-      reviewerId: 'reviewer-1',
-      reviewerRole: RN_SV_REVIEWER_ROLE,
-      outcome: 'pass',
-      rationale: 'Unsupported pass recorded to pin the known gap.',
-    });
-    assert.equal(review.outcome, 'pass');
-    assert.deepEqual(review.evidenceReferenceIds, []);
+    for (const controlId of SV_CONTROL_IDS) {
+      await assert.rejects(
+        () =>
+          harness.service.recordManualReview(ASSURANCE_ORG, {
+            assessmentId: evaluated.assessmentId,
+            controlId,
+            reviewerId: 'reviewer-1',
+            reviewerRole: RN_SV_REVIEWER_ROLE,
+            outcome: 'pass',
+            rationale: 'Unsupported pass: must be refused.',
+          }),
+        (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_MANUAL_REVIEW_INVALID' && error.details?.['violation'] === 'MANUAL_REVIEW_EVIDENCE_MISSING',
+      );
+    }
+    assert.deepEqual(await harness.store.listManualReviews(ASSURANCE_ORG, evaluated.assessmentId), []);
 
-    const { 'SV-08': _alreadyReviewed, ...remaining } = allControls('pass');
-    await recordReviews(harness, evaluated.assessmentId, remaining, false);
     const reevaluated = await harness.service.evaluateAssessment(ASSURANCE_ORG, evaluated.assessmentId);
-    assert.deepEqual(Object.values(statusesOf(reevaluated)), SV_CONTROL_IDS.map(() => 'pass'));
-    assert.equal(reevaluated.score.normalizedScore, 100);
+    assert.deepEqual(Object.values(statusesOf(reevaluated)), SV_CONTROL_IDS.map(() => 'manual_review_required'));
+    assert.equal(reevaluated.score.normalizedScore, 0);
+    await assert.rejects(
+      () => harness.service.completeAssessment(ASSURANCE_ORG, evaluated.assessmentId),
+      (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_MANUAL_REVIEW_REQUIRED',
+    );
 
-    // The unsupported assessment completes and verifies: integrity is not truthfulness.
-    const completed = await harness.service.completeAssessment(ASSURANCE_ORG, evaluated.assessmentId);
-    assert.equal(completed.status, 'completed');
-    assert.equal(verifyAssuranceAssessment({ assessment: completed, framework: RN_SV_FRAMEWORK_V0_1, now: harness.now }).valid, true);
-
-    // Nothing in the engine prevents this; only the documented restriction does.
-    const commercialUse = RN_SV_FRAMEWORK_V0_1.metadata?.['commercialUse'] as Readonly<Record<string, unknown>>;
-    assert.equal(commercialUse['status'], 'restricted');
+    // The framework definition itself is unchanged: the fix lives in the engine.
     assert.ok(RN_SV_FRAMEWORK_V0_1.controls.every((control) => control.criteria.type === 'manual_review' && control.criteria.requiredEvidenceRequirementIds === undefined));
   });
 
