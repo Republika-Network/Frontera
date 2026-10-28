@@ -31,7 +31,10 @@ import {
  * shortened to what is left of the capability's validity. A stage still
  * running when the budget is spent refuses with its own timeout code. This
  * is a deadline, not cancellation: the store, verifier or policy is not
- * stopped, and whatever it answers later is discarded unread.
+ * stopped, and whatever it answers later is discarded unread. The budget is
+ * also re-read whenever a stage's result is accepted, and once more before an
+ * eligible decision is: a stage that blocks the event loop past the deadline
+ * (so its timer has not yet fired) is still a timeout.
  */
 
 export type AssetGateOutcome =
@@ -231,14 +234,18 @@ export function createAssetGate(options: AssetGateOptions): AssetGate {
     // ── identifier ──
     if (!isSovereignAssetIdentifier(resource)) return refused('ASSET_IDENTIFIER_INVALID');
 
-    // One budget for the three asynchronous stages, never past the capability's expiry.
+    // One absolute budget for the three asynchronous stages, set once and never reset or extended, and never past
+    // the capability's expiry. A stage's timer can lose to a stage that blocks the event loop past the deadline, so
+    // the budget is re-read on this same clock whenever a result is accepted: a late result is a timeout, whichever
+    // callback ran first.
     const startedAt = clock();
     const budgetEnd = Math.min(startedAt + deadlineMs, request.expiresAtMs);
     const remaining = (): number => budgetEnd - clock();
+    const late = (): boolean => !(remaining() > 0);
 
     // ── load ──
     const loaded = await withinDeadline<StoredSovereignAsset | undefined>(() => assets.load(resource, Object.freeze({ maximumBundleBytes })), remaining(), schedule);
-    if (loaded.settled === 'timeout') return refused('ASSET_STORE_TIMEOUT');
+    if (loaded.settled === 'timeout' || late()) return refused('ASSET_STORE_TIMEOUT');
     if (loaded.settled === 'error') return refused('ASSET_STORE_FAILED');
     if (loaded.value === undefined) return refused('ASSET_NOT_FOUND');
     let stored: ReturnType<typeof storedSnapshot>;
@@ -255,7 +262,7 @@ export function createAssetGate(options: AssetGateOptions): AssetGate {
     // ── verify ──
     const verificationRequest = Object.freeze(stored.contentBytes === undefined ? { expectedSovereignAssetId: resource } : { expectedSovereignAssetId: resource, contentBytes: stored.contentBytes });
     const verified = await withinDeadline(() => verifyAsset(stored.bundleText, verificationRequest), remaining(), schedule);
-    if (verified.settled === 'timeout') return refused('ASSET_VERIFICATION_TIMEOUT');
+    if (verified.settled === 'timeout' || late()) return refused('ASSET_VERIFICATION_TIMEOUT');
     if (verified.settled === 'error') return refused('ASSET_VERIFICATION_FAILED');
     let reading: ReturnType<typeof readVerification>;
     try {
@@ -270,7 +277,7 @@ export function createAssetGate(options: AssetGateOptions): AssetGate {
     // ── policy ──
     const input = Object.freeze({ action, resource, asset });
     const decided = await withinDeadline(() => policy(input), remaining(), schedule);
-    if (decided.settled === 'timeout') return refused('ASSET_POLICY_TIMEOUT');
+    if (decided.settled === 'timeout' || late()) return refused('ASSET_POLICY_TIMEOUT');
     if (decided.settled === 'error') return refused('ASSET_POLICY_FAILED');
     let decision: ReturnType<typeof readDecision>;
     try {
@@ -280,6 +287,8 @@ export function createAssetGate(options: AssetGateOptions): AssetGate {
     }
     if (decision === undefined) return refused('ASSET_POLICY_INVALID');
     if (decision.decision === 'ineligible') return Object.freeze({ ok: false as const, code: 'ASSET_INELIGIBLE' as const, ineligibleReason: decision.reason });
+    // The last word: an eligible decision is accepted only inside the budget.
+    if (late()) return refused('ASSET_POLICY_TIMEOUT');
     return Object.freeze({ ok: true as const, asset });
   }
 

@@ -133,6 +133,10 @@ interface WorldOptions {
   readonly observe?: (observation: SyntheticEffectObservation) => SyntheticEffectObservation;
   readonly effectThrows?: boolean;
   readonly claimThrows?: boolean;
+  /** Makes the receiver's read-only ledger inspection throw. */
+  readonly readThrows?: () => boolean;
+  /** Runs just before the real atomic claim (to move the clock between the gate and the claim). */
+  readonly beforeClaim?: () => void;
 }
 
 const worlds: World[] = [];
@@ -151,6 +155,7 @@ async function world(options: WorldOptions = {}): Promise<World> {
     claim: (verification: unknown) => {
       events.push('claim');
       if (options.claimThrows === true) throw new Error('ledger unavailable');
+      options.beforeClaim?.();
       const claim = opened.claim(verification);
       events.push(`claim:${claim.outcome}`);
       return claim;
@@ -159,8 +164,15 @@ async function world(options: WorldOptions = {}): Promise<World> {
       events.push(`record:${outcome}`);
       return opened.recordOutcome(capabilityId, outcome);
     },
-    read: (capabilityId: string) => opened.read(capabilityId),
-    readExecution: (issuer: string, executionId: string) => opened.readExecution(issuer, executionId),
+    read: (capabilityId: string) => {
+      events.push('ledger-read');
+      if (options.readThrows?.() === true) throw new Error('ledger unreadable');
+      return opened.read(capabilityId);
+    },
+    readExecution: (issuer: string, executionId: string) => {
+      events.push('ledger-read-execution');
+      return opened.readExecution(issuer, executionId);
+    },
     readDetail: (capabilityId: string) => opened.readDetail(capabilityId),
     listUnresolved: (page?: Parameters<ExecutionCapabilityConsumptionLedger['listUnresolved']>[0]) => opened.listUnresolved(page),
     close: () => opened.close(),
@@ -270,7 +282,7 @@ describe('RSDK-02B governed receiver — the permitted path', () => {
     assert.equal(answer.record.outcome, 'completed-observed', JSON.stringify(answer.record));
     assert.equal(answer.status, 201);
     assert.equal(answer.record.ledgerState, 'completed');
-    assert.deepEqual(w.events, [`load:${ASSET}`, 'verify-asset', 'policy', 'claim', 'claim:claimed', 'effect-start:claimed', 'effect:completed', 'record:completed']);
+    assert.deepEqual(w.events, ['ledger-read', 'ledger-read-execution', `load:${ASSET}`, 'verify-asset', 'policy', 'claim', 'claim:claimed', 'effect-start:claimed', 'effect:completed', 'record:completed']);
     assert.deepEqual(w.verifyCalls, [{ bundleText: BUNDLE, expectedSovereignAssetId: ASSET }]);
     assert.equal(w.domain.records().length, 1);
     const verification = w.domain.verifier.verify(receiptOf(answer), { expected: { executorId: EXECUTOR_ID, issuer: ISSUER, audience: AUDIENCE, organizationId: ORGANIZATION, trustDomain: TRUST_DOMAIN } });
@@ -511,8 +523,8 @@ describe('RSDK-02B governed receiver — asset security (the capability stays un
     await flush();
     now += 5_000;
     late.resolve({ bundleText: BUNDLE });
-    // The verifier stage starts with no budget left: refused before RSDK-01 runs, nothing claimed.
-    assertAssetRefusal(w, await pending, 'ASSET_VERIFICATION_TIMEOUT', 503);
+    // The store answered after the budget (capped at the capability's expiry) ended: refused there, before RSDK-01 runs.
+    assertAssetRefusal(w, await pending, 'ASSET_STORE_TIMEOUT', 503);
     assert.deepEqual(w.verifyCalls, []);
   });
 });
@@ -719,15 +731,21 @@ describe('RSDK-02C preflight — the precomputed verdict and the asynchronous ga
     assert.equal(w.events.filter((event) => event.startsWith('effect-start')).length, 1);
   });
 
-  it('a capability that expires while the policy runs is refused at the claim: no effect', async () => {
+  it('a capability that expires while the policy runs is refused by the gate, its budget capped at the expiry: no claim', async () => {
     let now = Date.now();
     const held = deferred();
     const w = await world({ clock: () => now, policy: async (input) => { await held.promise; return demonstrationPolicy(input); } });
     const pending = w.handle(governed(ASSET, { issuedAt: new Date(now - 1_000).toISOString(), expiresAt: new Date(now + 2_000).toISOString() }));
     await flush();
-    now += 2_500; // past expiry, while the policy is still deciding (no timer fires: the default scheduler is real and far away)
+    now += 2_500; // past expiry, while the policy is still deciding
     held.resolve();
-    const answer = await pending;
+    assertAssetRefusal(w, await pending, 'ASSET_POLICY_TIMEOUT', 503);
+  });
+
+  it('a capability that expires between the gate and the claim is refused by the atomic claim itself: no effect', async () => {
+    let now = Date.now();
+    const w = await world({ clock: () => now, beforeClaim: () => { now += 2_500; } });
+    const answer = await w.handle(governed(ASSET, { issuedAt: new Date(now - 1_000).toISOString(), expiresAt: new Date(now + 2_000).toISOString() }));
     assert.equal(answer.record.outcome, 'refused', JSON.stringify(answer.record));
     assert.equal(answer.record.code, 'CAPABILITY_EXPIRED');
     assert.equal(w.events.includes('claim:claimed'), false);
@@ -763,6 +781,205 @@ describe('RSDK-02C preflight — the precomputed verdict and the asynchronous ga
     const record = JSON.parse(w.domain.recordText(observedRecordId(w)) ?? '{}') as { readonly target?: string };
     assert.equal(record.target, ASSET, 'the effect acts on the verified capability\'s resource');
     assert.notEqual(originalTarget, observed.target);
+  });
+});
+
+// ── RSDK-02D: the absolute deadline (Codex PRRT_kwDOSc9AOM6w7Zq3) ─────────────
+
+describe('RSDK-02D — a stage result is accepted only inside the absolute deadline', () => {
+  const DEADLINE = 1_000;
+  /** A clock the test moves, and a scheduler whose timers never fire: a stage that "blocks" past the deadline wins every race against its timer. */
+  function blocked() {
+    const clock = { now: Date.now() };
+    const scheduler = manualScheduler();
+    return { clock, scheduler, options: { clock: () => clock.now, schedule: scheduler.schedule, limits: { assetDeadlineMs: DEADLINE } } };
+  }
+  const noSpend = (w: World) => {
+    assert.equal(w.events.includes('claim'), false, 'a late result never reaches the claim');
+    assert.equal(w.events.some((event) => event.startsWith('effect')), false, 'and never the effect');
+    assert.equal(w.domain.records().length, 0);
+  };
+
+  it('a synchronous policy that runs past the deadline is refused, even though its timer never fired', async () => {
+    const { clock, options } = blocked();
+    const w = await world({ ...options, policy: (input) => { clock.now += DEADLINE + 1; return demonstrationPolicy(input); } });
+    assertAssetRefusal(w, await w.handle(governed()), 'ASSET_POLICY_TIMEOUT', 503);
+    noSpend(w);
+  });
+
+  it('a synchronous store that runs past the deadline is refused before RSDK-01 runs', async () => {
+    const { clock, options } = blocked();
+    const w = await world({ ...options, assets: { load: () => { clock.now += DEADLINE + 1; return { bundleText: BUNDLE }; } } });
+    assertAssetRefusal(w, await w.handle(governed()), 'ASSET_STORE_TIMEOUT', 503);
+    assert.deepEqual(w.verifyCalls, []);
+    noSpend(w);
+  });
+
+  it('a synchronous verifier that runs past the deadline is refused before the policy runs', async () => {
+    const { clock, options } = blocked();
+    const w = await world({ ...options, verify: (_text, id) => { clock.now += DEADLINE + 1; return verifiedResult(id); } });
+    assertAssetRefusal(w, await w.handle(governed()), 'ASSET_VERIFICATION_TIMEOUT', 503);
+    assert.equal(w.events.includes('policy'), false);
+    noSpend(w);
+  });
+
+  it('a promise that resolves after the absolute deadline is refused', async () => {
+    const { clock, options } = blocked();
+    const late = deferred<{ readonly decision: 'eligible' }>();
+    const w = await world({ ...options, policy: () => late.promise });
+    const pending = w.handle(governed());
+    for (let i = 0; i < 50 && !w.events.includes('policy'); i += 1) await flush();
+    clock.now += DEADLINE + 1;
+    late.resolve({ decision: 'eligible' });
+    assertAssetRefusal(w, await pending, 'ASSET_POLICY_TIMEOUT', 503);
+    noSpend(w);
+  });
+
+  it('an eligible decision delivered at exactly the deadline is refused: the budget is exclusive', async () => {
+    const { clock, options } = blocked();
+    let start = 0;
+    const w = await world({
+      ...options,
+      assets: { load: () => { start = clock.now; return { bundleText: BUNDLE }; } },
+      policy: (input) => { clock.now = start + DEADLINE; return demonstrationPolicy(input); },
+    });
+    assertAssetRefusal(w, await w.handle(governed()), 'ASSET_POLICY_TIMEOUT', 503);
+    noSpend(w);
+  });
+
+  it('stages that finish inside the budget still verify and execute', async () => {
+    const { clock, options } = blocked();
+    const step = Math.floor(DEADLINE / 4);
+    const w = await world({
+      ...options,
+      assets: { load: () => { clock.now += step; return { bundleText: BUNDLE }; } },
+      verify: (_text, id) => { clock.now += step; return verifiedResult(id); },
+      policy: (input) => { clock.now += step; return demonstrationPolicy(input); },
+    });
+    const answer = await w.handle(governed());
+    assert.equal(answer.record.outcome, 'completed-observed', JSON.stringify(answer.record));
+  });
+
+  it('the budget never outlives the capability: one expiring inside the deadline times the gate out first', async () => {
+    const { clock, options } = blocked();
+    const w = await world({ ...options, limits: { assetDeadlineMs: 5_000 }, policy: (input) => { clock.now += 1_500; return demonstrationPolicy(input); } });
+    const answer = await w.handle(governed(ASSET, { issuedAt: new Date(clock.now - 1_000).toISOString(), expiresAt: new Date(clock.now + 1_000).toISOString() }));
+    assertAssetRefusal(w, answer, 'ASSET_POLICY_TIMEOUT', 503);
+    noSpend(w);
+  });
+
+  it('with the real default scheduler: a 10 ms deadline and a policy that blocks for 50 ms is refused (the reported reproduction)', async () => {
+    const w = await world({
+      limits: { assetDeadlineMs: 10 },
+      policy: (input) => {
+        const until = Date.now() + 50;
+        while (Date.now() < until) {
+          // blocks the event loop past the deadline
+        }
+        return demonstrationPolicy(input);
+      },
+    });
+    assertAssetRefusal(w, await w.handle(governed()), 'ASSET_POLICY_TIMEOUT', 503);
+    noSpend(w);
+  });
+});
+
+// ── RSDK-02D: replay semantics (Codex PRRT_kwDOSc9AOM6w7Zq5) ────────────────────
+
+describe('RSDK-02D — a consumed capability keeps its consumed answer, whatever the asset gate would say now', () => {
+  const gateRan = (w: World, since: number) => w.events.slice(since).some((event) => event.startsWith('load:') || event === 'verify-asset' || event === 'policy');
+
+  it('claimed with an unknown outcome, then the asset is removed: the replay is already-consumed (202), never a refusal', async () => {
+    let present = true;
+    const w = await world({ observe: () => 'unknown', assets: { load: (id) => (present && id === ASSET ? { bundleText: BUNDLE } : undefined) } });
+    const observed = governed();
+    const first = await w.handle(observed);
+    assert.equal(first.record.outcome, 'attempted-outcome-unknown');
+    present = false;
+    const mark = w.events.length;
+    const replay = await w.handle(observed);
+    assert.equal(replay.record.outcome, 'already-consumed', JSON.stringify(replay.record));
+    assert.equal(replay.status, 202);
+    assert.equal(replay.record.ledgerState, 'outcome-unknown', 'the earlier uncertain state is preserved');
+    assert.equal(gateRan(w, mark), false, 'nothing is loaded, verified or decided again');
+    assert.equal(w.events.filter((event) => event.startsWith('effect-start')).length, 1);
+  });
+
+  it('claimed with an unknown outcome, then the policy turns ineligible: the replay is already-consumed', async () => {
+    let eligible = true;
+    const w = await world({ observe: () => 'unknown', policy: (input) => (eligible ? demonstrationPolicy(input) : { decision: 'ineligible', reason: 'CHANGED' }) });
+    const observed = governed();
+    assert.equal((await w.handle(observed)).record.outcome, 'attempted-outcome-unknown');
+    eligible = false;
+    const mark = w.events.length;
+    const replay = await w.handle(observed);
+    assert.equal(replay.record.outcome, 'already-consumed');
+    assert.equal(replay.status, 202);
+    assert.equal(gateRan(w, mark), false);
+  });
+
+  it('a replay after a completed execution, and a second capability for the same execution, never rerun the gate or the effect', async () => {
+    const w = await world();
+    const executionId = 'aoc.exec:rsdk02d-shared';
+    const observed = governed(ASSET, { executionId });
+    assert.equal((await w.handle(observed)).record.outcome, 'completed-observed');
+    let mark = w.events.length;
+    const replay = await w.handle(observed);
+    assert.equal(replay.record.code, 'CAPABILITY_CONSUMED');
+    assert.equal(gateRan(w, mark), false);
+    mark = w.events.length;
+    const sibling = await w.handle(governed(ASSET, { executionId }));
+    assert.equal(sibling.record.outcome, 'already-consumed');
+    assert.equal(sibling.record.code, 'EXECUTION_CONSUMED');
+    assert.equal(gateRan(w, mark), false);
+    assert.equal(w.events.filter((event) => event.startsWith('effect-start')).length, 1);
+  });
+
+  it('an unconsumed capability with an ineligible asset is still refused, unclaimed', async () => {
+    const w = await world({ policy: () => ({ decision: 'ineligible', reason: 'NOT_NOW' }) });
+    assertAssetRefusal(w, await w.handle(governed()), 'ASSET_INELIGIBLE', 403);
+  });
+
+  it('the ledger is consulted only with verified identities: a forged or foreign-audience copy of a consumed capability is refused unread', async () => {
+    const w = await world();
+    const vector = vectorFor(ASSET);
+    const genuine = capabilityFor(vector.digest, { action: SYNTHETIC_ACTION, resource: ASSET });
+    assert.equal((await w.handle(observedWith(vector, { presentation: presentationFor(genuine) }))).record.outcome, 'completed-observed');
+    for (const [presentation, code] of [
+      [presentationFor(genuine, UNPINNED_KEY, ISSUER_KEY.keyId), 'SIGNATURE_INVALID'],
+      [presentationFor({ ...genuine, audience: 'executor-another-receiver' }), 'AUDIENCE_NOT_THIS_EXECUTOR'],
+    ] as const) {
+      const mark = w.events.length;
+      const answer = await w.handle(observedWith(vector, { presentation }));
+      assert.equal(answer.record.outcome, 'refused');
+      assert.equal(answer.record.code, code);
+      assert.equal(w.events.slice(mark).some((event) => event.startsWith('ledger-read')), false, 'an unverified identity never reaches the ledger');
+    }
+  });
+
+  it('concurrent duplicates that both pass the inspection still meet one atomic claim', async () => {
+    const held = deferred();
+    const w = await world({ policy: async (input) => { await held.promise; return demonstrationPolicy(input); } });
+    const observed = governed();
+    const a = w.handle(observed);
+    const b = w.handle(observed);
+    for (let i = 0; i < 50 && w.events.filter((event) => event === 'policy').length < 2; i += 1) await flush();
+    assert.equal(w.events.filter((event) => event === 'policy').length, 2, 'both saw an unconsumed capability');
+    held.resolve();
+    const outcomes = (await Promise.all([a, b])).map((answer) => answer.record.outcome).sort();
+    assert.deepEqual(outcomes, ['already-consumed', 'completed-observed']);
+    assert.equal(w.events.filter((event) => event.startsWith('effect-start')).length, 1);
+  });
+
+  it('a ledger that cannot be inspected fails closed: nothing is gated, claimed or performed, and nothing is stated as final', async () => {
+    const w = await world({ readThrows: () => true });
+    const answer = await w.handle(governed());
+    assert.equal(answer.record.outcome, 'claim-unavailable');
+    assert.equal(answer.record.code, 'LEDGER_UNAVAILABLE');
+    assert.equal(answer.status, 503);
+    assert.deepEqual(w.verifyCalls, []);
+    assert.equal(w.events.includes('claim'), false);
+    assert.equal(w.events.some((event) => event.startsWith('effect')), false);
   });
 });
 

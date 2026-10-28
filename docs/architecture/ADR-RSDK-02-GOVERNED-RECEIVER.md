@@ -75,14 +75,23 @@ this resource convention.
 ## Order, deadlines and failure model
 
 ```
-verify capability → [synthetic action?] → asset gate (load → size → RSDK-01 → policy) → claim → expiry → effect → outcome → receipt
+verify capability → [synthetic action?] → [already consumed? → already-consumed] → asset gate (load → size → RSDK-01 → policy) → claim → expiry → effect → outcome → receipt
 ```
 
 - **Nothing is claimed before the capability and the asset have both passed.** Every asset-gate refusal leaves the
   capability unclaimed. Store and verifier outages and timeouts answer 503; every other refusal answers 403.
-- **The asset gate is the only awaited part.** Its three stages share one budget: the configured deadline (default
-  5 s, at most 30 s), shortened to the capability's remaining validity. This is a deadline, not cancellation: a store,
-  verifier or policy that is still running is not stopped, and its late answer is discarded.
+- **The asset gate is the only awaited part.** Its three stages share one absolute budget, set once and never reset: the
+  configured deadline (default 5 s, at most 30 s), shortened to the capability's remaining validity. The budget is
+  re-read on the receiver's clock whenever a stage's result is accepted, and once more before an eligible decision is
+  (RSDK-02D). A stage that blocks the event loop past the deadline, so its timer has not yet fired, is still a timeout.
+  This is a deadline, not cancellation: a store, verifier or policy that is still running is not stopped, and its late
+  answer is discarded.
+- **A consumed capability keeps its consumed answer (RSDK-02D).** After G-02 verification, and only with the verified
+  capability and execution ids, the receiver reads the ledger (its existing read-only `read` and `readExecution`). An
+  already-consumed capability, or one whose execution was consumed, skips the asset gate, and the existing flow answers
+  `already-consumed` (202) from durable state. An earlier uncertain attempt is therefore never turned into a definitive
+  refusal by current asset eligibility. An unreadable ledger answers `claim-unavailable` (503), with nothing performed.
+  The atomic claim stays the race-safe enforcement point for unconsumed capabilities.
 - **Bundles are capped at 1 MiB of UTF-8** (a deployment may set less) before RSDK-01 parses anything.
 - **The policy answer must be exactly** `{ decision: 'eligible' }` or `{ decision: 'ineligible', reason }` as own data.
   Anything else, including a throw or a hang, refuses.

@@ -27,8 +27,10 @@ import {
  * verify     the existing G-02C1A pipeline: admission, credential, presentation, policy, binding rebuilt
  *            from the received bytes, G-02A verification under pinned issuer keys, eligibility. Its one
  *            static check, the resource allow-list, is replaced by the sovereign identifier rule.
+ * consumed   by the verified capability and execution ids: an already-consumed capability skips the
+ *            asset gate and gets the existing flow's already-consumed answer from durable state
  * asset      the asset gate (asset-gate.ts): load, size, RSDK-01, the receiver's policy — for the
- *            verified capability's resource, and only for a synthetic action that would reach the effect
+ *            verified capability's resource, and only for an unconsumed synthetic action
  * execute    the existing G-02C1B flow, unchanged, given exactly the verdict computed above: durable
  *            claim, expiry re-check, the one synthetic effect, the forward-only outcome, the receipt
  * ```
@@ -127,6 +129,12 @@ export function createGovernedSovereignReceiver(options: GovernedSovereignReceiv
     return Object.freeze({ record, status: assetRefusalStatus(outcome.code), headers: Object.freeze({}) });
   }
 
+  /** The ledger cannot say whether this capability was consumed: nothing is performed, and nothing is stated as final. */
+  function unavailable(digest: string): GovernedReceiverAnswer {
+    const record: ReferenceExecutorExecution = Object.freeze({ mode: 'synthetic-execution' as const, outcome: 'claim-unavailable' as const, stage: 'claim' as const, code: 'LEDGER_UNAVAILABLE' as const, bindingDigest: digest, ledgerState: null });
+    return Object.freeze({ record, status: 503, headers: Object.freeze({}) });
+  }
+
   /** When the existing flow throws, what the ledger says decides the answer: a committed claim is never reported as nothing. */
   function conservative(capabilityId: string | undefined, bindingDigest: string | null): GovernedReceiverAnswer {
     let state: 'absent' | ReferenceExecutorExecution['ledgerState'] = 'absent';
@@ -155,10 +163,24 @@ export function createGovernedSovereignReceiver(options: GovernedSovereignReceiv
 
       // ── asset: only for a capability that verified and would reach the synthetic effect ──
       if (eligible !== undefined && syntheticActions.includes(eligible.capability.action)) {
+        const capability = eligible.capability;
         bindingDigest = eligible.bindingDigest;
-        const outcome = await gate.evaluate({ action: eligible.capability.action, resource: eligible.capability.resource, expiresAtMs: Date.parse(eligible.capability.expiresAt) });
-        if (!outcome.ok) return refusalOf(outcome, eligible.bindingDigest);
-        capabilityId = eligible.capability.capabilityId;
+        capabilityId = capability.capabilityId;
+        // ── prior consumption, by the verified identities only ──
+        // A capability (or its execution) this ledger already consumed may have been attempted. Its answer is the
+        // existing flow's already-consumed one, from durable state; current asset eligibility must never turn that
+        // into a definitive refusal, and nothing is loaded, verified or decided again. The atomic claim stays the
+        // race-safe enforcement point: an unconsumed capability is still claimed below, or refused there.
+        let consumed: boolean;
+        try {
+          consumed = ledger.read(capability.capabilityId).state !== 'absent' || ledger.readExecution(capability.issuer, capability.executionId).state !== 'absent';
+        } catch {
+          return unavailable(eligible.bindingDigest);
+        }
+        if (!consumed) {
+          const outcome = await gate.evaluate({ action: capability.action, resource: capability.resource, expiresAtMs: Date.parse(capability.expiresAt) });
+          if (!outcome.ok) return refusalOf(outcome, eligible.bindingDigest);
+        }
       }
 
       // ── execute: the existing flow, over exactly this verdict ──
