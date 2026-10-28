@@ -127,7 +127,7 @@ staleness and state; they never rewrite history.
 | `POST /api/assurance/assessments/{assessmentId}/verify` | independent verification (200 valid / 409 invalid) |
 | `GET /api/assurance/assessments/{assessmentId}/findings` | findings with event-folded statuses |
 | `POST /api/assurance/findings/{findingId}/events` | append a finding lifecycle event |
-| `POST /api/assurance/manual-reviews` | record an attributable manual review |
+| `POST /api/assurance/manual-reviews` | record an attributable manual review -- authenticated by an Assurance reviewer credential only; identity and role come from the credential (ASSURE-SEC-01B) |
 | `POST /api/assurance/signals` | submit and process a continuous signal |
 | `GET /api/assurance/subjects/{subjectId}/state` | derived continuous state |
 | `POST /api/assurance/subjects/{subjectId}/reassess` | request a reassessment |

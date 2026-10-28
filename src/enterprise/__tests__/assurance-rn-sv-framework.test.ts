@@ -10,7 +10,7 @@ import { verifyAssuranceAssessment } from '../assurance/verification.js';
 import { AOC_SAF_FRAMEWORK_V1 } from '../assurance/saf-framework.js';
 import { RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_V0_1, RN_SV_FRAMEWORK_VERSION, RN_SV_REVIEWER_ROLE } from '../assurance/frameworks/rn-sv-framework.js';
 import { POLICY_PACK_PROHIBITED_OVERCLAIM_PHRASES } from '../../features/policy-pack-foundation/manifest/policy-pack-manifest-constants.js';
-import { ASSURANCE_CUTOFF, ASSURANCE_ORG, buildAssuranceHarness, buildTestScope, type AssuranceTestHarness } from './assurance-support.js';
+import { ASSURANCE_CUTOFF, ASSURANCE_ORG, buildAssuranceHarness, buildTestScope, reviewerContext, type AssuranceTestHarness } from './assurance-support.js';
 import type {
   AssuranceAssessment,
   AssuranceControlStatus,
@@ -90,7 +90,7 @@ async function recordReviews(
   citeEvidence: boolean,
 ): Promise<void> {
   for (const [controlId, outcome] of Object.entries(outcomes)) {
-    await harness.service.recordManualReview(ASSURANCE_ORG, {
+    await harness.service.recordManualReview(reviewerContext(harness), {
       assessmentId,
       controlId,
       reviewerId: 'reviewer-1',
@@ -265,20 +265,22 @@ describe('rn.sv 0.1.0 manual evaluation', () => {
   it('refuses a review by the wrong role at the service, and the evaluator ignores one that is already recorded', async () => {
     const harness = rnSvHarness();
     const evaluated = await evaluateRnSv(harness, SYNTHETIC_EVIDENCE);
-    for (const reviewerRole of ['assurance-reviewer', undefined]) {
+    // ASSURE-SEC-01B: a reviewer declaring another role it holds, and a reviewer not holding assure.reviewer at all.
+    for (const [reviewerId, reviewerRole] of [['reviewer-1', 'assurance-reviewer'], ['intern-1', undefined]] as const) {
       await assert.rejects(
         () =>
-          harness.service.recordManualReview(ASSURANCE_ORG, {
+          harness.service.recordManualReview(reviewerContext(harness, reviewerId), {
             assessmentId: evaluated.assessmentId,
             controlId: 'SV-01',
-            reviewerId: 'reviewer-1',
             ...(reviewerRole !== undefined ? { reviewerRole } : {}),
             outcome: 'pass',
             rationale: 'Wrong-role review.',
+            evidenceReferenceIds: ['synthetic-evidence-SV-01'],
           }),
-        (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_MANUAL_REVIEW_INVALID',
+        (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_REVIEWER_UNAUTHORIZED',
       );
     }
+    assert.deepEqual(await harness.store.listManualReviews(ASSURANCE_ORG, evaluated.assessmentId), []);
 
     const control = RN_SV_FRAMEWORK_V0_1.controls[0];
     assert.ok(control);
@@ -300,6 +302,7 @@ describe('rn.sv 0.1.0 manual evaluation', () => {
             rationale: 'Recorded under the wrong role.',
             evidenceReferenceIds: [],
             reviewedAt: '2026-06-14T00:00:00.000Z',
+            reviewerAuthentication: 'assurance_reviewer_credential',
             reviewDigest: 'sha256:wrong-role',
           },
         ],
@@ -433,7 +436,7 @@ describe('rn.sv 0.1.0 commercial-use limits', () => {
     for (const controlId of SV_CONTROL_IDS) {
       await assert.rejects(
         () =>
-          harness.service.recordManualReview(ASSURANCE_ORG, {
+          harness.service.recordManualReview(reviewerContext(harness), {
             assessmentId: evaluated.assessmentId,
             controlId,
             reviewerId: 'reviewer-1',

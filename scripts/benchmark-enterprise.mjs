@@ -37,7 +37,22 @@ const storeEnv = {
   AOC_ENTERPRISE_SQLITE_PATH: join(workDir, 'governance.sqlite'),
   AOC_ENTERPRISE_PASSPORT_SQLITE_PATH: join(workDir, 'passport.sqlite'),
   AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH: join(workDir, 'assurance.sqlite'),
+  // ASSURE-SEC-01B: the benchmark reviewer is scoped to the organization this instance serves.
+  AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: 'bench-org-0',
 };
+
+// ASSURE-SEC-01B: manual reviews are recorded only by an authenticated Assurance reviewer credential (benchmark-only secret).
+const BENCH_REVIEWER_SECRET = 'bench-only-assurance-reviewer-secret-0000000';
+function benchConfiguration() {
+  const loaded = loadEnterpriseConfiguration(storeEnv);
+  return {
+    ...loaded,
+    authentication: {
+      ...loaded.authentication,
+      assuranceReviewers: [{ reviewerId: 'bench-reviewer', organizationId: 'bench-org-0', roles: ['assurance-reviewer'], key: BENCH_REVIEWER_SECRET }],
+    },
+  };
+}
 
 function stats(samplesMs) {
   const sorted = [...samplesMs].sort((a, b) => a - b);
@@ -122,7 +137,7 @@ const environment = {
 const coldStart = await timed(async () => {
   const server = await createEnterpriseServer({
     kernelProviders: buildTestKernelProviders(),
-    configuration: loadEnterpriseConfiguration(storeEnv),
+    configuration: benchConfiguration(),
   });
   await server.listen();
   return server;
@@ -135,7 +150,7 @@ await server.close();
 const warmStart = await timed(async () => {
   const reopened = await createEnterpriseServer({
     kernelProviders: buildTestKernelProviders(),
-    configuration: loadEnterpriseConfiguration(storeEnv),
+    configuration: benchConfiguration(),
   });
   const listenAddress = await reopened.listen();
   return { server: reopened, address: listenAddress };
@@ -255,7 +270,7 @@ const assessments = [];
         rationale: 'Benchmark manual review.',
         evidenceReferenceIds: ['bench-review-evidence-1'],
         ...(requiredRole !== undefined ? { reviewerRole: requiredRole } : {}),
-      });
+      }, { authorization: `Bearer ${BENCH_REVIEWER_SECRET}` });
     }
     await requestJson(baseUrl, 'POST', `/api/assurance/assessments/${assessments[0].assessmentId}/evaluate`, { complete: true });
   }

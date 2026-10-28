@@ -192,6 +192,11 @@ The SDK never retries. Guidance for callers:
   replays the committed decision instead of re-evaluating; a key reused with a
   *different* payload is rejected with `409 GOVERNANCE_IDEMPOTENCY_CONFLICT`.
 - **`issuePassport`:** retry only with the same body `idempotencyKey` field.
+- **`recordManualReview`** (ASSURE-SEC-01B): construct the client with an
+  Assurance reviewer credential as `apiKey` (governed-action file
+  `assuranceReviewers`). Organization keys get `401`. The reviewer identity and
+  role come from that credential; `reviewerId` / `reviewerRole` are optional and
+  a mismatch is refused with `403 ASSURANCE_REVIEWER_UNAUTHORIZED`.
 - **Other writes** (`processSignal`, `recordManualReview`, `appendFindingEvent`,
   `createAssessment`, passport lifecycle actions): not idempotent — do not
   retry blindly after a timeout; read the current state first.

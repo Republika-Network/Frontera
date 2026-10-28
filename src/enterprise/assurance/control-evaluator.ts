@@ -408,14 +408,20 @@ export function createAssuranceControlEvaluator(): AssuranceControlEvaluator {
       // -- Manual review controls (mission sections 20-21).
       if (control.criteria.type === 'manual_review') {
         const criteria = control.criteria;
-        const applicableReviews = context.manualReviews.filter(
+        const roleMatchingReviews = context.manualReviews.filter(
           (review) =>
             review.controlId === control.controlId &&
             review.assessmentId === context.assessmentId &&
             (criteria.requiredReviewerRole === undefined || review.reviewerRole === criteria.requiredReviewerRole),
         );
+        // ASSURE-SEC-01B: only a review attributed from an authenticated reviewer
+        // credential resolves a control. Earlier reviews with caller-declared
+        // identity stay on record but are never promoted to authenticated.
+        const applicableReviews = roleMatchingReviews.filter((review) => review.reviewerAuthentication === 'assurance_reviewer_credential');
         const review = applicableReviews[applicableReviews.length - 1];
         if (review === undefined) {
+          const unverifiedOnly = roleMatchingReviews.length > 0;
+          const reasonCodes = unverifiedOnly ? ['CONTROL_MANUAL_REVIEW_PENDING', 'CONTROL_MANUAL_REVIEW_IDENTITY_UNVERIFIED'] : ['CONTROL_MANUAL_REVIEW_PENDING'];
           return finish(
             'manual_review_required',
             [
@@ -424,12 +430,14 @@ export function createAssuranceControlEvaluator(): AssuranceControlEvaluator {
                 description: `manual review over ${criteria.questions.length} question(s)`,
                 satisfied: null,
                 ...(criteria.requiredReviewerRole !== undefined ? { expected: `review by role '${criteria.requiredReviewerRole}'` } : {}),
-                actual: 'no attributable review recorded',
-                reasonCodes: ['CONTROL_MANUAL_REVIEW_PENDING'],
+                actual: unverifiedOnly ? 'only reviews without an authenticated reviewer identity are recorded' : 'no attributable review recorded',
+                reasonCodes,
               },
             ],
-            ['CONTROL_MANUAL_REVIEW_PENDING'],
-            `Control '${control.controlId}' requires manual review; no attributable review has been recorded.`,
+            reasonCodes,
+            unverifiedOnly
+              ? `Control '${control.controlId}' requires manual review; the recorded review(s) carry no authenticated reviewer identity.`
+              : `Control '${control.controlId}' requires manual review; no attributable review has been recorded.`,
             {
               reviewType: 'control_review',
               questions: criteria.questions,

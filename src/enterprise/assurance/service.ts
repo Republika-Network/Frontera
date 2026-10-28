@@ -10,6 +10,7 @@ import { AssuranceError, isAssuranceError } from './errors.js';
 import { resolveFrameworkForAssessment, type AssuranceFrameworkRegistry } from './framework-registry.js';
 import { createAssuranceEvidenceResolver, type AssuranceEvidenceSources } from './evidence-resolver.js';
 import { checkManualReviewEvidence } from './manual-review-evidence.js';
+import { createAssuranceReviewerAuthenticator, type AssuranceReviewerCredential } from './reviewer-identity.js';
 import { createAssuranceControlEvaluator } from './control-evaluator.js';
 import { deriveAssuranceMetrics } from './metrics.js';
 import { buildFindingEvent, deriveFindingsFromEvaluations } from './findings.js';
@@ -36,6 +37,7 @@ import type {
   AssuranceFramework,
   AssuranceManualReviewOutcome,
   AssuranceManualReviewRecord,
+  AssuranceReviewerPrincipal,
   AssuranceModuleSnapshot,
   AssuranceReport,
   AssuranceReportView,
@@ -74,10 +76,16 @@ export interface CreateAssuranceAssessmentInput {
   readonly purpose?: string;
 }
 
+/**
+ * ASSURE-SEC-01B: the reviewer is the authenticated `context.reviewer`, never
+ * these fields. `reviewerId` / `reviewerRole` are optional assertions kept for
+ * v1 callers: when present they must name the authenticated reviewer and a
+ * role that reviewer holds, or the review is refused -- never silently replaced.
+ */
 export interface RecordManualReviewInput {
   readonly assessmentId: string;
   readonly controlId: string;
-  readonly reviewerId: string;
+  readonly reviewerId?: string;
   readonly reviewerRole?: string;
   readonly outcome: AssuranceManualReviewOutcome;
   readonly rationale: string;
@@ -117,6 +125,8 @@ export interface AssuranceService {
   listFindings(context: AssuranceAccessContext, assessmentId: string): Promise<readonly AssuranceFinding[]>;
   appendFindingEvent(context: AssuranceAccessContext, input: AppendFindingEventInput): Promise<AssuranceFindingEvent>;
   recordManualReview(context: AssuranceAccessContext, input: RecordManualReviewInput): Promise<AssuranceManualReviewRecord>;
+  /** ASSURE-SEC-01B: the reviewer principal for a configured Assurance reviewer secret, or `undefined`. The only source of `context.reviewer`. */
+  authenticateReviewer(bearerToken: string): AssuranceReviewerPrincipal | undefined;
   evaluateEligibility(context: AssuranceAccessContext, assessmentId: string): Promise<readonly AssuranceEligibilityResult[]>;
   processSignal(context: AssuranceAccessContext, input: BuildAssuranceSignalInput | Omit<BuildAssuranceSignalInput, 'signalId'>): Promise<AssuranceSignalProcessingResult>;
   getContinuousState(context: AssuranceAccessContext, subjectId: string, frameworkId?: string, frameworkVersion?: string): Promise<ContinuousAssuranceState>;
@@ -137,11 +147,18 @@ export interface AssuranceServiceDependencies {
   /** Live module snapshot captured into assessment provenance (mission section 37). */
   readonly moduleSnapshot?: () => readonly AssuranceModuleSnapshot[];
   readonly allowRetiredFrameworks?: boolean;
+  /** ASSURE-SEC-01B: configured Assurance reviewer credentials. Absent or empty: no manual review can be recorded. */
+  readonly reviewers?: readonly AssuranceReviewerCredential[];
 }
 
 export function createAssuranceService(deps: AssuranceServiceDependencies): AssuranceService {
   const { store, registry, telemetry, eventPublisher, logger, now, nextId } = deps;
   const evaluator = createAssuranceControlEvaluator();
+  const reviewerAuthenticator = createAssuranceReviewerAuthenticator(deps.reviewers ?? []);
+
+  function unauthorizedReviewer(message: string, details?: Readonly<Record<string, unknown>>): AssuranceError {
+    return new AssuranceError('ASSURANCE_REVIEWER_UNAUTHORIZED', message, details);
+  }
 
   function publish(type: AssuranceEnterpriseEventType, fields: { assessmentId?: string; organizationId?: string; subjectId?: string; detail?: Readonly<Record<string, unknown>> }): void {
     if (eventPublisher === undefined) return;
@@ -633,25 +650,57 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
       return event;
     },
 
+    authenticateReviewer(bearerToken) {
+      return reviewerAuthenticator.authenticate(bearerToken);
+    },
+
     async recordManualReview(context, input) {
-      if (input.reviewerId.length === 0) {
-        throw new AssuranceError('ASSURANCE_MANUAL_REVIEW_INVALID', 'reviewerId is required; manual reviews are attributable, never anonymous.');
+      // -- Authenticated reviewer identity (ASSURE-SEC-01B). Identity, tenant
+      // and roles come only from a principal this service's authenticator
+      // issued; `system`, `actorId`, `roles` and body fields grant nothing.
+      const reviewer = context.reviewer;
+      if (!reviewerAuthenticator.isAuthenticated(reviewer)) {
+        throw unauthorizedReviewer('A manual review requires an authenticated Assurance reviewer credential; caller-declared identity, roles or a system context are not accepted.');
+      }
+      if (context.organizationId !== undefined && context.organizationId !== reviewer.organizationId) {
+        throw unauthorizedReviewer('The access context names a different organization than the authenticated reviewer.');
+      }
+      if (context.actorId !== undefined && context.actorId !== reviewer.reviewerId) {
+        throw unauthorizedReviewer('The access context names a different actor than the authenticated reviewer.');
+      }
+      if (input.reviewerId !== undefined && input.reviewerId !== reviewer.reviewerId) {
+        throw unauthorizedReviewer('The declared reviewerId is not the authenticated reviewer; a review cannot be attributed to someone else.');
+      }
+      if (input.reviewerRole !== undefined && !reviewer.roles.includes(input.reviewerRole)) {
+        throw unauthorizedReviewer(`The authenticated reviewer does not hold the declared role '${input.reviewerRole}'.`);
       }
       if (input.rationale.trim().length === 0) {
         throw new AssuranceError('ASSURANCE_MANUAL_REVIEW_INVALID', 'rationale is required for a manual review.');
       }
-      const assessment = await requireAssessment(context, input.assessmentId);
+      // Every read and the write below run in the reviewer's own tenant scope.
+      const reviewerContext: AssuranceAccessContext = { system: false, organizationId: reviewer.organizationId, actorId: reviewer.reviewerId, roles: reviewer.roles, reviewer };
+      const assessment = await requireAssessment(reviewerContext, input.assessmentId);
+      if (assessment.subject.organizationId !== reviewer.organizationId) {
+        throw new AssuranceError('ASSURANCE_ACCESS_SCOPE_VIOLATION', 'The authenticated reviewer is not authorized for this assessment\u2019s organization.');
+      }
       const framework = frameworkFor(assessment);
       const control = framework.controls.find((candidate) => candidate.controlId === input.controlId);
       if (control === undefined) {
         throw new AssuranceError('ASSURANCE_CONTROL_NOT_FOUND', `Framework '${framework.frameworkId}@${framework.frameworkVersion}' defines no control '${input.controlId}'.`);
       }
+      let reviewerRole = input.reviewerRole;
       if (control.criteria.type === 'manual_review') {
         const requiredRole = control.criteria.requiredReviewerRole;
-        if (requiredRole !== undefined && input.reviewerRole !== requiredRole) {
-          throw new AssuranceError('ASSURANCE_MANUAL_REVIEW_INVALID', `Control '${input.controlId}' requires a reviewer with role '${requiredRole}'.`, {
-            requiredReviewerRole: requiredRole,
-          });
+        if (requiredRole !== undefined) {
+          if (!reviewer.roles.includes(requiredRole)) {
+            throw unauthorizedReviewer(`Control '${input.controlId}' requires a reviewer with role '${requiredRole}', which the authenticated reviewer does not hold.`, {
+              requiredReviewerRole: requiredRole,
+            });
+          }
+          if (input.reviewerRole !== undefined && input.reviewerRole !== requiredRole) {
+            throw unauthorizedReviewer(`Control '${input.controlId}' is reviewed under role '${requiredRole}', not the declared '${input.reviewerRole}'.`, { requiredReviewerRole: requiredRole });
+          }
+          reviewerRole = requiredRole;
         }
         // Evidence-bound conclusions (ASSURE-SEC-01A): validated before anything is persisted.
         const evidenceCheck = checkManualReviewEvidence({
@@ -676,19 +725,27 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
         reviewId,
         assessmentId: input.assessmentId,
         controlId: input.controlId,
-        reviewerId: input.reviewerId,
-        ...(input.reviewerRole !== undefined ? { reviewerRole: input.reviewerRole } : {}),
+        reviewerId: reviewer.reviewerId,
+        ...(reviewerRole !== undefined ? { reviewerRole } : {}),
         outcome: input.outcome,
         rationale: input.rationale,
         evidenceReferenceIds: input.evidenceReferenceIds ?? [],
         reviewedAt,
+        reviewerAuthentication: 'assurance_reviewer_credential' as const,
       };
       const review: AssuranceManualReviewRecord = { ...base, reviewDigest: computeDigest(base) };
-      await store.appendManualReview(context, review);
+      await store.appendManualReview(reviewerContext, review);
       publish('AssuranceManualReviewCompleted', {
         assessmentId: input.assessmentId,
         organizationId: assessment.subject.organizationId,
-        detail: { reviewId, controlId: input.controlId, outcome: input.outcome, reviewerId: input.reviewerId },
+        detail: {
+          reviewId,
+          controlId: input.controlId,
+          outcome: input.outcome,
+          reviewerId: review.reviewerId,
+          ...(review.reviewerRole !== undefined ? { reviewerRole: review.reviewerRole } : {}),
+          reviewerAuthentication: review.reviewerAuthentication,
+        },
       });
       return review;
     },

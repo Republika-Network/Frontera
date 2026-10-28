@@ -106,6 +106,7 @@ export type {
   AssuranceReportIntegrity,
   AssuranceReport,
   AssuranceAccessContext,
+  AssuranceReviewerPrincipal,
   AssuranceAssessmentQuery,
   AssuranceAssessmentSummary,
   AssuranceAssessmentQueryResult,

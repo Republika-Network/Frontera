@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createEnterprise, type AocEnterprise } from '../composition/composition-root.js';
 import { createEnterpriseServer, type EnterpriseServer } from '../host/enterprise-server.js';
-import { loadEnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
+import { loadEnterpriseConfiguration, type EnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
 import { ASSURANCE_MODULE_ID } from '../modules/assurance-module.js';
 import { AOC_SAF_FRAMEWORK_ID, AOC_SAF_FRAMEWORK_VERSION } from '../assurance/saf-framework.js';
 import { createInMemoryAssuranceStore } from '../assurance/in-memory-assurance-store.js';
@@ -19,13 +19,24 @@ after(async () => {
   await Promise.all(startedServers.map((server) => server.close().catch(() => {})));
 });
 
-async function bootEnterprise(): Promise<AocEnterprise> {
-  const enterprise = await createEnterprise({ kernelProviders: buildTestKernelProviders() });
+async function bootEnterprise(configuration?: EnterpriseConfiguration): Promise<AocEnterprise> {
+  const enterprise = await createEnterprise({ kernelProviders: buildTestKernelProviders(), ...(configuration !== undefined ? { configuration } : {}) });
   openEnterprises.push(enterprise);
   return enterprise;
 }
 
 const ORG_CONTEXT = { organizationId: 'org-1', system: false } as const;
+
+/** ASSURE-SEC-01B: one Assurance reviewer credential (test-only secret) for the organization these scenarios assess. */
+const REVIEWER_SECRET = 'test-only-assurance-reviewer-secret-integration';
+
+function reviewerConfiguration(env: Readonly<Record<string, string>> = {}): EnterpriseConfiguration {
+  const base = loadEnterpriseConfiguration({ ...env, AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: 'org-1' });
+  return {
+    ...base,
+    authentication: { ...base.authentication, assuranceReviewers: [{ reviewerId: 'reviewer-1', organizationId: 'org-1', roles: ['assurance-reviewer'], key: REVIEWER_SECRET }] },
+  };
+}
 
 describe('Soberanía Enterprise -- Assurance Runtime module registration (mission sections 55-57/92)', () => {
   it('the Assurance Runtime module is registered, optional by default, and healthy', async () => {
@@ -69,7 +80,7 @@ describe('Soberanía Enterprise -- Assurance Runtime module registration (missio
 
 describe('Soberanía Enterprise -- full end-to-end Assurance scenario (mission section 90)', () => {
   it('Passport -> governed action -> Governance Record -> Evidence Bundle -> assessment -> evidence -> controls -> findings -> scores -> eligibility -> completion -> verification -> report', async () => {
-    const enterprise = await bootEnterprise();
+    const enterprise = await bootEnterprise(reviewerConfiguration());
 
     // 1. Issue and activate an Agent Passport for the governed agent.
     const { passport } = await enterprise.passports.issuePassport(ORG_CONTEXT, {
@@ -150,8 +161,10 @@ describe('Soberanía Enterprise -- full end-to-end Assurance scenario (mission s
     assert.equal(statusByControl.get('saf.ops.enterprise-ready'), 'pass');
     assert.equal(statusByControl.get('saf.ops.independent-review'), 'manual_review_required', 'the human-review control stays distinct from pass');
 
-    // 7. Record the independent review, re-evaluate, and complete.
-    await enterprise.assurance.recordManualReview(ORG_CONTEXT, {
+    // 7. Record the independent review -- as the authenticated reviewer (ASSURE-SEC-01B) -- re-evaluate, and complete.
+    const reviewer = enterprise.assurance.authenticateReviewer(REVIEWER_SECRET);
+    assert.ok(reviewer);
+    await enterprise.assurance.recordManualReview({ ...ORG_CONTEXT, actorId: reviewer.reviewerId, roles: reviewer.roles, reviewer }, {
       assessmentId: created.assessmentId,
       controlId: 'saf.ops.independent-review',
       reviewerId: 'reviewer-1',
@@ -245,7 +258,7 @@ function metricsMarkedStale(enterprise: AocEnterprise): number {
 
 describe('Soberanía Enterprise -- Assurance HTTP surface (mission section 58)', () => {
   async function startTestServer(): Promise<string> {
-    const configuration = loadEnterpriseConfiguration({ AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_HTTP_HOST: '127.0.0.1' });
+    const configuration = reviewerConfiguration({ AOC_ENTERPRISE_HTTP_PORT: '0', AOC_ENTERPRISE_HTTP_HOST: '127.0.0.1' });
     const server = await createEnterpriseServer({ kernelProviders: buildTestKernelProviders(), configuration });
     startedServers.push(server);
     const { port } = await server.listen();
@@ -281,11 +294,11 @@ describe('Soberanía Enterprise -- Assurance HTTP surface (mission section 58)',
 
     const reviewResponse = await fetch(`${baseUrl}/api/assurance/manual-reviews`, {
       method: 'POST',
-      headers: jsonHeaders,
+      headers: { ...jsonHeaders, authorization: `Bearer ${REVIEWER_SECRET}` },
       body: JSON.stringify({
         assessmentId: createdBody.assessmentId,
         controlId: 'saf.ops.independent-review',
-        reviewerId: 'reviewer-http',
+        reviewerId: 'reviewer-1',
         reviewerRole: 'assurance-reviewer',
         outcome: 'insufficient_evidence',
         rationale: 'No operational records were provided for the period.',

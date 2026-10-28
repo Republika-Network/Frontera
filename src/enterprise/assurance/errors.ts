@@ -23,6 +23,8 @@ export type AssuranceErrorCode =
   | 'ASSURANCE_CONTROL_EVALUATION_FAILED'
   | 'ASSURANCE_MANUAL_REVIEW_REQUIRED'
   | 'ASSURANCE_MANUAL_REVIEW_INVALID'
+  /** ASSURE-SEC-01B: no authenticated reviewer, a role the reviewer does not hold, or a declared identity that is not the authenticated one. Nothing is recorded. */
+  | 'ASSURANCE_REVIEWER_UNAUTHORIZED'
   | 'ASSURANCE_ASSESSMENT_NOT_FOUND'
   | 'ASSURANCE_ASSESSMENT_IMMUTABLE'
   | 'ASSURANCE_ASSESSMENT_INCOMPLETE'

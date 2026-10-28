@@ -480,6 +480,13 @@ export interface AssuranceManualReviewRecord {
   readonly rationale: string;
   readonly evidenceReferenceIds: readonly string[];
   readonly reviewedAt: string;
+  /**
+   * ASSURE-SEC-01B: how `reviewerId`/`reviewerRole` were established.
+   * `assurance_reviewer_credential` -- derived from an authenticated reviewer
+   * credential. Absent -- recorded before SEC-01B from caller-declared fields;
+   * such a review is kept as history but resolves no control.
+   */
+  readonly reviewerAuthentication?: 'assurance_reviewer_credential';
   readonly reviewDigest: string;
 }
 
@@ -996,14 +1003,33 @@ export interface AssuranceReport {
  * The authorization scope the Enterprise Host resolved for an Assurance
  * call. The Assurance Runtime does not authenticate anyone (mission section
  * 53) -- same shape and enforcement model as `PassportAccessContext` /
- * `GovernanceStoreAccessContext`, plus optional `roles` for manual-review
- * reviewer-role checks.
+ * `GovernanceStoreAccessContext`.
+ *
+ * `actorId` and `roles` are NOT an authenticated identity -- every caller can
+ * set them, and no manual review is attributed from them. A manual review
+ * requires `reviewer`, a principal issued by the service's reviewer
+ * authenticator from a configured Assurance reviewer credential
+ * (ASSURE-SEC-01B, `reviewer-identity.ts`).
  */
 export interface AssuranceAccessContext {
   readonly organizationId?: string;
   readonly actorId?: string;
   readonly roles?: readonly string[];
   readonly system: boolean;
+  /** ASSURE-SEC-01B: the authenticated reviewer. Recognised only if the same service's authenticator issued it. */
+  readonly reviewer?: AssuranceReviewerPrincipal;
+}
+
+/**
+ * An authenticated Assurance reviewer (ASSURE-SEC-01B): identity, tenant and
+ * roles come from a configured reviewer credential, never from a request.
+ * The shape alone proves nothing; see `AssuranceAccessContext.reviewer`.
+ */
+export interface AssuranceReviewerPrincipal {
+  readonly credentialClass: 'assurance-reviewer';
+  readonly reviewerId: string;
+  readonly organizationId: string;
+  readonly roles: readonly string[];
 }
 
 export interface AssuranceAssessmentQuery {

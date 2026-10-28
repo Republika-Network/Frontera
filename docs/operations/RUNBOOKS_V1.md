@@ -366,22 +366,29 @@ assessment is parked in `manual_review` status.
 1. List what needs review: fetch the assessment and its control
    evaluations; each control in `manual_review_required` needs exactly
    one recorded review.
-2. Record each review:
+2. Record each review **as the reviewer** (ASSURE-SEC-01B): the bearer must be
+   that reviewer's Assurance reviewer credential (governed-action file
+   `assuranceReviewers`), never an organization key:
    ```bash
    curl -s -X POST $BASE/api/assurance/manual-reviews \
         -H 'content-type: application/json' \
+        -H "authorization: Bearer $REVIEWER_CREDENTIAL" \
         -d '{
               "assessmentId": "<assessmentId>",
               "controlId": "<controlId>",
-              "reviewerId": "<who reviewed>",
               "rationale": "<why this outcome>",
-              "outcome": "<outcome>"
+              "outcome": "<outcome>",
+              "evidenceReferenceIds": ["<accepted evidence bound to the control>"]
             }'
    ```
-   `assessmentId`, `controlId`, `reviewerId`, `rationale`, and `outcome`
-   are all required; `outcome` must be one of `pass`, `partial`, `fail`,
-   `insufficient_evidence` (400 `ASSURANCE_MANUAL_REVIEW_INVALID` lists
-   what is missing).
+   `assessmentId`, `controlId`, `rationale`, and `outcome` are required;
+   `outcome` must be one of `pass`, `partial`, `fail`, `insufficient_evidence`
+   (400 `ASSURANCE_MANUAL_REVIEW_INVALID` lists what is missing). The reviewer
+   and role are recorded from the credential; an optional `reviewerId` or
+   `reviewerRole` that does not match it is refused with 403
+   `ASSURANCE_REVIEWER_UNAUTHORIZED`. A reviewer whose credential lacks the
+   control's required role cannot review it -- issue a credential with that role
+   instead of retrying under another identity.
 3. **Completion is blocked while reviews are pending** — completing an
    assessment with unresolved manual reviews fails 422
    `ASSURANCE_MANUAL_REVIEW_REQUIRED` — **unless** the framework's

@@ -126,7 +126,7 @@
       },
       {
         "path": "scripts/portability/generate-portability-fixture.mjs",
-        "checksum": "sha256:db9803e53df0495629cde41ccccf82badf602d8a9527b1b7a773afe1c9eeee18"
+        "checksum": "sha256:2bf350f28db3f8a1cd1fecb06e7fb7a246616cffb0256c7833d7f090f6e29227"
       },
       {
         "path": "scripts/portability/lib-portability.mjs",

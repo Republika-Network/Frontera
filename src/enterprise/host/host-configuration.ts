@@ -5,6 +5,7 @@ import {
   validateEnterpriseEnvironment,
   type EnterpriseAdministrator,
   type EnterpriseApiKey,
+  type EnterpriseAssuranceReviewer,
   type EnterpriseAuditor,
   type EnterpriseConfiguration,
   type EnterpriseOperator,
@@ -17,6 +18,7 @@ import {
   assertServicePrincipalConfiguration,
 } from '../orchestration/advisory-identity.js';
 import { AuditorConfigurationError, assertAuditorConfiguration } from '../orchestration/governance-record-disclosure.js';
+import { AssuranceReviewerConfigurationError, assertAssuranceReviewerConfiguration } from '../orchestration/assurance-reviewer-credentials.js';
 import { LEGACY_ADMINISTRATOR_ROLE, OPERATOR_ROLES, isOperatorRole, type OperatorRoleOrLegacy } from '../operator-control/roles.js';
 import type { EnterpriseGenericHttpCredential, EnterpriseGenericHttpExecutionAdapterOptions } from '../execution-adapters/generic-http/index.js';
 import { GovernanceProfileConfigurationError, createGovernanceProfileRegistry, type GovernanceConfiguration } from '../governance-profile/index.js';
@@ -67,6 +69,8 @@ export type EnterpriseHostConfigurationErrorCode =
   | 'HOST_SERVICE_PRINCIPAL_INVALID'
   /** G-01A: an `auditors` entry is malformed, ambiguous, or has a weak or shared secret. */
   | 'HOST_AUDITOR_INVALID'
+  /** ASSURE-SEC-01B: an `assuranceReviewers` entry is malformed, ambiguous, names no role, or has a weak or shared secret. */
+  | 'HOST_ASSURANCE_REVIEWER_INVALID'
   /** G-01A: `AOC_ENTERPRISE_LEGACY_KEY_MODE` is `restricted` (the secure-profile default) and a legacy key is not organization-scoped. */
   | 'HOST_LEGACY_KEY_UNSCOPED'
   | 'HOST_PERSISTENCE_NOT_DURABLE'
@@ -281,6 +285,8 @@ interface ParsedGovernedActionsFile {
   readonly servicePrincipals: readonly EnterpriseServicePrincipal[];
   /** G-01A: resolved auditors. Kept apart from every other credential; they authenticate the Governance Record read routes only. */
   readonly auditors: readonly EnterpriseAuditor[];
+  /** ASSURE-SEC-01B: resolved Assurance reviewers. Kept apart from every other credential; they authenticate the manual-review route only. */
+  readonly assuranceReviewers: readonly EnterpriseAssuranceReviewer[];
 }
 
 function administratorInvalid(message: string): never {
@@ -391,6 +397,27 @@ function parseAuditors(env: Env, value: unknown, organizationId: string): readon
     if (!isRecord(entry)) invalid(`${where} must be an object.`);
     closedKeys(entry, ['auditorId', 'apiKeyEnv'], where);
     return { auditorId: text(entry.auditorId, `${where}.auditorId`), organizationId, key: secretFrom(env, entry.apiKeyEnv, `${where}.apiKeyEnv`) };
+  });
+}
+
+/**
+ * ASSURE-SEC-01B: `assuranceReviewers` -- credentials that may record manual
+ * Assurance reviews for the one organization this instance serves, under
+ * exactly the roles listed. Optional. Only the shape is read here
+ * (`reviewerId`, `roles`, `apiKeyEnv`); every identity, role and secret rule
+ * is the shared `assertAssuranceReviewerConfiguration`, run below and again
+ * at composition.
+ */
+function parseAssuranceReviewers(env: Env, value: unknown, organizationId: string): readonly EnterpriseAssuranceReviewer[] {
+  if (value === undefined) return [];
+  const entries = array(value, 'assuranceReviewers');
+  if (entries.length === 0) invalid('assuranceReviewers must name at least one reviewer when present; omit it to configure none.');
+  return entries.map((entry, index) => {
+    const where = `assuranceReviewers[${index}]`;
+    if (!isRecord(entry)) invalid(`${where} must be an object.`);
+    closedKeys(entry, ['reviewerId', 'roles', 'apiKeyEnv'], where);
+    const roles = array(entry.roles, `${where}.roles`).map((role, roleIndex) => text(role, `${where}.roles[${roleIndex}]`));
+    return { reviewerId: text(entry.reviewerId, `${where}.reviewerId`), organizationId, roles: Object.freeze([...roles]), key: secretFrom(env, entry.apiKeyEnv, `${where}.apiKeyEnv`) };
   });
 }
 
@@ -546,7 +573,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   if (!isRecord(parsed)) invalid('the file must contain a JSON object.');
   closedKeys(
     parsed,
-    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'servicePrincipals', 'auditors', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'approvalPolicy', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail', 'xrplTradeExecution', 'executionCapabilities'],
+    ['version', 'trustDomainId', 'grantLifetimeSeconds', 'customerPrincipals', 'servicePrincipals', 'auditors', 'assuranceReviewers', 'administrators', 'operators', 'profileLifecycle', 'monetary', 'governance', 'approvalPolicy', 'trustedContext', 'obligations', 'genericHttpAdapters', 'routes', 'xrplPaymentRail', 'xrplTradeExecution', 'executionCapabilities'],
     'the file',
   );
   if (parsed.version !== 1) invalid('version must be 1.');
@@ -573,6 +600,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
   const operators = parseOperators(env, parsed.operators, administrators);
   const servicePrincipals = parseServicePrincipals(env, parsed.servicePrincipals, organizationId);
   const auditors = parseAuditors(env, parsed.auditors, organizationId);
+  const assuranceReviewers = parseAssuranceReviewers(env, parsed.assuranceReviewers, organizationId);
   // CTRL-02: with operators configured, agents are onboarded by identified
   // operators (operator-issued credentials), so the file may name no static
   // customer principal at all.
@@ -751,6 +779,7 @@ function parseGovernedActionsFile(env: Env, path: string, organizationId: string
     operators,
     servicePrincipals,
     auditors,
+    assuranceReviewers,
   };
 }
 
@@ -801,12 +830,15 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
   const servicePrincipals = parsed?.servicePrincipals ?? [];
   // G-01A: auditors, likewise never merged into `authentication.apiKeys`.
   const auditors = parsed?.auditors ?? [];
+  // ASSURE-SEC-01B: Assurance reviewers, likewise never merged into `authentication.apiKeys`.
+  const assuranceReviewers = parsed?.assuranceReviewers ?? [];
   const configuration: EnterpriseConfiguration = {
     ...base,
     authentication: {
       apiKeys: [...base.authentication.apiKeys, ...customerKeys],
       ...(servicePrincipals.length > 0 ? { servicePrincipals } : {}),
       ...(auditors.length > 0 ? { auditors } : {}),
+      ...(assuranceReviewers.length > 0 ? { assuranceReviewers } : {}),
       ...(base.authentication.legacyKeyMode !== undefined ? { legacyKeyMode: base.authentication.legacyKeyMode } : {}),
     },
     ...(administrators.length > 0 || operators.length > 0 ? { administration: { administrators, ...(operators.length > 0 ? { operators } : {}) } } : {}),
@@ -819,11 +851,12 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
     ...operators.map((operator) => operator.key),
     ...servicePrincipals.map((servicePrincipal) => servicePrincipal.key),
     ...auditors.map((auditor) => auditor.key),
+    ...assuranceReviewers.map((reviewer) => reviewer.key),
   ]) {
     if (seen.has(secret)) {
       throw new EnterpriseHostConfigurationError(
         'HOST_CREDENTIALS_AMBIGUOUS',
-        'The same secret is configured for more than one credential (AOC_ENTERPRISE_API_KEYS, customerPrincipals, servicePrincipals, auditors, administrators and/or operators). One secret authenticates one caller.',
+        'The same secret is configured for more than one credential (AOC_ENTERPRISE_API_KEYS, customerPrincipals, servicePrincipals, auditors, assuranceReviewers, administrators and/or operators). One secret authenticates one caller.',
       );
     }
     seen.add(secret);
@@ -975,6 +1008,12 @@ export function loadEnterpriseHostConfiguration(env: Env): EnterpriseHostConfigu
     assertAuditorConfiguration(configuration, base.kernelAuthority.organizationId);
   } catch (error) {
     if (error instanceof AuditorConfigurationError) throw new EnterpriseHostConfigurationError('HOST_AUDITOR_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: ${error.message}`);
+    throw error;
+  }
+  try {
+    assertAssuranceReviewerConfiguration(configuration, base.kernelAuthority.organizationId);
+  } catch (error) {
+    if (error instanceof AssuranceReviewerConfigurationError) throw new EnterpriseHostConfigurationError('HOST_ASSURANCE_REVIEWER_INVALID', `${GOVERNED_ACTIONS_FILE_VARIABLE}: ${error.message}`);
     throw error;
   }
   try {
