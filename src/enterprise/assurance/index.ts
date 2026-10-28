@@ -123,6 +123,7 @@ export { createAssuranceFrameworkRegistry, resolveFrameworkForAssessment } from 
 export type { AssuranceFrameworkRegistry } from './framework-registry.js';
 
 export { AOC_SAF_FRAMEWORK_V1, AOC_SAF_FRAMEWORK_ID, AOC_SAF_FRAMEWORK_VERSION } from './saf-framework.js';
+export { RN_SV_FRAMEWORK_V0_1, RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_VERSION, RN_SV_REVIEWER_ROLE } from './frameworks/rn-sv-framework.js';
 
 export { createAssuranceEvidenceResolver } from './evidence-resolver.js';
 export type { AssuranceEvidenceResolver, AssuranceEvidenceSources, AssuranceRuntimeHealthSnapshot, CreateEvidenceResolverOptions } from './evidence-resolver.js';
