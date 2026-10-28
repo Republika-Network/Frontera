@@ -1258,6 +1258,13 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
 
   it('AUTH-04D2V — approval withdrawal after execution: the operator verifier reports EXECUTION_UNKNOWN, never NOT_AUTHORIZED and never success', async () => {
     const pinned = pinnedDirectory();
+    // This Host runs inside the test process, and the helpers above open and close their own read-write connections to
+    // its stores; a close here can fold and remove a store's WAL although the Host's connection stays open. In the pilot
+    // the Host is the only read-write connection and the verifier's mount is read-only. So, as the Host does, a
+    // connection is held open across these runs and the stores keep their WAL read state.
+    const heldIssuance = await openExecutionCapabilityIssuanceLedger(join(dir, 'execution-capability-issuance.sqlite'), { issuer: CAPABILITY_ISSUER, clock: Date.now });
+    const heldEvidence = await openExecutionReceiptEvidenceStore(join(dir, 'evidence', 'receipt-evidence.sqlite'), { issuer: CAPABILITY_ISSUER, organizationId: ORG, trustDomain: TRUST_DOMAIN, clock: Date.now });
+    try {
     for (const name of ['revokedAfter', 'standingAfter', 'presentedAfter']) {
       const run = await runVerifier(['--request', scenario[name] ?? ''], operatorEnv(pinned));
       assertNoLeak(run);
@@ -1268,6 +1275,10 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     // The first success, whose approver's standing was revoked since (test 23): history is not rewritten into NOT_AUTHORIZED.
     const first = statementOf(await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned)));
     assert.equal(first.status, 'EXECUTION_UNKNOWN');
+    } finally {
+      heldEvidence.close();
+      heldIssuance.close();
+    }
   });
 });
 
