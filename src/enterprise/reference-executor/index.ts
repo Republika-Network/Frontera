@@ -43,4 +43,12 @@ export { REFERENCE_EXECUTOR_ASSESSMENT_FORMAT, REFERENCE_EXECUTOR_GATEWAY_LIMITS
 export type { ReferenceExecutorGateway, ReferenceExecutorGatewayOptions, ReferenceExecutorRecord } from './gateway.js';
 export { REFERENCE_EXECUTOR_CONFIG_ENVIRONMENT_VARIABLE, REFERENCE_EXECUTOR_FAULT_INJECTION_VARIABLE, ReferenceExecutorStartupError, referenceExecutorStartupRefusal, startReferenceExecutorProcess } from './launcher.js';
 export { REFERENCE_EXECUTOR_STAGES, createReferenceExecutorVerificationPipeline } from './verification-pipeline.js';
-export type { ReferenceExecutorAssessment, ReferenceExecutorAssessmentCode, ReferenceExecutorEligibleCapability, ReferenceExecutorPolicyRefusal, ReferenceExecutorStage, ReferenceExecutorVerificationPipeline } from './verification-pipeline.js';
+export type {
+  ReferenceExecutorAssessment,
+  ReferenceExecutorAssessmentCode,
+  ReferenceExecutorEligibleCapability,
+  ReferenceExecutorPipelineOptions,
+  ReferenceExecutorPolicyRefusal,
+  ReferenceExecutorStage,
+  ReferenceExecutorVerificationPipeline,
+} from './verification-pipeline.js';

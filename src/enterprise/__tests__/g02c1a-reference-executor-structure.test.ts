@@ -16,6 +16,9 @@ import { EXECUTOR_ENVIRONMENT, executorConfiguration, hostVector, observedWith }
 
 const EXECUTOR = 'src/enterprise/reference-executor';
 const PRESENTATION = 'src/enterprise/execution-capability-presentation';
+// RSDK-02B: the governed sovereign receiver is executor-side composition over this executor, not Host code;
+// rsdk02-governed-receiver-structure.test.ts pins that no Host module imports it.
+const GOVERNED_RECEIVER = 'src/enterprise/governed-receiver';
 
 function codeOf(file: string): string {
   return readFileSync(file, 'utf8')
@@ -198,7 +201,7 @@ describe('G-02C1A structure — verification only: no signing, no ledger, no eff
 
 describe('G-02C1A structure — no Host surface, no Host change', () => {
   it('no Host module imports the executor; only the G-02C0 gate imports the presentation codec, for its encoder alone (G-02C1D, D1)', () => {
-    const importers = PRODUCTION.filter((file) => !file.startsWith(`${EXECUTOR}/`) && !file.startsWith(`${PRESENTATION}/`) && /from ['"][^'"]*(reference-executor|execution-capability-presentation)\//.test(codeOf(file)));
+    const importers = PRODUCTION.filter((file) => !file.startsWith(`${EXECUTOR}/`) && !file.startsWith(`${PRESENTATION}/`) && !file.startsWith(`${GOVERNED_RECEIVER}/`) && /from ['"][^'"]*(reference-executor|execution-capability-presentation)\//.test(codeOf(file)));
     assert.deepEqual(importers, ['src/enterprise/execution-capability-gate/gate.ts']);
     const gate = codeOf('src/enterprise/execution-capability-gate/gate.ts');
     assert.equal(/reference-executor/.test(gate), false);

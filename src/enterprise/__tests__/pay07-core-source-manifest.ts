@@ -162,6 +162,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'synthetic-execution-verification': 'AUTH-04D2S offline verifier of a synthetic execution (pure, keyless; composed by no Host, route or store); not on the governed payment path',
       'execution-receipt-evidence': 'G-02C1D opt-in Host receipt evidence (verification, issuance correlation, additive store); composed only when the governed-action file configures receiptEvidence, never by the qualified runs',
       'external-authority-signer': 'CORE-02 external signer; not composed by the qualified runs',
+      'governed-receiver': 'RSDK-02B executor-side governed sovereign receiver (synthetic operation only): composes the G-02C1A pipeline and G-02C1B flow with an injected RSDK-01 asset gate; imports no Host module and is composed by none',
       health: 'Host health surface',
       'human-identity': 'AUTH-02 human principals and passkey credentials; composed only when AOC_ENTERPRISE_HUMAN_AUTHORITY_MODE=enabled (AUTH-04A), never by the qualified runs; not on the governed payment path',
       lifecycle: 'Host lifecycle',

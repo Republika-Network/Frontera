@@ -4,6 +4,25 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — RSDK-02B governed sovereign receiver (internal, synthetic operation only)
+- **Module** `src/enterprise/governed-receiver/` (executor-side, unpublished). A receiver acts on a sovereign asset only when three things hold: a G-02 capability authorizes exactly the received request; RSDK-01 verifies the stored bundle for exactly `capability.resource`; and the receiver's own policy explicitly answers `eligible`. Only then is the capability claimed in the existing consumption ledger and the existing synthetic effect attempted, once. `verified` is authenticity, never authority.
+- **Reuse**:
+  - The existing verification pipeline gains an optional `resourcePermitted` predicate. Absent, the resource allow-list decides exactly as before; present, it replaces only that check.
+  - The existing execution flow and G-02C1C receipts are reused unchanged, handed the verdict already computed.
+- **Asset gate**: a sovereign identifier check, a trusted store, a 1 MiB UTF-8 cap before parsing, the injected RSDK-01 verifier and the policy. One deadline (default 5 s, at most 30 s) covers the gate, never past the capability's expiry; a deadline does not cancel the late work. Every refusal leaves the capability unclaimed.
+- **Boundaries**:
+  - RSDK-01 and `@aoc/protocol` are never imported by the module (structure-pinned), so the shipped runtime keeps Protocol type-only.
+  - No new Host endpoint, capability or receipt schema, signer or custody code; no Host module imports the receiver. `ALLOWED_PROTOCOL_SUBPATHS` is unchanged.
+- **Tests**:
+  - `rsdk02-governed-receiver.test.ts`: 61 unit and adversarial tests (the resource predicate, the absolute deadline, replay semantics, the precomputed verdict, capability forgery and substitution, asset refusals, deadlines, replay, crash after claim, honest outcomes).
+  - `rsdk02-governed-receiver-structure.test.ts`: 9 structure tests.
+  - `tests/rsdk02-governed-receiver.e2e.test.mjs`: a loopback PUSH demonstration with real RSDK-01, the Host's real transport and independent receipt verification.
+  - The fixture is generated inside the RSDK-01 package (`scripts/generate-governed-receiver-fixture.mjs`); no private key is written.
+- **RSDK-02D corrections** (Codex review):
+  - *Absolute deadline.* The gate re-reads its one budget whenever it accepts a stage's result, and before an eligible decision, so a stage that blocks past the deadline is a timeout even if its timer never fired.
+  - *Replay semantics.* After G-02 verification, an already-consumed capability or execution (read with the verified ids only) skips the asset gate and keeps the flow's `already-consumed` answer, so an uncertain attempt is never reported as a definitive refusal. The ledger is read again after the gate, so a concurrent delivery's consumption is preserved too. A consumption found is answered directly from durable state, never through a second, expiry-first claim. An unreadable ledger fails closed with `claim-unavailable`.
+- **Not claimed**: freshness, revocation, exactly-once effects, multi-instance single use beyond one shared local ledger, production readiness. See `docs/architecture/ADR-RSDK-02-GOVERNED-RECEIVER.md`.
+
 ### Security — AUTH-04D1R graceful shutdown of the human-decision authority
 - **Drain before close**: `Enterprise.close()`/`stop()` first drain the human authority while every store is still open:
   - the port refuses new work;
