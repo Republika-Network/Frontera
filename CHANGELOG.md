@@ -4,6 +4,16 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P3 deterministic document-use policy evaluation (evaluation only)
+- **Entry point**: `evaluateDocumentUsePolicy` in `@aoc-enterprise/sovereign-receiver-verification`, additive. It turns an eligible `soberania.document-use/1` result into `ALLOWED`, `DENIED` or `WITHHELD` with one closed reason (`DOCUMENT_USE_POLICY_REASONS`) and the settling rule ids.
+  - **Semantics**: Restriction wins, no default permission, owner-approval obligation means `WITHHELD`, misplaced effects and unknown concepts or actions mean `DENIED`.
+  - **Time**: `effectiveAt` inclusive and `expiresAt` exclusive, compared exactly against a host-supplied instant.
+  - **Audience**: an exact `Principal` match, or `Public`, which by founder decision (FV-P3.1) means addressed to any receiver: not public access and not an authorization, with every rule still applying. `Custom` is denied.
+- **Trust boundary**: only an eligible result issued by `verifyDocumentUseEligibility` in the same process is accepted. FV-P2 registers each one it returns in a private `WeakSet`, and its behaviour is otherwise unchanged. The requester supplies only the action. Time, receiver identity, expected asset and policy reference come from a separate host context, read as plain own data only. There is no approval input.
+- **Not authorization**: every decision reports `authorization`, `revocation` and `freshness` as `not_evaluated` and `execution` as `not_performed`. No capability, PEP, enforcement, signed record or Fileverse integration. The evaluator imports nothing from Protocol, and the Protocol allowance is unchanged.
+- **Handoff**: `docs/integration/FV_DOCUMENT_POLICY_DECISION_HANDOFF.md`, for ASSURE's later signed evidence (no ASSURE contract change).
+- **Tests**: `document-policy.test.ts` adds 46 tests covering semantics, time boundaries to the nanosecond, audience (including the Public decision), forged or copied eligibility, accessors and inherited fields, and determinism. The public-surface test is updated.
+
 ### Added — FV-P2 document-use eligibility in RSDK-01 (opt-in, verification only)
 - **Entry point**: `verifyDocumentUseEligibility` in `@aoc-enterprise/sovereign-receiver-verification`, additive. `verifyReceivedSovereignAsset`, its options, reasons and result are unchanged, so RSDK-02B is unaffected.
   - It runs RSDK-01 with the fixed compatibility declaration of Soberanía's `soberania.document-use/1` profile.

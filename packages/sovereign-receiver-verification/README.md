@@ -172,3 +172,53 @@ approval evidence, audience matching, replay of older terms and revocation are l
 
 Protocol access: this entry point needs `@aoc/protocol/licensing`, added to this package's scoped
 allowance for FV-P2 (see `docs/integration/PROTOCOL_PACKAGE_CONSUMPTION.md`).
+
+## Document-use policy evaluation (FV-P3)
+
+`evaluateDocumentUsePolicy` applies the `soberania.document-use/1` rule semantics to an eligible result
+and returns `ALLOWED`, `DENIED` or `WITHHELD` with exactly one reason from
+`DOCUMENT_USE_POLICY_REASONS`. It is synchronous and pure. It reads no clock, environment, network,
+storage or credentials, and it imports nothing from Protocol.
+
+```ts
+import { evaluateDocumentUsePolicy, verifyDocumentUseEligibility } from '@aoc-enterprise/sovereign-receiver-verification';
+
+const eligibility = await verifyDocumentUseEligibility(bundleText, verificationOptions);
+const result = evaluateDocumentUsePolicy(
+  eligibility,                                       // only a result issued by FV-P2 in this process
+  { action: 'soberania.document:export' },           // the requester's input: the action, nothing else
+  {                                                  // supplied by the host, never by the requester
+    receiverPrincipal,                               // this platform's own identity
+    evaluationTime,                                  // canonical UTC timestamp from the host's trusted clock
+    expectedSovereignAssetId,
+    policyReference: { claimId, claimDigest },       // the terms the host expects to be evaluated
+  },
+);
+```
+
+Evaluation, in order. Any failure is `DENIED`:
+
+1. **Inputs.** The eligibility must be an object `verifyDocumentUseEligibility` returned in this process
+   (deeply frozen, held in a private `WeakSet`). Copies and fabricated objects are refused. The request
+   and the context are read once, as plain own data properties: accessors, inherited fields and unknown
+   keys are refused. The asset and the policy reference must match the eligible ones exactly.
+2. **Time.** The terms apply from `effectiveAt` (inclusive) until `expiresAt` (exclusive). Bounds are
+   compared exactly, to the nanosecond, with no grace period, and absent bounds are absent.
+3. **Audience.** A `Principal` audience must equal `receiverPrincipal` exactly. `Custom` is not
+   interpreted, so it is denied. `Public` (founder decision, FV-P3.1) means the terms are addressed to
+   any receiver. It does **not** mean the content is publicly accessible, and it does not authorize any
+   operation. A Public-audience receiver is still subject to every rule below, to the time bounds, to
+   the asset binding and to eligibility, and still needs a valid `receiverPrincipal`. No audience can
+   turn a Restriction into a Permission.
+4. **Rules.** Every rule must name a profile concept and carry an effect that has a meaning there:
+   Permission or Restriction over an action, Obligation over the obligated approval action.
+   - A Restriction over the action → `DENIED`.
+   - No Permission → `DENIED`.
+   - `modify-protected-terms` with an owner-approval obligation → `WITHHELD`.
+   - Otherwise → `ALLOWED`.
+
+**No approval field exists.** The approval evidence format is not defined, so `WITHHELD` can never
+become `ALLOWED` here. **Evaluation is not authorization**: a decision reports `authorization`,
+`revocation` and `freshness` as `not_evaluated` and `execution` as `not_performed`. It carries no
+capability, no document content and no secret. Handoff for later signed evidence:
+`docs/integration/FV_DOCUMENT_POLICY_DECISION_HANDOFF.md`.
