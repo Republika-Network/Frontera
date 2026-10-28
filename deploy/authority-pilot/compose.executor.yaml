@@ -124,8 +124,9 @@ services:
       FRONTERA_OPERATOR_KEY_OBSERVER: ${FRONTERA_OPERATOR_KEY_OBSERVER:?}
       FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER: ${FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER:?set the verifier's auditor credential in .env (execution-init)}
     volumes:
-      # The Host's stores, read through their openers (SQLite in WAL mode needs a writable directory; nothing is written).
-      - frontera-state:/var/lib/frontera
+      # The Host's stores, READ-ONLY: no file can be created, changed, checkpointed or deleted from here. The openers
+      # read them through the running Host's WAL read state (-wal, -shm); without it the tool exits 2.
+      - frontera-state:/var/lib/frontera:ro
       - ${FRONTERA_SYNTHETIC_EXECUTION_DIR:?set the rendered synthetic-execution directory in .env}:/etc/frontera-synthetic-execution:ro,z
     healthcheck:
       disable: true

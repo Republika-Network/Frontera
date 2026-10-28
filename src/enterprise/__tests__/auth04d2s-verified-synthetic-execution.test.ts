@@ -1,8 +1,8 @@
 import dns from 'node:dns';
 import https from 'node:https';
-import { spawn } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash, generateKeyPairSync } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { request } from 'node:http';
 import { connect, createServer as createNetServer } from 'node:net';
@@ -56,7 +56,7 @@ import {
 } from './ctrl04-host-fixture.js';
 import { CREDENTIAL_TOKEN } from './g02c0-execution-binding-fixture.js';
 import { BEARER_ENV, type SpawnedExecutor } from './g02c1a-reference-executor-fixture.js';
-import { E2E_EXECUTOR_ID, E2E_RECEIPT_KEY_ID, e2eTrustedExecutor, eventually, executorDomain, loopbackHostPrimitive, signReceiptText, spawnE2EExecutor, startRelay, type ExecutorDomain, type Relay } from './g02c1d-end-to-end-fixture.js';
+import { E2E_EXECUTOR_ID, E2E_RECEIPT_KEY_ID, afterObservers, e2eTrustedExecutor, eventually, executorDomain, loopbackHostPrimitive, signReceiptText, spawnE2EExecutor, startRelay, type ExecutorDomain, type Relay } from './g02c1d-end-to-end-fixture.js';
 
 /**
  * AUTH-04D2S — verified synthetic execution, end to end, on the canonical shipped Host.
@@ -999,7 +999,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     assert.deepEqual(footprint(), footprintBefore, 'nothing issued, presented or performed');
   });
 
-  it('AUTH-04D2V — wrong or untrusted keys, another organization, missing or tampered evidence, and an unknown execution never yield success; refused access prints no secret', async () => {
+  it('AUTH-04D2V — wrong or untrusted keys, another organization, missing evidence, and an unknown execution never yield success; refused access prints no secret', async () => {
     const request = scenario['success'] ?? '';
     const other = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString();
     const untrustedExecutor = statementOf(await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ executorKey: other }))));
@@ -1012,25 +1012,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     const missing = statementOf(await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ issuancePath: join(dir, 'absent-issuance.sqlite'), evidencePath: join(dir, 'evidence', 'absent.sqlite') }))));
     assert.deepEqual([missing.status, missing.reason], ['EXECUTION_UNKNOWN', 'CAPABILITY_MISSING']);
 
-    // A tampered copy of the evidence store (a privileged writer altered the stored receipt): never success.
-    const copyDir = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-tampered-'));
-    mkdirSync(join(copyDir, 'evidence'), { mode: 0o700 });
-    const live = new Database(join(dir, 'evidence', 'receipt-evidence.sqlite'), { readonly: true });
-    try {
-      await live.backup(join(copyDir, 'evidence', 'receipt-evidence.sqlite'));
-    } finally {
-      live.close();
-    }
-    const tamper = new Database(join(copyDir, 'evidence', 'receipt-evidence.sqlite'));
-    try {
-      tamper.exec('DROP TRIGGER IF EXISTS receipt_evidence_never_updated');
-      tamper.prepare("UPDATE receipt_evidence SET canonical = replace(canonical, 'completed-observed', 'failed-observed') WHERE execution_id = ?").run(scenario['successExecution'] ?? '');
-    } finally {
-      tamper.close();
-    }
-    const tampered = await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ evidencePath: join(copyDir, 'evidence', 'receipt-evidence.sqlite') })));
-    assert.notEqual(statementOf(tampered).status, 'SIMULATED_SUCCESS');
-    assert.equal(statementOf(tampered).status, 'EXECUTION_UNKNOWN');
+    // A tampered evidence store: in the read-only filesystem test below, where the copy keeps a WAL like the live store.
 
     // An exact id that resolves to nothing.
     const unknown = await runVerifier(['--execution', 'aoc.exec:00000000000000000000000000000000'], operatorEnv(pinnedDirectory()));
@@ -1054,6 +1036,131 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     }
     // No argument can supply an approval view or a key.
     assert.equal((await runVerifier(['--request', request, '--approval', '{}'], operatorEnv(pinned))).status, 2);
+  });
+
+
+  // ── AUTH-04D2V: filesystem-level read-only enforcement, against a real read-only mount ────────────
+
+  /** A real read-only bind mount of `source` (Linux, passwordless sudo: the CI runners). Elsewhere the test is skipped, never passed. */
+  function readOnlyMount(source: string): { readonly path: string; release(): void } | undefined {
+    const target = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-ro-'));
+    const sudo = (args: readonly string[]): boolean => spawnSync('sudo', ['-n', ...args], { encoding: 'utf8' }).status === 0;
+    if (!sudo(['mount', '--bind', source, target])) return undefined;
+    if (!sudo(['mount', '-o', 'remount,bind,ro', target])) {
+      sudo(['umount', target]);
+      return undefined;
+    }
+    return { path: target, release: () => void sudo(['umount', target]) };
+  }
+
+  const STORE_FILES = ['execution-capability-issuance.sqlite', join('evidence', 'receipt-evidence.sqlite')];
+
+  /** Every file and directory under `root`, with each store file's (and its -wal/-shm's) bytes digested. */
+  function filesystemSnapshot(root: string): string {
+    const entries: string[] = [];
+    const walk = (directory: string): void => {
+      for (const name of readdirSync(directory).sort()) {
+        const path = join(directory, name);
+        const relative = path.slice(root.length + 1);
+        const stats = statSync(path);
+        if (stats.isDirectory()) {
+          entries.push(`${relative}/`);
+          walk(path);
+        } else entries.push(relative);
+      }
+    };
+    walk(root);
+    const digests = STORE_FILES.flatMap((file) => ['', '-wal', '-shm'].map((suffix) => {
+      const path = join(root, `${file}${suffix}`);
+      return `${file}${suffix}:${existsSync(path) ? createHash('sha256').update(readFileSync(path)).digest('hex') : 'absent'}`;
+    }));
+    return [...entries, ...digests].join('\n');
+  }
+
+  it('AUTH-04D2V — a real read-only mount: both stores read through the Host’s WAL; no byte, file or record changes; Host stopped → exit 2; restart → the same verdict; corrupted evidence → EXECUTION_UNKNOWN', async (t) => {
+    const mount = readOnlyMount(dir);
+    if (mount === undefined) {
+      assert.notEqual(process.env['CI'], 'true', 'CI runners must provide the read-only mount; this test is never skipped there');
+      t.skip('a real read-only bind mount needs Linux and passwordless sudo');
+      return;
+    }
+    const mounts = [mount];
+    try {
+      // The mount is genuinely read-only: nothing can be created there.
+      assert.throws(() => writeFileSync(join(mount.path, 'probe'), 'x'), /EROFS/);
+      const pinned = pinnedDirectory({ issuancePath: join(mount.path, STORE_FILES[0] ?? ''), evidencePath: join(mount.path, STORE_FILES[1] ?? '') });
+      // Expected verdicts first (they open the stores read-write in this process); then the Host is left quiescent.
+      const expected = (await verify(scenario['success'] ?? '')).verificationDigest;
+      await afterObservers();
+      // Row counts are read outside the byte window: even a read-only reader in this process may touch a -shm.
+      const recordsBefore = footprint();
+      const quiescent = (): readonly string[] => [filesystemSnapshot(dir), JSON.stringify(witness.operationCounts())];
+      const before = quiescent();
+      assert.match(before[0] ?? '', /receipt-evidence\.sqlite-wal:[0-9a-f]{64}/, 'the running Host keeps the evidence store in WAL mode');
+
+      const success = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned));
+      assertNoLeak(success);
+      const statement = statementOf(success);
+      assert.deepEqual([statement.status, statement.reason], ['SIMULATED_SUCCESS', 'VERIFIED'], 'both stores are read correctly through the read-only mount');
+      assert.equal(statement.verificationDigest, expected);
+      const invalid = statementOf(await runVerifier(['--request', scenario['invalid'] ?? ''], operatorEnv(pinned)));
+      assert.equal(invalid.status, 'DELIVERY_FAILED');
+      // No database page, WAL or SHM byte changed, no file appeared or vanished, no witness operation ran…
+      assert.deepEqual(quiescent(), before);
+      // …and no record was issued, presented, performed or signed.
+      assert.deepEqual(footprint(), recordsBefore);
+
+      // Host stopped: its connections close, SQLite folds and removes the WAL. The verifier fails closed with exit 2 and creates nothing.
+      await booted.host.close();
+      const stopped = filesystemSnapshot(dir);
+      const down = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned));
+      assert.equal(down.status, 2, down.stdout);
+      assert.equal(down.stdout, '', 'no verdict while the Host is stopped');
+      assert.match(down.stderr, /not reachable/);
+      assert.equal(filesystemSnapshot(dir), stopped, 'nothing created or repaired while stopped');
+
+      // Restart: the same verdict, byte for byte.
+      booted = await boot(dir, witness, domain.publicKeyPem, false);
+      const restarted = statementOf(await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned)));
+      assert.deepEqual([restarted.status, restarted.verificationDigest], ['SIMULATED_SUCCESS', expected]);
+
+      // A store without the running Host's WAL read state fails closed with exit 2 — a precondition, not a verdict.
+      const copies = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-copy-'));
+      mkdirSync(join(copies, 'cold'), { mode: 0o700 });
+      const live = new Database(join(dir, STORE_FILES[1] ?? ''), { readonly: true });
+      try {
+        await live.backup(join(copies, 'cold', 'receipt-evidence.sqlite'));
+        await live.backup(join(copies, 'tampered.sqlite'));
+      } finally {
+        live.close();
+      }
+      const coldMount = readOnlyMount(join(copies, 'cold'));
+      assert.ok(coldMount !== undefined);
+      mounts.push(coldMount);
+      const cold = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinnedDirectory({ issuancePath: join(mount.path, STORE_FILES[0] ?? ''), evidencePath: join(coldMount.path, 'receipt-evidence.sqlite') })));
+      assert.equal(cold.status, 2, cold.stdout);
+      assert.match(cold.stderr, /PRECONDITION_UNAVAILABLE/);
+      assert.equal(cold.stdout, '');
+
+      // Corrupted evidence, served read-only with a live WAL (a holder keeps it open, as the Host does): EXECUTION_UNKNOWN, never success.
+      const holder = new Database(join(copies, 'tampered.sqlite'));
+      try {
+        holder.pragma('journal_mode = WAL');
+        holder.exec('DROP TRIGGER IF EXISTS receipt_evidence_never_updated');
+        holder.prepare("UPDATE receipt_evidence SET canonical = replace(canonical, 'completed-observed', 'failed-observed') WHERE execution_id = ?").run(scenario['successExecution'] ?? '');
+        const tamperedMount = readOnlyMount(copies);
+        assert.ok(tamperedMount !== undefined);
+        mounts.push(tamperedMount);
+        const tampered = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinnedDirectory({ issuancePath: join(mount.path, STORE_FILES[0] ?? ''), evidencePath: join(tamperedMount.path, 'tampered.sqlite') })));
+        const corrupted = statementOf(tampered);
+        assert.equal(corrupted.status, 'EXECUTION_UNKNOWN');
+        assert.match(tampered.stdout, /receipt evidence store unreadable \(refused its own integrity checks\)/);
+      } finally {
+        holder.close();
+      }
+    } finally {
+      for (const entry of mounts.reverse()) entry.release();
+    }
   });
 
   // ── Temporal authorization: the execution point (A) versus current authority (B) ──────────────────

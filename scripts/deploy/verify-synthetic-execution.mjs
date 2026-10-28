@@ -17,7 +17,10 @@
 //     (FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER): the execution identity, the
 //     final state, the approval records and the trace's own verification.
 //   - The Host's G-02B issuance ledger and G-02C1D receipt evidence store, on
-//     its state volume, through their own openers, read methods only.
+//     its state volume — mounted READ-ONLY for this tool — through their own
+//     openers, read methods only. The openers ask SQLite for a read-write
+//     connection; on the read-only mount SQLite can only open the files for
+//     reading. The running Host's WAL read state (-wal, -shm) is required.
 //   - The pinned keys: the rendered public configuration in
 //     FRONTERA_SYNTHETIC_EXECUTION_DIR (the executor receipt key the Host pins,
 //     the authority keys the executor pins). Never from an argument.
@@ -29,7 +32,11 @@
 // never shown as an execution.
 //
 // Exit codes: 0 the verification ran (whatever its status); 2 it could not run
-// (usage, missing configuration, refused access, unknown request).
+// (usage, missing configuration, refused access, unknown request, the Host's
+// private listener unreachable, or PRECONDITION_UNAVAILABLE: a store without
+// the running Host's WAL read state, or not openable read-only). A store that
+// refuses its own integrity checks is evidence, not a precondition: the result
+// is EXECUTION_UNKNOWN.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -138,6 +145,25 @@ function corroborated(approval, trace) {
     .every((verdict) => records.some((record) => record.kind === 'approved' && record.digest === verdict.rowDigest && record.subjectDigest === approval.subjectDigest && record.recordedBy === verdict.recordedBy));
 }
 
+/**
+ * The storage precondition, checked before any store is opened: the Host keeps both stores in SQLite WAL mode, and on
+ * a read-only mount a reader can use a WAL database only through the `-wal` and `-shm` files the running Host keeps.
+ * Their absence fails closed — exit 2, nothing opened, nothing created or repaired, no writable retry. Their presence
+ * is not taken as proof that the Host runs: that is the private listener answering, checked first.
+ */
+function requireWalReadState(path, what) {
+  if (!existsSync(`${path}-wal`) || !existsSync(`${path}-shm`)) {
+    refuse(`PRECONDITION_UNAVAILABLE: the ${what} has no WAL read state (${path}-wal, -shm); run the verifier while the Host is running. Nothing was opened, created or repaired.`);
+  }
+}
+
+/** An opener's own refusal (integrity, schema, ownership) is evidence; its generic "could not be opened" is the environment. */
+function classify(error, what, notes) {
+  const message = error instanceof Error ? error.message : '';
+  if (/could not be opened\.$/.test(message) || !message.startsWith('The ')) refuse(`PRECONDITION_UNAVAILABLE: the ${what} could not be opened read-only in this environment (no writable retry is made).`);
+  notes.push(`${what} unreadable (refused its own integrity checks)`);
+}
+
 async function readStores(trust, executionId) {
   const notes = [];
   let issuance = null;
@@ -145,6 +171,8 @@ async function readStores(trust, executionId) {
   if (executionId === undefined) return { issuance, evidence, notes };
   const { openExecutionCapabilityIssuanceLedger } = await import(dist('execution-capability-issuance/index.js'));
   const { openExecutionReceiptEvidenceStore } = await import(dist('execution-receipt-evidence/index.js'));
+  // An absent store is missing evidence (the result says so); a present one must have the running Host's WAL read state.
+  for (const [path, what] of [[trust.issuanceLedgerPath, 'issuance ledger'], [trust.evidenceStorePath, 'receipt evidence store']]) if (existsSync(path)) requireWalReadState(path, what);
   if (!existsSync(trust.issuanceLedgerPath)) notes.push('issuance ledger absent');
   else {
     try {
@@ -155,8 +183,8 @@ async function readStores(trust, executionId) {
       } finally {
         ledger.close();
       }
-    } catch {
-      notes.push('issuance ledger unreadable (refused its own integrity checks)');
+    } catch (error) {
+      classify(error, 'issuance ledger', notes);
     }
   }
   if (!existsSync(trust.evidenceStorePath)) notes.push('receipt evidence store absent');
@@ -171,8 +199,8 @@ async function readStores(trust, executionId) {
       } finally {
         store.close();
       }
-    } catch {
-      notes.push('receipt evidence store unreadable (refused its own integrity checks)');
+    } catch (error) {
+      classify(error, 'receipt evidence store', notes);
     }
   }
   return { issuance, evidence, notes };

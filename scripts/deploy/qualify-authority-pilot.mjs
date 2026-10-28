@@ -168,6 +168,9 @@ function executorIsolation(merged) {
   check(verifier !== undefined && verifier.network_mode === 'service:network' && (verifier.ports ?? []).length === 0, 'execution-verifier: the Host\'s private listener only, no published port');
   check(launches(verifier).includes('scripts/deploy/verify-synthetic-execution.mjs'), 'execution-verifier: runs the read-only verifier, nothing else');
   check(JSON.stringify(Object.keys(verifier.environment ?? {}).sort()) === JSON.stringify(['FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER', 'FRONTERA_OPERATOR_KEY_OBSERVER']), 'execution-verifier: the observer and the read-only auditor credentials are its whole environment');
+  const stateMount = (verifier.volumes ?? []).find((volume) => volume.source === 'frontera-state');
+  check(stateMount !== undefined && stateMount.target === '/var/lib/frontera' && stateMount.read_only === true, 'execution-verifier: the Host state volume is mounted read-only (resolved)');
+  check((verifier.volumes ?? []).every((volume) => volume.read_only === true), 'execution-verifier: every mount is read-only');
   const pinnedDirectory = (verifier.volumes ?? []).find((volume) => volume.target === '/etc/frontera-synthetic-execution');
   check(pinnedDirectory !== undefined && pinnedDirectory.read_only === true, 'execution-verifier: the pinned public configuration is read-only');
 }
