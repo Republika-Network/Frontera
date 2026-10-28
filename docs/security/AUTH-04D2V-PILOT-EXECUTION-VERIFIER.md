@@ -35,6 +35,7 @@
 - **Not proven:**
   - **Database-level read-only behavior.** The protection comes entirely from the mount. If the tool were run with a writable mount, against this design, the openers' connections would be read-write. The tool still calls only read methods.
   - **Concurrency under live writes.** The byte checks ran with the Host quiescent. While the Host writes, its own changes to those files are expected and are not attributable to the verifier.
+  - **That the WAL read state lasts the Host's whole life in the pilot.** The Host opens both stores at boot and closes them at shutdown (`composition-root.ts`). In CI, though, the Host runs inside the test process, and after that process's own read-write opens and closes, a store was seen without its `-wal` while the Host kept running. The verifier then correctly exited 2. In the pilot the Host is a separate process and the only read-write connection, and the verifier's mount is read-only, so this is expected not to occur, but it is **not proven in CI**. If it does occur, the tool fails closed with exit 2; it never gives a wrong verdict. The withdrawal-after-execution regression therefore reads a consistent snapshot of the stores held in WAL mode, while the live read path is proven by the read-only-mount test.
 
 ## 2. Trust model
 

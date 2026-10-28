@@ -1257,13 +1257,28 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
   });
 
   it('AUTH-04D2V — approval withdrawal after execution: the operator verifier reports EXECUTION_UNKNOWN, never NOT_AUTHORIZED and never success', async () => {
-    const pinned = pinnedDirectory();
-    // This Host runs inside the test process, and the helpers above open and close their own read-write connections to
-    // its stores; a close here can fold and remove a store's WAL although the Host's connection stays open. In the pilot
-    // the Host is the only read-write connection and the verifier's mount is read-only. So, as the Host does, a
-    // connection is held open across these runs and the stores keep their WAL read state.
-    const heldIssuance = await openExecutionCapabilityIssuanceLedger(join(dir, 'execution-capability-issuance.sqlite'), { issuer: CAPABILITY_ISSUER, clock: Date.now });
-    const heldEvidence = await openExecutionReceiptEvidenceStore(join(dir, 'evidence', 'receipt-evidence.sqlite'), { issuer: CAPABILITY_ISSUER, organizationId: ORG, trustDomain: TRUST_DOMAIN, clock: Date.now });
+    // This Host runs inside the test process, whose helpers open and close their own read-write connections to its
+    // stores; in CI that was seen to leave a store without its WAL read state while the Host kept running, and the
+    // verifier then (correctly) exits 2. The live read path is proven by the read-only-mount test above. Here the
+    // verifier reads a consistent snapshot of both stores, held in WAL mode as the Host holds its own: same evidence.
+    const snapshot = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-snapshot-'));
+    mkdirSync(join(snapshot, 'evidence'), { mode: 0o700 });
+    const holders: InstanceType<typeof Database>[] = [];
+    for (const file of STORE_FILES) {
+      const source = new Database(join(dir, file), { readonly: true });
+      try {
+        await source.backup(join(snapshot, file));
+      } finally {
+        source.close();
+      }
+      const holder = new Database(join(snapshot, file));
+      holder.pragma('journal_mode = WAL');
+      // One frame into the WAL, with no change to any table, schema or row the stores check.
+      holder.pragma(`user_version = ${Number(holder.pragma('user_version', { simple: true }))}`);
+      holders.push(holder);
+      assert.ok(existsSync(join(snapshot, `${file}-wal`)) && existsSync(join(snapshot, `${file}-shm`)), `${file}: WAL read state held`);
+    }
+    const pinned = pinnedDirectory({ issuancePath: join(snapshot, STORE_FILES[0] ?? ''), evidencePath: join(snapshot, STORE_FILES[1] ?? '') });
     try {
     for (const name of ['revokedAfter', 'standingAfter', 'presentedAfter']) {
       const run = await runVerifier(['--request', scenario[name] ?? ''], operatorEnv(pinned));
@@ -1276,8 +1291,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     const first = statementOf(await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned)));
     assert.equal(first.status, 'EXECUTION_UNKNOWN');
     } finally {
-      heldEvidence.close();
-      heldIssuance.close();
+      for (const holder of holders) holder.close();
     }
   });
 });
