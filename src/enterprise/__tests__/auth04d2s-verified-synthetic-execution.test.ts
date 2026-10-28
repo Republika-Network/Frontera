@@ -217,9 +217,14 @@ async function initialize(dir: string): Promise<void> {
   (await openExecutionReceiptEvidenceStore(join(dir, 'evidence', 'receipt-evidence.sqlite'), { issuer: CAPABILITY_ISSUER, organizationId: ORG, trustDomain: TRUST_DOMAIN, clock: Date.now, create: true })).close();
 }
 
+/** The Host's whole environment: the same for the in-process Host and for the separate `run-enterprise-host.mjs` process. */
+function hostEnv(dir: string, witness: StartedWitness, executorPublicKeyPem: string, first: boolean): Record<string, string | undefined> {
+  return ctrl04Env(dir, governedFile(dir, executorPublicKeyPem), { [CTO.apiKeyEnv]: CTO_SECRET, [CREDENTIAL_ENV]: CREDENTIAL_TOKEN, ...freshnessEnv(witness), ...gatewayEnv(dir, first) });
+}
+
 async function boot(dir: string, witness: StartedWitness, executorPublicKeyPem: string, first: boolean): Promise<Booted> {
   if (first) await initialize(dir);
-  const env = ctrl04Env(dir, governedFile(dir, executorPublicKeyPem), { [CTO.apiKeyEnv]: CTO_SECRET, [CREDENTIAL_ENV]: CREDENTIAL_TOKEN, ...freshnessEnv(witness), ...gatewayEnv(dir, first) });
+  const env = hostEnv(dir, witness, executorPublicKeyPem, first);
   const host = await bootEnterpriseHost({ env, executionAdapters: [recordingAdapter()], logger: capturingLogger });
   const { port } = await host.listen();
   const gatewayPort = host.authorityGateway?.address()?.port;
@@ -1160,6 +1165,111 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
       }
     } finally {
       for (const entry of mounts.reverse()) entry.release();
+    }
+  });
+
+
+  // ── AUTH-04D2V: the Host as its own operating-system process, as the pilot runs it ───────────────
+
+  /** `scripts/run-enterprise-host.mjs` — the pilot image's command — on this world's state, in its own process. */
+  async function spawnHostProcess(): Promise<{ readonly baseUrl: string; readonly pid: number; running(): boolean; stop(): Promise<void> }> {
+    const env = Object.fromEntries(Object.entries(hostEnv(dir, witness, domain.publicKeyPem, false)).filter((entry): entry is [string, string] => entry[1] !== undefined));
+    const child = spawn(process.execPath, ['scripts/run-enterprise-host.mjs'], { env: { PATH: process.env['PATH'] ?? '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    const exited = new Promise<number | null>((done) => child.on('exit', (code) => done(code)));
+    const baseUrl = await new Promise<string>((resolveStart, rejectStart) => {
+      const timer = setTimeout(() => rejectStart(new Error(`the Host process did not start: ${output.slice(-2000)}`)), 90_000);
+      const read = (chunk: Buffer): void => {
+        output += chunk.toString('utf8');
+        const match = /listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(output);
+        if (match?.[1] !== undefined) {
+          clearTimeout(timer);
+          resolveStart(match[1]);
+        }
+      };
+      child.stdout.on('data', read);
+      child.stderr.on('data', read);
+      void exited.then((code) => rejectStart(new Error(`the Host process exited (${String(code)}): ${output.slice(-2000)}`)));
+    });
+    assert.ok(child.pid !== undefined);
+    let alive = true;
+    void exited.then(() => (alive = false));
+    return {
+      baseUrl,
+      pid: child.pid,
+      running: () => alive,
+      stop: async () => {
+        child.kill('SIGTERM');
+        assert.equal(await exited, 0, `the Host process shuts down cleanly: ${output.slice(-1000)}`);
+      },
+    };
+  }
+
+  const walState = (root: string): readonly boolean[] => STORE_FILES.flatMap((file) => ['-wal', '-shm'].map((suffix) => existsSync(join(root, `${file}${suffix}`))));
+
+  it('AUTH-04D2V — separate processes: the Host process holds its stores in WAL; the verifier reads them through a read-only mount — running, repeated, across an unrelated transition, across a restart; stopped and WAL-less fail closed', async (t) => {
+    const mount = readOnlyMount(dir);
+    if (mount === undefined) {
+      assert.notEqual(process.env['CI'], 'true', 'CI runners must provide the read-only mount; this test is never skipped there');
+      t.skip('a real read-only bind mount needs Linux and passwordless sudo');
+      return;
+    }
+    const expected = (await verify(scenario['success'] ?? '')).verificationDigest;
+    // The in-process Host steps aside: from here only the Host process opens the stores read-write.
+    await booted.host.close();
+    let hostProcess = await spawnHostProcess();
+    const cleanup: (() => Promise<void> | void)[] = [() => mount.release()];
+    try {
+      assert.notEqual(hostProcess.pid, process.pid, 'the Host runs in its own operating-system process');
+      const pinned = pinnedDirectory({ issuancePath: join(mount.path, STORE_FILES[0] ?? ''), evidencePath: join(mount.path, STORE_FILES[1] ?? '') });
+      const env = (): Record<string, string> => operatorEnv(pinned, { FRONTERA_VERIFIER_HOST: hostProcess.baseUrl });
+      const success = async (): Promise<SyntheticExecutionVerification> => statementOf(await runVerifier(['--request', scenario['success'] ?? ''], env()));
+
+      // A. Running normally: the Host process's own connections give both stores their WAL read state.
+      assert.deepEqual(walState(dir), [true, true, true, true], 'issuance and evidence: -wal and -shm, held by the Host process');
+      const recordsBefore = footprint();
+      const before = [filesystemSnapshot(dir), JSON.stringify(witness.operationCounts())];
+      const first = await success();
+      assert.deepEqual([first.status, first.reason, first.verificationDigest], ['SIMULATED_SUCCESS', 'VERIFIED', expected]);
+      const invalid = statementOf(await runVerifier(['--request', scenario['invalid'] ?? ''], env()));
+      assert.equal(invalid.status, 'DELIVERY_FAILED');
+      // B. Repeated verification: the same statement every time.
+      for (let run = 0; run < 3; run += 1) assert.equal((await success()).verificationDigest, expected, `run ${String(run)}`);
+      // No byte of either store (main file, -wal, -shm), no file, no witness operation: the verifier changed nothing.
+      assert.deepEqual([filesystemSnapshot(dir), JSON.stringify(witness.operationCounts())], before);
+      assert.deepEqual(footprint(), recordsBefore, 'no record issued, presented, performed or signed');
+
+      // C. An unrelated, permitted state transition in the Host process between reads: a new request, withheld for approval.
+      const withheld = await govern(hostProcess.baseUrl, world.syntheticCredential, synthetic(releaseKey('auth04d2v-unrelated')));
+      assertAwaitingApproval(withheld);
+      assert.equal((await success()).verificationDigest, expected, 'the verdict is unchanged by the Host writing elsewhere');
+      assert.deepEqual(walState(dir), [true, true, true, true]);
+
+      // D. Host restart: a new Host process on the same state.
+      await hostProcess.stop();
+      hostProcess = await spawnHostProcess();
+      assert.deepEqual(walState(dir), [true, true, true, true], 'the restarted Host process holds its stores in WAL again');
+      assert.equal((await success()).verificationDigest, expected, 'the same verdict after a restart');
+
+      // E. Host stopped: the Host process folds and removes its WAL on a clean shutdown; the verifier fails closed with exit 2.
+      await hostProcess.stop();
+      const stopped = filesystemSnapshot(dir);
+      const down = await runVerifier(['--request', scenario['success'] ?? ''], env());
+      assert.equal(down.status, 2, down.stdout);
+      assert.equal(down.stdout, '');
+      assert.equal(filesystemSnapshot(dir), stopped, 'nothing created or repaired while stopped');
+
+      // F. WAL absent: SQLite itself cannot read the stopped Host's stores through the read-only mount — the precondition
+      // is SQLite's own requirement, not a stricter one. The verifier refuses before opening anything.
+      assert.deepEqual(walState(dir), [false, false, false, false], 'a clean shutdown left no WAL read state');
+      await assert.rejects(openExecutionReceiptEvidenceStore(join(mount.path, STORE_FILES[1] ?? ''), { issuer: CAPABILITY_ISSUER, organizationId: ORG, trustDomain: TRUST_DOMAIN, clock: Date.now }), 'the shared opener cannot open a WAL-less store read-only');
+      await assert.rejects(openExecutionCapabilityIssuanceLedger(join(mount.path, STORE_FILES[0] ?? ''), { issuer: CAPABILITY_ISSUER, clock: Date.now }), 'nor the issuance ledger');
+      assert.equal(filesystemSnapshot(dir), stopped, 'the refused opens changed nothing');
+    } finally {
+      if (hostProcess.running()) await hostProcess.stop().catch(() => undefined);
+      for (const step of cleanup.reverse()) await step();
+      // The in-process Host returns for the rest of the suite.
+      booted = await boot(dir, witness, domain.publicKeyPem, false);
     }
   });
 
