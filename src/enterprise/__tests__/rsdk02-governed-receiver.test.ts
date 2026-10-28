@@ -282,7 +282,8 @@ describe('RSDK-02B governed receiver — the permitted path', () => {
     assert.equal(answer.record.outcome, 'completed-observed', JSON.stringify(answer.record));
     assert.equal(answer.status, 201);
     assert.equal(answer.record.ledgerState, 'completed');
-    assert.deepEqual(w.events, ['ledger-read', 'ledger-read-execution', `load:${ASSET}`, 'verify-asset', 'policy', 'claim', 'claim:claimed', 'effect-start:claimed', 'effect:completed', 'record:completed']);
+    // Consumption is read before the gate and again after it (a concurrent delivery may have claimed meanwhile).
+    assert.deepEqual(w.events, ['ledger-read', 'ledger-read-execution', `load:${ASSET}`, 'verify-asset', 'policy', 'ledger-read', 'ledger-read-execution', 'claim', 'claim:claimed', 'effect-start:claimed', 'effect:completed', 'record:completed']);
     assert.deepEqual(w.verifyCalls, [{ bundleText: BUNDLE, expectedSovereignAssetId: ASSET }]);
     assert.equal(w.domain.records().length, 1);
     const verification = w.domain.verifier.verify(receiptOf(answer), { expected: { executorId: EXECUTOR_ID, issuer: ISSUER, audience: AUDIENCE, organizationId: ORGANIZATION, trustDomain: TRUST_DOMAIN } });
@@ -595,8 +596,13 @@ describe('RSDK-02B governed receiver — execution', () => {
       assert.equal(answer.record.ledgerState, ledgerState);
       assert.equal(answer.status, status);
       assert.equal(w.events.filter((event) => event.startsWith('effect-start')).length, 1, 'exactly one attempt');
-      const receipt = w.domain.verifier.verify(receiptOf(answer));
-      assert.equal(receipt.reportedOutcome === 'completed-observed', false);
+      // Receipts are best-effort by the G-02C1C contract (a failure is recovered later from durable state), so one may be
+      // absent; any receipt that is present must never state completion.
+      const header = answer.headers[EXECUTOR_RECEIPT_TRANSPORT_HEADER];
+      if (header !== undefined) {
+        const receipt = w.domain.verifier.verify(receiptOf(answer));
+        assert.equal(receipt.reportedOutcome === 'completed-observed', false);
+      }
     }
   });
 
@@ -1020,6 +1026,52 @@ describe('RSDK-02D — a consumed capability keeps its consumed answer, whatever
     const answer = await first;
     assert.equal(answer.record.outcome, 'already-consumed', JSON.stringify(answer.record));
     assert.equal(answer.record.code, 'EXECUTION_CONSUMED');
+  });
+
+  it('a held delivery that resumes after the capability expired still reports the duplicate\'s consumption, never CAPABILITY_EXPIRED (the reported ordering)', async () => {
+    for (const lateAnswer of ['ineligible', 'eligible'] as const) {
+      let now = Date.now();
+      const held = deferred();
+      let calls = 0;
+      const w = await world({
+        clock: () => now,
+        observe: () => 'unknown',
+        policy: async (input) => {
+          calls += 1;
+          if (calls === 1) {
+            await held.promise;
+            return lateAnswer === 'eligible' ? demonstrationPolicy(input) : { decision: 'ineligible', reason: 'CHANGED_WHILE_HELD' };
+          }
+          return demonstrationPolicy(input);
+        },
+      });
+      const observed = governed(ASSET, { issuedAt: new Date(now - 1_000).toISOString(), expiresAt: new Date(now + 2_000).toISOString() });
+      const first = w.handle(observed);
+      for (let i = 0; i < 50 && calls < 1; i += 1) await flush();
+      assert.equal((await w.handle(observed)).record.outcome, 'attempted-outcome-unknown');
+      now += 5_000; // the capability expires while the first delivery is still held
+      held.resolve();
+      const answer = await first;
+      assert.equal(answer.record.outcome, 'already-consumed', `${lateAnswer}: ${JSON.stringify(answer.record)}`);
+      assert.equal(answer.record.code, 'CAPABILITY_CONSUMED');
+      assert.equal(answer.status, 202);
+      assert.equal(answer.record.ledgerState, 'outcome-unknown');
+      assert.equal(w.events.filter((event) => event.startsWith('effect-start')).length, 1);
+    }
+  });
+
+  it('a consumed replay is answered from durable state with the receipt it supports, without another claim', async () => {
+    const w = await world();
+    const observed = governed();
+    assert.equal((await w.handle(observed)).record.outcome, 'completed-observed');
+    const mark = w.events.length;
+    const replay = await w.handle(observed);
+    assert.equal(replay.record.outcome, 'already-consumed');
+    assert.equal(replay.record.ledgerState, 'completed');
+    assert.equal(w.events.slice(mark).includes('claim'), false, 'no second, expiry-sensitive claim');
+    const verification = w.domain.verifier.verify(receiptOf(replay));
+    assert.equal(verification.signature, 'valid');
+    assert.equal(verification.reportedOutcome, 'completed-observed');
   });
 
   it('if the re-read after the gate fails, the refusal is withheld: claim-unavailable, never a definitive rejection', async () => {

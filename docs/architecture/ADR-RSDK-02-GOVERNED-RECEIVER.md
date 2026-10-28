@@ -88,10 +88,12 @@ verify capability → [synthetic action?] → [already consumed? → already-con
   answer is discarded.
 - **A consumed capability keeps its consumed answer (RSDK-02D).** After G-02 verification, and only with the verified
   capability and execution ids, the receiver reads the ledger (its existing read-only `read` and `readExecution`). An
-  already-consumed capability, or one whose execution was consumed, skips the asset gate, and the existing flow answers
-  `already-consumed` (202) from durable state. An earlier uncertain attempt is therefore never turned into a definitive
+  already-consumed capability, or one whose execution was consumed, skips the asset gate and is answered
+  `already-consumed` (202) directly from the durable state found, with the receipt that state supports, exactly as the
+  existing flow would. No second claim is attempted: the ledger's claim checks expiry before consumption, so a claim
+  would turn a consumed capability that has since expired into a refusal. An earlier uncertain attempt is therefore never turned into a definitive
   refusal by current asset eligibility. Because the gate awaits, the ledger is read again before any gate refusal is
-  returned: a concurrent delivery that claimed the capability meanwhile also yields `already-consumed`. An unreadable
+  answered, refusal or not: a concurrent delivery that claimed the capability meanwhile also yields `already-consumed`. An unreadable
   ledger, at either read, answers `claim-unavailable` (503), with nothing performed.
   The atomic claim stays the race-safe enforcement point for unconsumed capabilities.
 - **Bundles are capped at 1 MiB of UTF-8** (a deployment may set less) before RSDK-01 parses anything.

@@ -1,3 +1,5 @@
+import type { ExecutionCapability } from '../execution-capability/capability.js';
+import type { ExecutionCapabilityConsumptionLedger } from '../execution-capability/reference/consumption-ledger.js';
 import type { ObservedHttpRequest } from '../reference-executor/admission.js';
 import { createReferenceExecutorExecutionFlow, type ReferenceExecutorExecution } from '../reference-executor/execution-flow.js';
 import { referenceExecutorStatusOf } from '../reference-executor/gateway.js';
@@ -129,6 +131,58 @@ export function createGovernedSovereignReceiver(options: GovernedSovereignReceiv
     return Object.freeze({ record, status: assetRefusalStatus(outcome.code), headers: Object.freeze({}) });
   }
 
+  type Consumption = 'absent' | 'unreadable' | { readonly code: 'CAPABILITY_CONSUMED' | 'EXECUTION_CONSUMED'; readonly state: NonNullable<ReferenceExecutorExecution['ledgerState']> };
+
+  /** What this ledger already holds for the verified capability or its execution, by the verified ids only. */
+  function priorConsumption(capability: ExecutionCapability): Consumption {
+    try {
+      const byCapability = ledger.read(capability.capabilityId);
+      if (byCapability.state !== 'absent') return Object.freeze({ code: 'CAPABILITY_CONSUMED' as const, state: byCapability.state });
+      const byExecution = ledger.readExecution(capability.issuer, capability.executionId);
+      if (byExecution.state !== 'absent') return Object.freeze({ code: 'EXECUTION_CONSUMED' as const, state: byExecution.state });
+      return 'absent';
+    } catch {
+      return 'unreadable';
+    }
+  }
+
+  /**
+   * The existing flow's own already-consumed answer (202), for a consumption already found in durable state, with
+   * the receipt and ledger state the flow derives from it. The flow is given a refuse-only view of the ledger: every
+   * read is the real ledger's, and `claim` answers the consumption found instead of attempting a second claim, whose
+   * expiry check runs before its consumption check and would turn a consumed capability that has since expired into
+   * a refusal. The view can only refuse, never admit.
+   */
+  function consumedAnswer(observed: ObservedHttpRequest, verdict: Parameters<typeof pinnedPipeline>[1], found: Exclude<Consumption, 'absent' | 'unreadable'>): GovernedReceiverAnswer {
+    const refused = Object.freeze({ outcome: 'refused' as const, reason: found.code });
+    const consumedView: ExecutionCapabilityConsumptionLedger = Object.freeze({
+      audience: ledger.audience,
+      claim: () => refused,
+      recordOutcome: () => 'not-claimed' as const,
+      read: (capabilityId: string) => ledger.read(capabilityId),
+      readExecution: (issuer: string, executionId: string) => ledger.readExecution(issuer, executionId),
+      readDetail: (capabilityId: string) => ledger.readDetail(capabilityId),
+      listUnresolved: (page?: Parameters<ExecutionCapabilityConsumptionLedger['listUnresolved']>[0]) => ledger.listUnresolved(page),
+      close: () => undefined,
+    });
+    return runFlow(observed, verdict, consumedView);
+  }
+
+  /** The existing flow, over exactly this verdict and the given ledger. */
+  function runFlow(observed: ObservedHttpRequest, verdict: Parameters<typeof pinnedPipeline>[1], over: ExecutionCapabilityConsumptionLedger): GovernedReceiverAnswer {
+    const flow = createReferenceExecutorExecutionFlow({
+      configuration,
+      pipeline: pinnedPipeline(observed, verdict),
+      ledger: over,
+      effect,
+      clock,
+      ...(fault !== undefined ? { fault } : {}),
+      ...(receipts !== undefined ? { receipts } : {}),
+    });
+    const record = flow.execute(observed);
+    return Object.freeze({ record, status: flow.statusOf(record, refusedStatusOf), headers: flow.answerHeadersOf?.(record) ?? Object.freeze({}) });
+  }
+
   /** The ledger cannot say whether this capability was consumed: nothing is performed, and nothing is stated as final. */
   function unavailable(digest: string): GovernedReceiverAnswer {
     const record: ReferenceExecutorExecution = Object.freeze({ mode: 'synthetic-execution' as const, outcome: 'claim-unavailable' as const, stage: 'claim' as const, code: 'LEDGER_UNAVAILABLE' as const, bindingDigest: digest, ledgerState: null });
@@ -171,41 +225,22 @@ export function createGovernedSovereignReceiver(options: GovernedSovereignReceiv
         // existing flow's already-consumed one, from durable state; current asset eligibility must never turn that
         // into a definitive refusal, and nothing is loaded, verified or decided again. The atomic claim stays the
         // race-safe enforcement point: an unconsumed capability is still claimed below, or refused there.
-        const consumedNow = (): boolean => ledger.read(capability.capabilityId).state !== 'absent' || ledger.readExecution(capability.issuer, capability.executionId).state !== 'absent';
-        let consumed: boolean;
-        try {
-          consumed = consumedNow();
-        } catch {
-          return unavailable(eligible.bindingDigest);
-        }
-        if (!consumed) {
-          const outcome = await gate.evaluate({ action: capability.action, resource: capability.resource, expiresAtMs: Date.parse(capability.expiresAt) });
-          if (!outcome.ok) {
-            // The gate awaited: a concurrent delivery may have claimed (and attempted) this capability meanwhile. Read
-            // again before refusing; a consumption found now keeps its already-consumed answer from the flow below.
-            let consumedMeanwhile: boolean;
-            try {
-              consumedMeanwhile = consumedNow();
-            } catch {
-              return unavailable(eligible.bindingDigest);
-            }
-            if (!consumedMeanwhile) return refusalOf(outcome, eligible.bindingDigest);
-          }
-        }
+        // A consumption found is answered from that durable state directly — never through another claim, whose
+        // expiry check runs before its consumption check and would turn a consumed capability into a refusal.
+        const before = priorConsumption(capability);
+        if (before === 'unreadable') return unavailable(eligible.bindingDigest);
+        if (before !== 'absent') return consumedAnswer(observed, verdict, before);
+        const outcome = await gate.evaluate({ action: capability.action, resource: capability.resource, expiresAtMs: Date.parse(capability.expiresAt) });
+        // The gate awaited: a concurrent delivery may have claimed (and attempted) this capability meanwhile. Read
+        // again before any answer the gate would give, eligible or not.
+        const meanwhile = priorConsumption(capability);
+        if (meanwhile === 'unreadable') return unavailable(eligible.bindingDigest);
+        if (meanwhile !== 'absent') return consumedAnswer(observed, verdict, meanwhile);
+        if (!outcome.ok) return refusalOf(outcome, eligible.bindingDigest);
       }
 
-      // ── execute: the existing flow, over exactly this verdict ──
-      const flow = createReferenceExecutorExecutionFlow({
-        configuration,
-        pipeline: pinnedPipeline(observed, verdict),
-        ledger,
-        effect,
-        clock,
-        ...(fault !== undefined ? { fault } : {}),
-        ...(receipts !== undefined ? { receipts } : {}),
-      });
-      const record = flow.execute(observed);
-      return Object.freeze({ record, status: flow.statusOf(record, refusedStatusOf), headers: flow.answerHeadersOf?.(record) ?? Object.freeze({}) });
+      // ── execute: the existing flow, over exactly this verdict and the real ledger ──
+      return runFlow(observed, verdict, ledger);
     } catch {
       return conservative(capabilityId, bindingDigest);
     }
