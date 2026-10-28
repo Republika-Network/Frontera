@@ -20,6 +20,7 @@ import type { ReceiverVerificationKeyResolver } from './types.js';
 import { DOCUMENT_USE_PROFILE, DOCUMENT_USE_RECEIVER_PROFILE } from './document-use-types.js';
 import type {
   DocumentUseEligibilityResult,
+  DocumentUseEligible,
   DocumentUseIneligibilityReason,
   DocumentUseIneligibilityStage,
   DocumentUseIneligible,
@@ -149,7 +150,7 @@ async function verifyEligibility(bundleText: unknown, rawOptions: unknown): Prom
   if (reasons.length > 0) return ineligible('eligibility', reasons);
   if (evidence === undefined) return ineligible('eligibility', ['INTERNAL_VERIFICATION_ERROR']);
 
-  return deepFreeze({
+  const eligible: DocumentUseEligible = deepFreeze({
     outcome: 'eligible_for_evaluation',
     profile: DOCUMENT_USE_RECEIVER_PROFILE,
     documentProfile: DOCUMENT_USE_PROFILE,
@@ -166,6 +167,22 @@ async function verifyEligibility(bundleText: unknown, rawOptions: unknown): Prom
     terms: evidence,
     reasons: [],
   });
+  ISSUED_ELIGIBILITY.add(eligible);
+  return eligible;
+}
+
+/**
+ * FV-P3 provenance: every eligible result this module returns, held weakly.
+ * The results are deeply frozen, so a registered object is exactly what was
+ * verified. A structurally identical object built by anyone else, a copy, a
+ * deserialized result or one from another copy of this package is not
+ * registered, and the policy evaluator refuses it. Process-local by design.
+ */
+const ISSUED_ELIGIBILITY = new WeakSet<object>();
+
+/** Internal to this package (not exported from the index): whether `value` is an eligible result issued here. */
+export function isIssuedDocumentUseEligibility(value: unknown): value is DocumentUseEligible {
+  return typeof value === 'object' && value !== null && ISSUED_ELIGIBILITY.has(value);
 }
 
 async function termsRejections(

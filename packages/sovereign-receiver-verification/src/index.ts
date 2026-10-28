@@ -30,3 +30,17 @@ export type {
   DocumentUseTermsEvidence,
   VerifyDocumentUseEligibilityOptions,
 } from './document-use-types.js';
+// FV-P3: deterministic policy evaluation over an eligible result. Evaluation is
+// not authorization: nothing here grants, issues a capability or executes.
+export { evaluateDocumentUsePolicy } from './document-policy.js';
+export { DOCUMENT_USE_ACTIONS, DOCUMENT_USE_POLICY_EVALUATOR, DOCUMENT_USE_POLICY_REASONS } from './document-policy-types.js';
+export type {
+  DocumentUseAction,
+  DocumentUsePolicyDecision,
+  DocumentUsePolicyDecisionValue,
+  DocumentUsePolicyEvaluator,
+  DocumentUsePolicyReason,
+  DocumentUsePolicyReference,
+  DocumentUsePolicyRequest,
+  DocumentUsePolicyTrustedContext,
+} from './document-policy-types.js';
