@@ -76,6 +76,8 @@ describe('AUTH-04D2S — the synthetic execution kit', () => {
       // host-init: the issuance ledger and the evidence store, once.
       const host = tool(['host-init', '--kit', kit], { AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG });
       assert.equal(host.status, 0, host.stderr);
+      // AUTH-04D2V: host-init prints the execution verifier's read-only auditor credential, once.
+      assert.match(host.stdout, /^FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER=[A-Za-z0-9_-]{64}$/m);
       assert.notEqual(tool(['host-init', '--kit', kit], { AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG }).status, 0, 'a second host-init is refused');
 
       // render: public keys in, public configuration out; never over an existing file.
@@ -103,6 +105,7 @@ describe('AUTH-04D2S — the synthetic execution kit', () => {
         AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
         AOC_ENTERPRISE_SQLITE_PATH: join(dir, 'host', 'governance.sqlite'),
         FRONTERA_SYNTHETIC_EXECUTOR_TOKEN: TOKEN,
+        FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER: 'synthetic-test-auditor-credential-000000000000000000',
         ...operatorEnv,
       });
       assert.equal(configuration.governedActions.routes.size, 2);
@@ -110,6 +113,7 @@ describe('AUTH-04D2S — the synthetic execution kit', () => {
       assert.equal(configuration.governedActions.routes.get('synthetic.deploy-release'), 'synthetic-executor-verified');
       assert.deepEqual(policy.genericHttpAdapters[0], BASE.genericHttpAdapters[0], 'the .invalid adapter is unchanged, byte for byte');
       assert.deepEqual(policy.executionCapabilities.receiptEvidence.trustedExecutors[0].organizationIds, [ORG]);
+      assert.deepEqual(policy.auditors, [{ auditorId: 'pilot-execution-verifier', apiKeyEnv: 'FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER' }], 'one read-only auditor, the execution verifier');
 
       // The reference executor's own parser accepts the rendered configuration, pinned to the Host's public key alone.
       const { parseReferenceExecutorConfiguration } = await import(join(ROOT, 'dist/src/enterprise/reference-executor/configuration.js'));
@@ -158,6 +162,20 @@ describe('AUTH-04D2S — the synthetic execution kit', () => {
     assert.equal(/X-Forwarded|X-Real-IP|add_header/i.test(directives), false, 'nothing is added in either direction');
     const authority = read(`${KIT}/nginx/authority.conf`) + read(`${KIT}/nginx/authority-gateway-proxy.conf`);
     assert.equal(/8443|8445|synthetic-executor/.test(authority), false, 'the Authority ingress has no route to the executor');
+  });
+
+  it('AUTH-04D2V: the execution verifier reads only — GET on the private listener, store read methods, pinned keys from the rendered directory, no secret printed', () => {
+    const source = read('scripts/deploy/verify-synthetic-execution.mjs');
+    const code = source.split('\n').filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*')).join('\n');
+    assert.equal(/method: '(POST|PUT|PATCH|DELETE)'/.test(code), false, 'GET only');
+    assert.match(code, /method: 'GET'/);
+    assert.equal(/\.(reserve|markIssued|markFailed|record|accept|claim|append|write|insert|update|delete)\(/.test(code.replace(/process\.(stdout|stderr)\.write\(/g, '')), false, 'read methods only');
+    assert.equal(/writeFileSync|appendFileSync|mkdirSync|rmSync|create: true/.test(code), false, 'writes nothing');
+    assert.ok(code.includes(String.raw`/^http:\/\/127\.0\.0\.1:\d+$/.test(host)`), 'the private loopback listener only');
+    assert.equal(/--key|--public-key|--trusted|--approval/.test(code), false, 'no argument supplies a key or an approval view');
+    assert.equal(/headers\[|console\.log\(.*(authorization|observer|auditor)/i.test(code), false, 'no credential is logged');
+    const authority = read(`${KIT}/nginx/authority.conf`) + read(`${KIT}/nginx/authority-gateway-proxy.conf`);
+    assert.equal(/\/api\/(admin|evidence)/.test(authority), false, 'the Authority origin routes neither the operator plane nor the evidence API');
   });
 
   it('the executor overlay publishes no port and is absent from every earlier stage', () => {

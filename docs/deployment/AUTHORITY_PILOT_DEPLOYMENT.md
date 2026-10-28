@@ -285,6 +285,17 @@ The governed action alone selects the scenario. Nothing in a request, and no end
   4. Install `nginx/synthetic-executor.conf` and the allow-list, then issue the certificate.
   5. `run --rm config-check`, then `up -d`.
   6. [V] One approved synthetic action, verified to `SIMULATED_SUCCESS`. One approved `.invalid` action, verified to `DELIVERY_FAILED`.
+  7. [V] **Operator verification after a real-device test** (AUTH-04D2V). On the Host machine, over SSH, never through the Authority origin:
+     - Note the `requestId` of each governed request. The agent's response carries it, and so does the CTO's inbox entry.
+     - Run, with the same `-f` files as step 5:
+       `docker compose … run --rm -T execution-verifier --request <requestId>`. For an execution id, use `--execution <executionId>` instead.
+     - **The synthetic action** must print `status SIMULATED_SUCCESS (VERIFIED)`, a receipt id and digest from `frontera-synthetic-executor-pilot`, and the `SYNTHETIC ONLY` banner.
+     - **The `.invalid` action** must print `status DELIVERY_FAILED (DELIVERY_NOT_COMPLETED)`, with no capability and no receipt.
+     - **Any other status** is a finding, not a pass. That includes `EXECUTION_UNKNOWN` (for example after a later revocation) and `AUTHORIZED` (a decision that has not executed).
+     - Keep the JSON statement (its `verificationDigest`) with the step-6 evidence. It holds identifiers and digests only.
+     - **Run it while the Host is running.** It mounts the state volume **read-only**. The stores' openers ask SQLite for read-write connections, so the mount is what prevents writes; SQLite has no read-only mode in them. The tool reads the stores only through the running Host's WAL files (`-wal`, `-shm`).
+     - **Exit 2 is not a verdict.** It covers a stopped Host (private listener unreachable), `PRECONDITION_UNAVAILABLE` (no WAL read state, or not openable read-only), refused access and usage errors. Start the Host and run again; never re-run it with a writable mount.
+     - It sends GET only, to `127.0.0.1:8787`, as the observer and the read-only auditor. It takes its keys from `FRONTERA_SYNTHETIC_EXECUTION_DIR`, and never prints a credential, key, capability or receipt.
 - **Rollback:** stop and remove `compose.executor.yaml`. The policy returns to the AUTH-04D2A one. Executions already recorded stay recorded.
 - **Not covered by CI (stated, not implied):**
   - the Host adapter's DNS and public-address decision over a real answer for the executor's name;

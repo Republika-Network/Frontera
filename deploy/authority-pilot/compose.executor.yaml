@@ -107,6 +107,30 @@ services:
     healthcheck:
       disable: true
 
+  execution-verifier:
+    # docker compose ... run --rm -T execution-verifier --request <requestId> | --execution <executionId>   (AUTH-04D2V)
+    # Read-only. In the Host's network namespace, so it reaches the private
+    # listener on 127.0.0.1:8787 (never the Authority origin): the CORE-05
+    # approval as the observer operator, the ASSURE-01 trace as the read-only
+    # auditor. Reads the issuance ledger and the receipt evidence store with
+    # their own openers, and the pinned public keys from the rendered
+    # directory. Sends GET only, writes nothing, prints no secret.
+    image: ${FRONTERA_IMAGE:-frontera-host:pilot}
+    profiles: ["tools"]
+    network_mode: service:network
+    entrypoint: ["node", "scripts/deploy/verify-synthetic-execution.mjs"]
+    command: []
+    environment:
+      FRONTERA_OPERATOR_KEY_OBSERVER: ${FRONTERA_OPERATOR_KEY_OBSERVER:?}
+      FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER: ${FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER:?set the verifier's auditor credential in .env (execution-init)}
+    volumes:
+      # The Host's stores, READ-ONLY: no file can be created, changed, checkpointed or deleted from here. The openers
+      # read them through the running Host's WAL read state (-wal, -shm); without it the tool exits 2.
+      - frontera-state:/var/lib/frontera:ro
+      - ${FRONTERA_SYNTHETIC_EXECUTION_DIR:?set the rendered synthetic-execution directory in .env}:/etc/frontera-synthetic-execution:ro,z
+    healthcheck:
+      disable: true
+
 volumes:
   # The executor's own state: receipt key, ledgers, synthetic records. Never the Host's, never backed up with it.
   frontera-synthetic-executor:

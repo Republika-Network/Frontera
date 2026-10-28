@@ -1,6 +1,9 @@
 import dns from 'node:dns';
 import https from 'node:https';
-import { mkdirSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash, generateKeyPairSync } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { request } from 'node:http';
 import { connect, createServer as createNetServer } from 'node:net';
 import { join } from 'node:path';
@@ -24,7 +27,7 @@ import { createSyntheticExecutionVerifier, type SyntheticExecutionVerification, 
 import { SoftwareAuthenticator } from './auth02-software-authenticator.js';
 import { AUTHORITY_KEY_A, trustedKeyOf } from './authority-authenticity-fixture.js';
 import { freshnessEnv, startWitness, type StartedWitness } from './core07-freshness-fixture.js';
-import { capturingLogger, create, recordingAdapter } from './ctrl02-host-fixture.js';
+import { SECRETS, capturingLogger, create, recordingAdapter } from './ctrl02-host-fixture.js';
 import {
   APPROVE_RELEASE,
   AUTH,
@@ -53,7 +56,7 @@ import {
 } from './ctrl04-host-fixture.js';
 import { CREDENTIAL_TOKEN } from './g02c0-execution-binding-fixture.js';
 import { BEARER_ENV, type SpawnedExecutor } from './g02c1a-reference-executor-fixture.js';
-import { E2E_EXECUTOR_ID, E2E_RECEIPT_KEY_ID, e2eTrustedExecutor, eventually, executorDomain, loopbackHostPrimitive, signReceiptText, spawnE2EExecutor, startRelay, type ExecutorDomain, type Relay } from './g02c1d-end-to-end-fixture.js';
+import { E2E_EXECUTOR_ID, E2E_RECEIPT_KEY_ID, afterObservers, e2eTrustedExecutor, eventually, executorDomain, loopbackHostPrimitive, signReceiptText, spawnE2EExecutor, startRelay, type ExecutorDomain, type Relay } from './g02c1d-end-to-end-fixture.js';
 
 /**
  * AUTH-04D2S — verified synthetic execution, end to end, on the canonical shipped Host.
@@ -214,9 +217,14 @@ async function initialize(dir: string): Promise<void> {
   (await openExecutionReceiptEvidenceStore(join(dir, 'evidence', 'receipt-evidence.sqlite'), { issuer: CAPABILITY_ISSUER, organizationId: ORG, trustDomain: TRUST_DOMAIN, clock: Date.now, create: true })).close();
 }
 
+/** The Host's whole environment: the same for the in-process Host and for the separate `run-enterprise-host.mjs` process. */
+function hostEnv(dir: string, witness: StartedWitness, executorPublicKeyPem: string, first: boolean): Record<string, string | undefined> {
+  return ctrl04Env(dir, governedFile(dir, executorPublicKeyPem), { [CTO.apiKeyEnv]: CTO_SECRET, [CREDENTIAL_ENV]: CREDENTIAL_TOKEN, ...freshnessEnv(witness), ...gatewayEnv(dir, first) });
+}
+
 async function boot(dir: string, witness: StartedWitness, executorPublicKeyPem: string, first: boolean): Promise<Booted> {
   if (first) await initialize(dir);
-  const env = ctrl04Env(dir, governedFile(dir, executorPublicKeyPem), { [CTO.apiKeyEnv]: CTO_SECRET, [CREDENTIAL_ENV]: CREDENTIAL_TOKEN, ...freshnessEnv(witness), ...gatewayEnv(dir, first) });
+  const env = hostEnv(dir, witness, executorPublicKeyPem, first);
   const host = await bootEnterpriseHost({ env, executionAdapters: [recordingAdapter()], logger: capturingLogger });
   const { port } = await host.listen();
   const gatewayPort = host.authorityGateway?.address()?.port;
@@ -435,6 +443,8 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
   let world: World;
   const humans = new Map<string, Human>();
   const human = (operatorId: string): Human => humans.get(operatorId) ?? assert.fail(`no enrolled human ${operatorId}`);
+  /** Request ids of the scenarios above, for the AUTH-04D2V operator verifier to read back. */
+  const scenario: Record<string, string> = {};
 
   const verifier = (): ReturnType<typeof createSyntheticExecutionVerifier> =>
     createSyntheticExecutionVerifier({
@@ -591,6 +601,8 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     const resumed = await govern(booted.baseUrl, world.syntheticCredential, synthetic(key));
     assert.equal(resumed.body['status'], 'executed', resumed.text);
     const executionId = resumed.body['executionId'] as string;
+    scenario['success'] = view.requestId;
+    scenario['successExecution'] = executionId;
     await eventually(async () => (await evidenceOf(executionId)).observations.length > 0);
     assert.deepEqual([issuanceRows() - issuedBefore, requestsSeen() - requestsBefore, effects() - effectsBefore], [1, 1, 1], 'one capability, one presentation, one synthetic effect');
 
@@ -745,6 +757,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
   it('9 — missing authorization: an unapproved request never reaches the executor, and nothing unapproved is ever called authorized', async () => {
     const before = footprint();
     const { key, view } = await pendingSynthetic('auth04d2s-missing');
+    scenario['pending'] = view.requestId;
     assertAwaitingApproval(await govern(booted.baseUrl, world.syntheticCredential, synthetic(key)));
     const verification = await verify(view.requestId);
     assert.equal(verification.status, 'NOT_AUTHORIZED');
@@ -827,6 +840,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     assertAwaitingApproval(withheld);
     const view = await viewOf(withheld.body['requestId'] as string);
     assert.ok(view !== null);
+    scenario['invalid'] = view.requestId;
     const { decided } = await decide(await signedIn(booted.gatewayPort, approverA), approverA, view, 'approve');
     assert.equal(decided.status, 200, decided.text);
     const authorized = await verify(view.requestId);
@@ -849,6 +863,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
   it('18 — lost executor response: the executor acted, the Host stays unconfirmed, and the verification is EXECUTION_UNKNOWN — never success', async () => {
     const cto = human(CTO.operatorId);
     const { key, view } = await pendingSynthetic('auth04d2s-lost');
+    scenario['lost'] = view.requestId;
     assert.equal((await decide(await signedIn(booted.gatewayPort, cto), cto, view, 'approve')).decided.status, 200);
     route = lossyRelay.target;
     const effectsBefore = effects();
@@ -879,6 +894,417 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     assert.notEqual(verification.status, 'SIMULATED_SUCCESS');
     assert.ok(['EXECUTION_UNKNOWN', 'DELIVERY_FAILED'].includes(verification.status), JSON.stringify(verification));
     assert.equal(verification.receipt, null);
+  });
+
+
+  // ── AUTH-04D2V: the pilot operator's read-only verifier, against this Host ───────────────────────
+
+  interface CliRun {
+    readonly status: number | null;
+    readonly stdout: string;
+    readonly stderr: string;
+  }
+
+  /** The pinned public configuration, as `synthetic-execution-render` writes it: the Host policy and the executor's trust. */
+  function pinnedDirectory(overrides: { readonly executorKey?: string; readonly authorityKey?: string; readonly organizationId?: string; readonly issuancePath?: string; readonly evidencePath?: string } = {}): string {
+    const pinned = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-pinned-'));
+    const policy = governedFile(dir, overrides.executorKey ?? domain.publicKeyPem) as { executionCapabilities: { issuanceLedgerPath: string; receiptEvidence: { storePath: string; trustedExecutors: { organizationIds: string[] }[] } } };
+    if (overrides.issuancePath !== undefined) policy.executionCapabilities.issuanceLedgerPath = overrides.issuancePath;
+    if (overrides.evidencePath !== undefined) policy.executionCapabilities.receiptEvidence.storePath = overrides.evidencePath;
+    if (overrides.organizationId !== undefined) for (const entry of policy.executionCapabilities.receiptEvidence.trustedExecutors) entry.organizationIds = [overrides.organizationId];
+    writeFileSync(join(pinned, 'governed-actions.json'), JSON.stringify({ ...policy, trustDomainId: TRUST_DOMAIN }));
+    const authority = overrides.authorityKey === undefined ? trustedKeyOf(AUTHORITY_KEY_A) : { keyId: AUTHORITY_KEY_A.keyId, algorithm: 'ed25519-v1', publicKeyPem: overrides.authorityKey };
+    writeFileSync(join(pinned, 'synthetic-executor.json'), JSON.stringify({ trustedIssuers: [{ issuer: CAPABILITY_ISSUER, keys: [authority] }], syntheticExecution: { syntheticActions: [SYNTHETIC] } }));
+    return pinned;
+  }
+
+  /** The tool as the `execution-verifier` service runs it — a separate process; async, so this Host keeps answering. */
+  function runVerifier(args: readonly string[], env: Record<string, string>): Promise<CliRun> {
+    return new Promise((resolveRun) => {
+      const child = spawn(process.execPath, ['scripts/deploy/verify-synthetic-execution.mjs', ...args], { env: { PATH: process.env['PATH'] ?? '', ...env } });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
+      child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+      child.on('close', (status) => resolveRun({ status, stdout, stderr }));
+    });
+  }
+
+  const operatorEnv = (pinned: string, overrides: Record<string, string> = {}): Record<string, string> => ({
+    FRONTERA_VERIFIER_HOST: booted.baseUrl,
+    FRONTERA_SYNTHETIC_EXECUTION_DIR: pinned,
+    FRONTERA_OPERATOR_KEY_OBSERVER: SECRETS.observer,
+    // The organization-scoped API key this Host configures plays the pilot auditor's part (AOC_ENTERPRISE_API_KEYS).
+    FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER: SECRETS.legacyKey,
+    ...overrides,
+  });
+
+  const statementOf = (run: CliRun): SyntheticExecutionVerification => {
+    assert.equal(run.status, 0, run.stderr);
+    const marker = run.stdout.indexOf('\n--- statement (');
+    assert.ok(marker !== -1, run.stdout);
+    return JSON.parse(run.stdout.slice(run.stdout.indexOf('\n', marker + 1) + 1)) as SyntheticExecutionVerification;
+  };
+
+  const SECRET_VALUES = (): readonly string[] => [SECRETS.observer, SECRETS.legacyKey, CREDENTIAL_TOKEN, CTO_SECRET];
+  function assertNoLeak(run: CliRun): void {
+    for (const text of [run.stdout, run.stderr]) {
+      for (const secret of SECRET_VALUES()) assert.equal(text.includes(secret), false, 'no credential in the output');
+      assert.equal(/PRIVATE KEY|-----BEGIN/.test(text), false, 'no key material');
+      assert.equal(/frontera\.execution-capability\.v1|"ledgerState"|"consumption"|"signature"/.test(text), false, 'no capability, receipt or signature artifact');
+    }
+  }
+
+  /** Every Host store the verifier could touch, as rows: equal before and after means it wrote nothing. */
+  function storeContents(): string {
+    const dump = (path: string): string => {
+      const db = new Database(path, { readonly: true });
+      try {
+        const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { readonly name: string }[];
+        return tables.map(({ name }) => `${name}:${JSON.stringify(db.prepare(`SELECT * FROM ${name}`).all())}`).join('\n');
+      } finally {
+        db.close();
+      }
+    };
+    return [join(dir, 'execution-capability-issuance.sqlite'), join(dir, 'evidence', 'receipt-evidence.sqlite')].map(dump).join('\n');
+  }
+
+  it('AUTH-04D2V — the operator verifier reports exactly the AUTH-04D2S statement for success, failed delivery, pending and lost response; it reads only, and prints no secret', async () => {
+    const pinned = pinnedDirectory();
+    const before = storeContents();
+    const footprintBefore = footprint();
+
+    // Valid synthetic execution: the same statement, byte for byte, as the verifier computes in process.
+    const success = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned));
+    assertNoLeak(success);
+    const statement = statementOf(success);
+    assert.deepEqual([statement.status, statement.reason], ['SIMULATED_SUCCESS', 'VERIFIED']);
+    assert.equal(statement.verificationDigest, (await verify(scenario['success'] ?? '')).verificationDigest, 'the operator path and the in-process verification agree exactly');
+    assert.match(success.stdout, /SYNTHETIC ONLY/);
+    assert.match(success.stdout, /SIMULATED success/);
+    // By execution id: the same request, resolved by recomputing every approval's execution identity.
+    const byExecution = statementOf(await runVerifier(['--execution', scenario['successExecution'] ?? ''], operatorEnv(pinned)));
+    assert.equal(byExecution.verificationDigest, statement.verificationDigest);
+    // Re-running is a replay of a read: the identical statement.
+    assert.equal(statementOf(await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned))).verificationDigest, statement.verificationDigest);
+
+    // The .invalid scenario: DELIVERY_FAILED, never success. Pending: NOT_AUTHORIZED, never shown as executed. Lost response: EXECUTION_UNKNOWN.
+    const invalid = await runVerifier(['--request', scenario['invalid'] ?? ''], operatorEnv(pinned));
+    assertNoLeak(invalid);
+    assert.deepEqual([statementOf(invalid).status, statementOf(invalid).reason], ['DELIVERY_FAILED', 'DELIVERY_NOT_COMPLETED']);
+    assert.match(invalid.stdout, /delivery FAILED/);
+    const pending = statementOf(await runVerifier(['--request', scenario['pending'] ?? ''], operatorEnv(pinned)));
+    assert.equal(pending.status, 'NOT_AUTHORIZED');
+    assert.equal(pending.receipt, null);
+    const lost = statementOf(await runVerifier(['--request', scenario['lost'] ?? ''], operatorEnv(pinned)));
+    assert.equal(lost.status, 'EXECUTION_UNKNOWN', 'never converted into success');
+
+    // No write operation: every store row, and everything downstream, is exactly as it was.
+    assert.equal(storeContents(), before, 'the verifier wrote nothing to the Host stores');
+    assert.deepEqual(footprint(), footprintBefore, 'nothing issued, presented or performed');
+  });
+
+  it('AUTH-04D2V — wrong or untrusted keys, another organization, missing evidence, and an unknown execution never yield success; refused access prints no secret', async () => {
+    const request = scenario['success'] ?? '';
+    const other = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const untrustedExecutor = statementOf(await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ executorKey: other }))));
+    assert.deepEqual([untrustedExecutor.status, untrustedExecutor.reason], ['EXECUTION_UNKNOWN', 'RECEIPT_INVALID']);
+    const untrustedAuthority = statementOf(await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ authorityKey: other }))));
+    assert.deepEqual([untrustedAuthority.status, untrustedAuthority.reason], ['EXECUTION_UNKNOWN', 'CAPABILITY_SIGNATURE_INVALID']);
+    const otherOrganization = await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ organizationId: 'org-elsewhere' })));
+    assert.equal(statementOf(otherOrganization).status, 'EXECUTION_UNKNOWN');
+    assert.match(otherOrganization.stdout, /another organization than the pinned one/);
+    const missing = statementOf(await runVerifier(['--request', request], operatorEnv(pinnedDirectory({ issuancePath: join(dir, 'absent-issuance.sqlite'), evidencePath: join(dir, 'evidence', 'absent.sqlite') }))));
+    assert.deepEqual([missing.status, missing.reason], ['EXECUTION_UNKNOWN', 'CAPABILITY_MISSING']);
+
+    // A tampered evidence store: in the read-only filesystem test below, where the copy keeps a WAL like the live store.
+
+    // An exact id that resolves to nothing.
+    const unknown = await runVerifier(['--execution', 'aoc.exec:00000000000000000000000000000000'], operatorEnv(pinnedDirectory()));
+    assert.equal(unknown.status, 2);
+    assert.match(unknown.stderr, /EXECUTION_NOT_FOUND/);
+    const unknownRequest = await runVerifier(['--request', 'request-that-does-not-exist'], operatorEnv(pinnedDirectory()));
+    assert.equal(unknownRequest.status, 2);
+
+    // Missing or unauthorized private access: refused, nothing verified, no secret echoed.
+    const pinned = pinnedDirectory();
+    for (const env of [
+      operatorEnv(pinned, { FRONTERA_OPERATOR_KEY_OBSERVER: '' }),
+      operatorEnv(pinned, { FRONTERA_OPERATOR_KEY_OBSERVER: 'not-the-observer-credential' }),
+      operatorEnv(pinned, { FRONTERA_AUDITOR_KEY_EXECUTION_VERIFIER: SECRETS.observer }),
+      operatorEnv(pinned, { FRONTERA_VERIFIER_HOST: 'http://authority.frontera-systems.com:443' }),
+    ]) {
+      const refused = await runVerifier(['--request', request], env);
+      assert.equal(refused.status, 2, refused.stdout);
+      assert.equal(refused.stdout, '', 'no statement without verified access');
+      assertNoLeak(refused);
+    }
+    // No argument can supply an approval view or a key.
+    assert.equal((await runVerifier(['--request', request, '--approval', '{}'], operatorEnv(pinned))).status, 2);
+  });
+
+
+  // ── AUTH-04D2V: filesystem-level read-only enforcement, against a real read-only mount ────────────
+
+  /** A real read-only bind mount of `source` (Linux, passwordless sudo: the CI runners). Elsewhere the test is skipped, never passed. */
+  function readOnlyMount(source: string): { readonly path: string; release(): void } | undefined {
+    const target = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-ro-'));
+    const sudo = (args: readonly string[]): boolean => spawnSync('sudo', ['-n', ...args], { encoding: 'utf8' }).status === 0;
+    if (!sudo(['mount', '--bind', source, target])) return undefined;
+    if (!sudo(['mount', '-o', 'remount,bind,ro', target])) {
+      sudo(['umount', target]);
+      return undefined;
+    }
+    return { path: target, release: () => void sudo(['umount', target]) };
+  }
+
+  const STORE_FILES = ['execution-capability-issuance.sqlite', join('evidence', 'receipt-evidence.sqlite')];
+
+  /** Every file and directory under `root`, with each store file's (and its -wal/-shm's) bytes digested. */
+  function filesystemSnapshot(root: string): string {
+    const entries: string[] = [];
+    const walk = (directory: string): void => {
+      for (const name of readdirSync(directory).sort()) {
+        const path = join(directory, name);
+        const relative = path.slice(root.length + 1);
+        const stats = statSync(path);
+        if (stats.isDirectory()) {
+          entries.push(`${relative}/`);
+          walk(path);
+        } else entries.push(relative);
+      }
+    };
+    walk(root);
+    const digests = STORE_FILES.flatMap((file) => ['', '-wal', '-shm'].map((suffix) => {
+      const path = join(root, `${file}${suffix}`);
+      return `${file}${suffix}:${existsSync(path) ? createHash('sha256').update(readFileSync(path)).digest('hex') : 'absent'}`;
+    }));
+    return [...entries, ...digests].join('\n');
+  }
+
+  it('AUTH-04D2V — a real read-only mount: both stores read through the Host’s WAL; no byte, file or record changes; Host stopped → exit 2; restart → the same verdict; corrupted evidence → EXECUTION_UNKNOWN', async (t) => {
+    const mount = readOnlyMount(dir);
+    if (mount === undefined) {
+      assert.notEqual(process.env['CI'], 'true', 'CI runners must provide the read-only mount; this test is never skipped there');
+      t.skip('a real read-only bind mount needs Linux and passwordless sudo');
+      return;
+    }
+    const mounts = [mount];
+    try {
+      // The mount is genuinely read-only: nothing can be created there.
+      assert.throws(() => writeFileSync(join(mount.path, 'probe'), 'x'), /EROFS/);
+      const pinned = pinnedDirectory({ issuancePath: join(mount.path, STORE_FILES[0] ?? ''), evidencePath: join(mount.path, STORE_FILES[1] ?? '') });
+      // Expected verdicts first (they open the stores read-write in this process); then the Host is left quiescent.
+      const expected = (await verify(scenario['success'] ?? '')).verificationDigest;
+      await afterObservers();
+      // Row counts are read outside the byte window: even a read-only reader in this process may touch a -shm.
+      const recordsBefore = footprint();
+      const quiescent = (): readonly string[] => [filesystemSnapshot(dir), JSON.stringify(witness.operationCounts())];
+      const before = quiescent();
+      assert.match(before[0] ?? '', /receipt-evidence\.sqlite-wal:[0-9a-f]{64}/, 'the running Host keeps the evidence store in WAL mode');
+
+      const success = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned));
+      assertNoLeak(success);
+      const statement = statementOf(success);
+      assert.deepEqual([statement.status, statement.reason], ['SIMULATED_SUCCESS', 'VERIFIED'], 'both stores are read correctly through the read-only mount');
+      assert.equal(statement.verificationDigest, expected);
+      const invalid = statementOf(await runVerifier(['--request', scenario['invalid'] ?? ''], operatorEnv(pinned)));
+      assert.equal(invalid.status, 'DELIVERY_FAILED');
+      // No database page, WAL or SHM byte changed, no file appeared or vanished, no witness operation ran…
+      assert.deepEqual(quiescent(), before);
+      // …and no record was issued, presented, performed or signed.
+      assert.deepEqual(footprint(), recordsBefore);
+
+      // Host stopped: the verifier's running check (the private listener) fails closed with exit 2; it creates nothing.
+      await booted.host.close();
+      const stopped = filesystemSnapshot(dir);
+      const down = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned));
+      assert.equal(down.status, 2, down.stdout);
+      assert.equal(down.stdout, '', 'no verdict while the Host is stopped');
+      assert.match(down.stderr, /not reachable/);
+      assert.equal(filesystemSnapshot(dir), stopped, 'nothing created or repaired while stopped');
+
+      // Restart: the same verdict, byte for byte.
+      booted = await boot(dir, witness, domain.publicKeyPem, false);
+      const restarted = statementOf(await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned)));
+      assert.deepEqual([restarted.status, restarted.verificationDigest], ['SIMULATED_SUCCESS', expected]);
+
+      // A store without the running Host's WAL read state fails closed with exit 2 — a precondition, not a verdict.
+      const copies = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-copy-'));
+      mkdirSync(join(copies, 'cold'), { mode: 0o700 });
+      const live = new Database(join(dir, STORE_FILES[1] ?? ''), { readonly: true });
+      try {
+        await live.backup(join(copies, 'cold', 'receipt-evidence.sqlite'));
+        await live.backup(join(copies, 'tampered.sqlite'));
+      } finally {
+        live.close();
+      }
+      const coldMount = readOnlyMount(join(copies, 'cold'));
+      assert.ok(coldMount !== undefined);
+      mounts.push(coldMount);
+      const cold = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinnedDirectory({ issuancePath: join(mount.path, STORE_FILES[0] ?? ''), evidencePath: join(coldMount.path, 'receipt-evidence.sqlite') })));
+      assert.equal(cold.status, 2, cold.stdout);
+      assert.match(cold.stderr, /PRECONDITION_UNAVAILABLE/);
+      assert.equal(cold.stdout, '');
+
+      // Corrupted evidence, served read-only with a live WAL (a holder keeps it open, as the Host does): EXECUTION_UNKNOWN, never success.
+      const holder = new Database(join(copies, 'tampered.sqlite'));
+      try {
+        holder.pragma('journal_mode = WAL');
+        holder.exec('DROP TRIGGER IF EXISTS receipt_evidence_never_updated');
+        holder.prepare("UPDATE receipt_evidence SET canonical = replace(canonical, 'completed-observed', 'failed-observed') WHERE execution_id = ?").run(scenario['successExecution'] ?? '');
+        const tamperedMount = readOnlyMount(copies);
+        assert.ok(tamperedMount !== undefined);
+        mounts.push(tamperedMount);
+        const tampered = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinnedDirectory({ issuancePath: join(mount.path, STORE_FILES[0] ?? ''), evidencePath: join(tamperedMount.path, 'tampered.sqlite') })));
+        const corrupted = statementOf(tampered);
+        assert.equal(corrupted.status, 'EXECUTION_UNKNOWN');
+        assert.match(tampered.stdout, /receipt evidence store unreadable \(refused its own integrity checks\)/);
+      } finally {
+        holder.close();
+      }
+    } finally {
+      for (const entry of mounts.reverse()) entry.release();
+    }
+  });
+
+
+  // ── AUTH-04D2V: the Host as its own operating-system process, as the pilot runs it ───────────────
+
+  /** `scripts/run-enterprise-host.mjs` — the pilot image's command — on this world's state, in its own process. */
+  async function spawnHostProcess(): Promise<{ readonly baseUrl: string; readonly pid: number; running(): boolean; stop(): Promise<void> }> {
+    const env = Object.fromEntries(Object.entries(hostEnv(dir, witness, domain.publicKeyPem, false)).filter((entry): entry is [string, string] => entry[1] !== undefined));
+    const child = spawn(process.execPath, ['scripts/run-enterprise-host.mjs'], { env: { PATH: process.env['PATH'] ?? '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    const exited = new Promise<number | null>((done) => child.on('exit', (code) => done(code)));
+    const baseUrl = await new Promise<string>((resolveStart, rejectStart) => {
+      const timer = setTimeout(() => rejectStart(new Error(`the Host process did not start: ${output.slice(-2000)}`)), 90_000);
+      const read = (chunk: Buffer): void => {
+        output += chunk.toString('utf8');
+        const match = /listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(output);
+        if (match?.[1] !== undefined) {
+          clearTimeout(timer);
+          resolveStart(match[1]);
+        }
+      };
+      child.stdout.on('data', read);
+      child.stderr.on('data', read);
+      void exited.then((code) => rejectStart(new Error(`the Host process exited (${String(code)}): ${output.slice(-2000)}`)));
+    });
+    assert.ok(child.pid !== undefined);
+    let alive = true;
+    void exited.then(() => (alive = false));
+    return {
+      baseUrl,
+      pid: child.pid,
+      running: () => alive,
+      stop: async () => {
+        child.kill('SIGTERM');
+        assert.equal(await exited, 0, `the Host process shuts down cleanly: ${output.slice(-1000)}`);
+      },
+    };
+  }
+
+  const walState = (root: string): readonly boolean[] => STORE_FILES.flatMap((file) => ['-wal', '-shm'].map((suffix) => existsSync(join(root, `${file}${suffix}`))));
+
+  it('AUTH-04D2V — separate processes: the Host process holds its stores in WAL; the verifier reads them through a read-only mount — running, repeated, across an unrelated transition, across a restart; Host stopped and WAL-less stores fail closed with exit 2', async (t) => {
+    const mount = readOnlyMount(dir);
+    if (mount === undefined) {
+      assert.notEqual(process.env['CI'], 'true', 'CI runners must provide the read-only mount; this test is never skipped there');
+      t.skip('a real read-only bind mount needs Linux and passwordless sudo');
+      return;
+    }
+    const expected = (await verify(scenario['success'] ?? '')).verificationDigest;
+    // The in-process Host steps aside: from here only the Host process opens the stores read-write.
+    await booted.host.close();
+    let hostProcess = await spawnHostProcess();
+    const cleanup: (() => Promise<void> | void)[] = [() => mount.release()];
+    try {
+      assert.notEqual(hostProcess.pid, process.pid, 'the Host runs in its own operating-system process');
+      const pinned = pinnedDirectory({ issuancePath: join(mount.path, STORE_FILES[0] ?? ''), evidencePath: join(mount.path, STORE_FILES[1] ?? '') });
+      const env = (): Record<string, string> => operatorEnv(pinned, { FRONTERA_VERIFIER_HOST: hostProcess.baseUrl });
+      const success = async (): Promise<SyntheticExecutionVerification> => statementOf(await runVerifier(['--request', scenario['success'] ?? ''], env()));
+
+      // A. Running normally: the Host process's own connections give both stores their WAL read state.
+      assert.deepEqual(walState(dir), [true, true, true, true], 'issuance and evidence: -wal and -shm, held by the Host process');
+      const recordsBefore = footprint();
+      const before = [filesystemSnapshot(dir), JSON.stringify(witness.operationCounts())];
+      const first = await success();
+      assert.deepEqual([first.status, first.reason, first.verificationDigest], ['SIMULATED_SUCCESS', 'VERIFIED', expected]);
+      const invalid = statementOf(await runVerifier(['--request', scenario['invalid'] ?? ''], env()));
+      assert.equal(invalid.status, 'DELIVERY_FAILED');
+      // B. Repeated verification: the same statement every time.
+      for (let run = 0; run < 3; run += 1) assert.equal((await success()).verificationDigest, expected, `run ${String(run)}`);
+      // No byte of either store (main file, -wal, -shm), no file, no witness operation: the verifier changed nothing.
+      assert.deepEqual([filesystemSnapshot(dir), JSON.stringify(witness.operationCounts())], before);
+      assert.deepEqual(footprint(), recordsBefore, 'no record issued, presented, performed or signed');
+
+      // C. An unrelated, permitted state transition in the Host process between reads: a new request, withheld for approval.
+      const withheld = await govern(hostProcess.baseUrl, world.syntheticCredential, synthetic(releaseKey('auth04d2v-unrelated')));
+      assertAwaitingApproval(withheld);
+      assert.equal((await success()).verificationDigest, expected, 'the verdict is unchanged by the Host writing elsewhere');
+      assert.deepEqual(walState(dir), [true, true, true, true]);
+
+      // D. Host restart: a new Host process on the same state.
+      await hostProcess.stop();
+      hostProcess = await spawnHostProcess();
+      assert.deepEqual(walState(dir), [true, true, true, true], 'the restarted Host process holds its stores in WAL again');
+      assert.equal((await success()).verificationDigest, expected, 'the same verdict after a restart');
+
+      // E. Host stopped: the Host process folds and removes its WAL on a clean shutdown; the verifier fails closed with exit 2.
+      await hostProcess.stop();
+      const stopped = filesystemSnapshot(dir);
+      const down = await runVerifier(['--request', scenario['success'] ?? ''], env());
+      assert.equal(down.status, 2, down.stdout);
+      assert.equal(down.stdout, '');
+      assert.equal(filesystemSnapshot(dir), stopped, 'nothing created or repaired while stopped');
+
+      // Observed: a clean shutdown of the Host process left both stores' -wal and -shm in place. So "WAL files present"
+      // does not mean "Host running"; the verifier's running check is the private listener (E above), not the files.
+      const afterStop = walState(dir);
+
+      // F. WAL read state absent: a copy of both stores in WAL mode, checkpointed and closed so that it has no -wal or
+      // -shm, served through a read-only mount. The shared openers cannot open it read-only (SQLite cannot create the
+      // companions there), so the verifier's precondition is SQLite's own requirement, not a stricter one; and the
+      // verifier refuses with exit 2 before opening anything.
+      const copies = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-walless-'));
+      mkdirSync(join(copies, 'evidence'), { mode: 0o700 });
+      for (const file of STORE_FILES) {
+        const source = new Database(join(dir, file), { readonly: true });
+        try {
+          await source.backup(join(copies, file));
+        } finally {
+          source.close();
+        }
+        const holder = new Database(join(copies, file));
+        holder.pragma('journal_mode = WAL');
+        holder.pragma(`user_version = ${Number(holder.pragma('user_version', { simple: true }))}`);
+        holder.pragma('wal_checkpoint(TRUNCATE)');
+        holder.close();
+        // On this copy only, after the checkpoint and with no connection open: the companions go, the WAL-mode file stays.
+        for (const suffix of ['-wal', '-shm']) rmSync(join(copies, `${file}${suffix}`), { force: true });
+      }
+      assert.deepEqual(walState(copies), [false, false, false, false]);
+      const walless = readOnlyMount(copies);
+      assert.ok(walless !== undefined);
+      cleanup.push(() => walless.release());
+      const wallessSnapshot = filesystemSnapshot(copies);
+      await assert.rejects(openExecutionReceiptEvidenceStore(join(walless.path, STORE_FILES[1] ?? ''), { issuer: CAPABILITY_ISSUER, organizationId: ORG, trustDomain: TRUST_DOMAIN, clock: Date.now }), 'the shared opener cannot open a WAL-less store read-only');
+      await assert.rejects(openExecutionCapabilityIssuanceLedger(join(walless.path, STORE_FILES[0] ?? ''), { issuer: CAPABILITY_ISSUER, clock: Date.now }), 'nor the issuance ledger');
+      // The verifier, with a running Host, against those WAL-less stores: exit 2, a precondition — never a verdict.
+      hostProcess = await spawnHostProcess();
+      const refused = await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinnedDirectory({ issuancePath: join(walless.path, STORE_FILES[0] ?? ''), evidencePath: join(walless.path, STORE_FILES[1] ?? '') }), { FRONTERA_VERIFIER_HOST: hostProcess.baseUrl }));
+      assert.equal(refused.status, 2, refused.stdout);
+      assert.match(refused.stderr, /PRECONDITION_UNAVAILABLE/);
+      assert.equal(refused.stdout, '');
+      assert.equal(filesystemSnapshot(copies), wallessSnapshot, 'nothing created or repaired');
+      assert.ok(afterStop.length === 4);
+    } finally {
+      if (hostProcess.running()) await hostProcess.stop().catch(() => undefined);
+      for (const step of cleanup.reverse()) await step();
+      // The in-process Host returns for the rest of the suite.
+      booted = await boot(dir, witness, domain.publicKeyPem, false);
+    }
   });
 
   // ── Temporal authorization: the execution point (A) versus current authority (B) ──────────────────
@@ -912,6 +1338,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
 
   it('21 — the approval revoked after the execution: never re-read as NOT_AUTHORIZED; EXECUTION_UNKNOWN (APPROVAL_WITHDRAWN_ORDER_UNPROVEN); nothing re-executes', async () => {
     const { key, view, executionId } = await executedBy(CTO.operatorId, 'auth04d2s-revoked-after');
+    scenario['revokedAfter'] = view.requestId;
     const effectsBefore = effects();
     const revoked = await call(booted.baseUrl, 'POST', `/api/admin/approvals/${encodeURIComponent(view.approvalRequestId)}/revoke`, { authorization: bearer(CTO_SECRET), body: { subjectDigest: view.subjectDigest, reason: 'withdrawn after the release' } });
     assert.equal(revoked.status, 200, revoked.text);
@@ -928,6 +1355,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
 
   it('22 — the approver’s standing withdrawn after the execution: EXECUTION_UNKNOWN (APPROVAL_WITHDRAWN_ORDER_UNPROVEN); that human decides nothing new', async () => {
     const { view } = await executedBy('approver-d', 'auth04d2s-standing-after');
+    scenario['standingAfter'] = view.requestId;
     const revoked = await call(booted.baseUrl, 'POST', '/api/admin/authority/entities/authority-grant/approval-standing-approver-d-synthetic/revoke', { authorization: AUTH.responder, body: { reason: 'left the change board after the release' } });
     assert.equal(revoked.status, 200, revoked.text);
     const after = await verify(view.requestId);
@@ -945,6 +1373,7 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     try {
       const cto = human(CTO.operatorId);
       const { key, view } = await pendingSynthetic('auth04d2s-presented-after');
+      scenario['presentedAfter'] = view.requestId;
       assert.equal((await decide(await signedIn(booted.gatewayPort, cto), cto, view, 'approve')).decided.status, 200);
       route = delayRelay.target;
       const effectsBefore = effects();
@@ -968,6 +1397,45 @@ describe('AUTH-04D2S — a passkey-approved governed action, a CORE-05 verdict, 
     } finally {
       route = relay.target;
       await delayRelay.close();
+    }
+  });
+
+  it('AUTH-04D2V — approval withdrawal after execution: the operator verifier reports EXECUTION_UNKNOWN, never NOT_AUTHORIZED and never success', async () => {
+    // This Host runs inside the test process, whose helpers open and close their own read-write connections to its
+    // stores; in CI that was seen to leave a store without its WAL read state while the Host kept running, and the
+    // verifier then (correctly) exits 2. The live read path is proven by the read-only-mount test above. Here the
+    // verifier reads a consistent snapshot of both stores, held in WAL mode as the Host holds its own: same evidence.
+    const snapshot = mkdtempSync(join(tmpdir(), 'frontera-auth04d2v-snapshot-'));
+    mkdirSync(join(snapshot, 'evidence'), { mode: 0o700 });
+    const holders: InstanceType<typeof Database>[] = [];
+    for (const file of STORE_FILES) {
+      const source = new Database(join(dir, file), { readonly: true });
+      try {
+        await source.backup(join(snapshot, file));
+      } finally {
+        source.close();
+      }
+      const holder = new Database(join(snapshot, file));
+      holder.pragma('journal_mode = WAL');
+      // One frame into the WAL, with no change to any table, schema or row the stores check.
+      holder.pragma(`user_version = ${Number(holder.pragma('user_version', { simple: true }))}`);
+      holders.push(holder);
+      assert.ok(existsSync(join(snapshot, `${file}-wal`)) && existsSync(join(snapshot, `${file}-shm`)), `${file}: WAL read state held`);
+    }
+    const pinned = pinnedDirectory({ issuancePath: join(snapshot, STORE_FILES[0] ?? ''), evidencePath: join(snapshot, STORE_FILES[1] ?? '') });
+    try {
+    for (const name of ['revokedAfter', 'standingAfter', 'presentedAfter']) {
+      const run = await runVerifier(['--request', scenario[name] ?? ''], operatorEnv(pinned));
+      assertNoLeak(run);
+      const statement = statementOf(run);
+      assert.deepEqual([statement.status, statement.reason], ['EXECUTION_UNKNOWN', 'APPROVAL_WITHDRAWN_ORDER_UNPROVEN'], name);
+      assert.match(run.stdout, /Execution UNKNOWN/);
+    }
+    // The first success, whose approver's standing was revoked since (test 23): history is not rewritten into NOT_AUTHORIZED.
+    const first = statementOf(await runVerifier(['--request', scenario['success'] ?? ''], operatorEnv(pinned)));
+    assert.equal(first.status, 'EXECUTION_UNKNOWN');
+    } finally {
+      for (const holder of holders) holder.close();
     }
   });
 });
