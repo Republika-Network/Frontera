@@ -19,6 +19,7 @@ import { loadEnterpriseModule, stableJsonStringify } from './lib-portability.mjs
 import { targetStorePaths as registryTargetPaths } from './store-registry.mjs';
 
 const FIXTURE_ORG = 'org-portability-fixture';
+const FIXTURE_REVIEWER_SECRET = 'fixture-only-assurance-reviewer-secret-portability';
 const FIXTURE_NOW = '2026-01-01T00:00:00.000Z';
 
 function parseArgs(argv) {
@@ -63,7 +64,7 @@ export async function generateFixture({ target }) {
   mkdirSync(targetPath, { recursive: true });
   const paths = targetStorePaths(targetPath);
 
-  const configuration = enterprise.loadEnterpriseConfiguration({
+  const loadedConfiguration = enterprise.loadEnterpriseConfiguration({
     AOC_ENTERPRISE_ENV: 'test',
     AOC_ENTERPRISE_PERSISTENCE_PROVIDER: 'sqlite',
     AOC_ENTERPRISE_SQLITE_PATH: paths.governance,
@@ -72,7 +73,17 @@ export async function generateFixture({ target }) {
     AOC_ENTERPRISE_KERNEL_AUTHORITY_SQLITE_PATH: paths.kernelAuthority,
     // ASSURE-01: the bundles below are durable, in the target set like every other store.
     AOC_ENTERPRISE_EVIDENCE_SQLITE_PATH: paths.evidence,
+    // ASSURE-SEC-01B: the reviewer below is scoped to the organization this instance serves.
+    AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: FIXTURE_ORG,
   });
+  // ASSURE-SEC-01B: a manual review is recorded only by an authenticated Assurance reviewer credential (fixture-only secret).
+  const configuration = {
+    ...loadedConfiguration,
+    authentication: {
+      ...loadedConfiguration.authentication,
+      assuranceReviewers: [{ reviewerId: 'fixture-reviewer-1', organizationId: FIXTURE_ORG, roles: ['assurance-reviewer'], key: FIXTURE_REVIEWER_SECRET }],
+    },
+  };
 
   const kernelProviders = support.buildTestKernelProviders();
   const app = await enterprise.createEnterprise({ configuration, kernelProviders });
@@ -165,7 +176,9 @@ export async function generateFixture({ target }) {
       evidenceCutoffAt: '2026-12-31T00:00:00.000Z',
     });
     await app.assurance.evaluateAssessment(context, created.assessmentId);
-    await app.assurance.recordManualReview(context, {
+    const reviewer = app.assurance.authenticateReviewer(FIXTURE_REVIEWER_SECRET);
+    if (reviewer === undefined) throw new Error('Portability fixture: the fixture reviewer credential did not authenticate.');
+    await app.assurance.recordManualReview({ ...context, actorId: reviewer.reviewerId, roles: reviewer.roles, reviewer }, {
       assessmentId: created.assessmentId,
       controlId: 'saf.ops.independent-review',
       reviewerId: 'fixture-reviewer-1',

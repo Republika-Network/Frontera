@@ -1,11 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { EnterpriseHttpError, mapEvidenceErrorToHttp, mapAgentPassportErrorToHttp, mapAssuranceErrorToHttp } from '../api/enterprise-http-errors.js';
+import { EnterpriseHttpError, EnterpriseHttpErrors, mapEvidenceErrorToHttp, mapAgentPassportErrorToHttp, mapAssuranceErrorToHttp } from '../api/enterprise-http-errors.js';
 import type { AocEnterprise } from '../composition/composition-root.js';
 import { getInternalEnterpriseConfiguration } from '../composition/composition-root.js';
 import { validateEvidenceBuildRequestBody, validateEvidenceTraceQuery, validateEvidenceTraceVerifyQuery, validateEvidenceVerifyRequestBody, toEvidenceBundleResponseBody, toEvidenceVerifyResponseBody } from '../api/evidence-contract.js';
 import { isEvidenceError } from '../evidence/errors.js';
 import { resolveGovernanceAccessContext } from '../orchestration/governance-read-service.js';
+import { extractBearerToken } from '../orchestration/credential-matching.js';
 import {
   validateActorRequestBody,
   validateBuildViewRequestBody,
@@ -499,8 +500,27 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
       // scoping, control logic, evidence selection, scoring, and eligibility
       // all live inside `enterprise.assurance` -- this adapter only routes.
       if (url.pathname.startsWith('/api/assurance/')) {
-        const context = resolveGovernanceAccessContext(req.headers.authorization, getInternalEnterpriseConfiguration(enterprise));
         const { assurance } = enterprise;
+
+        // ASSURE-SEC-01B: a manual review is authenticated by an Assurance
+        // reviewer credential and nothing else -- not an organization key, not
+        // the unauthenticated system context, and not body fields. Checked
+        // before (and instead of) the organization-key resolution below, and
+        // even when AOC_ENTERPRISE_REQUIRE_AUTH is off.
+        if (method === 'POST' && url.pathname === '/api/assurance/manual-reviews') {
+          const token = extractBearerToken(req.headers.authorization);
+          if (token === undefined) throw EnterpriseHttpErrors.authenticationFailed('An Assurance reviewer credential (Bearer) is required to record a manual review.');
+          const reviewer = assurance.authenticateReviewer(token);
+          if (reviewer === undefined) throw EnterpriseHttpErrors.authenticationFailed('The provided credential is not an Assurance reviewer credential.');
+          const reviewerContext = { system: false, organizationId: reviewer.organizationId, actorId: reviewer.reviewerId, roles: reviewer.roles, reviewer } as const;
+          readRequestBody(req)
+            .then((rawBody) => assurance.recordManualReview(reviewerContext, validateManualReviewRequestBody(rawBody)))
+            .then((review) => writeJson(res, 201, review))
+            .catch(fail);
+          return;
+        }
+
+        const context = resolveGovernanceAccessContext(req.headers.authorization, getInternalEnterpriseConfiguration(enterprise));
 
         if (method === 'POST' && url.pathname === '/api/assurance/assessments') {
           readRequestBody(req)
@@ -565,14 +585,6 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
           readRequestBody(req)
             .then((rawBody) => assurance.appendFindingEvent(context, validateFindingEventRequestBody(rawBody, findingId)))
             .then((event) => writeJson(res, 201, event))
-            .catch(fail);
-          return;
-        }
-
-        if (method === 'POST' && url.pathname === '/api/assurance/manual-reviews') {
-          readRequestBody(req)
-            .then((rawBody) => assurance.recordManualReview(context, validateManualReviewRequestBody(rawBody)))
-            .then((review) => writeJson(res, 201, review))
             .catch(fail);
           return;
         }

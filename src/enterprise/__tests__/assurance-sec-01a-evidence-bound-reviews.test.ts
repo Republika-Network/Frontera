@@ -10,7 +10,7 @@ import { verifyAssuranceAssessment } from '../assurance/verification.js';
 import { manualReviewEvidencePolicy } from '../assurance/manual-review-evidence.js';
 import { AOC_SAF_FRAMEWORK_V1 } from '../assurance/saf-framework.js';
 import { RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_V0_1, RN_SV_FRAMEWORK_VERSION, RN_SV_REVIEWER_ROLE } from '../assurance/frameworks/rn-sv-framework.js';
-import { ASSURANCE_CUTOFF, ASSURANCE_ORG, buildAssuranceClock, buildAssuranceHarness, type AssuranceTestHarness } from './assurance-support.js';
+import { ASSURANCE_CUTOFF, ASSURANCE_ORG, buildAssuranceClock, buildAssuranceHarness, reviewerContext, type AssuranceTestHarness } from './assurance-support.js';
 import type {
   AssuranceAssessment,
   AssuranceControlDefinition,
@@ -95,7 +95,7 @@ function statusOf(assessment: AssuranceAssessment, controlId: string): string | 
 }
 
 async function expectRefusedAndNothingPersisted(harness: AssuranceTestHarness, assessmentId: string, input: ReturnType<typeof review>, violation: string): Promise<void> {
-  await assert.rejects(() => harness.service.recordManualReview(ASSURANCE_ORG, input), rejectedWith(violation));
+  await assert.rejects(() => harness.service.recordManualReview(reviewerContext(harness), input), rejectedWith(violation));
   assert.deepEqual(await harness.store.listManualReviews(ASSURANCE_ORG, assessmentId), [], 'a refused review must never reach the store');
 }
 
@@ -156,8 +156,8 @@ describe('SEC-01A service: definitive outcomes require bound, accepted evidence 
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1 });
     const shared = artifact('ev-shared', { requirementIds: [requirementOf('SV-01'), requirementOf('SV-08')] });
     const assessment = await evaluated(harness, [shared]);
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-01', 'pass', ['ev-shared']));
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-08', 'pass', ['ev-shared']));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-01', 'pass', ['ev-shared']));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-08', 'pass', ['ev-shared']));
     const reevaluated = await harness.service.evaluateAssessment(ASSURANCE_ORG, assessment.assessmentId);
     assert.equal(statusOf(reevaluated, 'SV-01'), 'pass');
     assert.equal(statusOf(reevaluated, 'SV-08'), 'pass');
@@ -183,9 +183,9 @@ describe('SEC-01A service: definitive outcomes require bound, accepted evidence 
   it('#9/#10/#11 PASS, PARTIAL and FAIL citing bound, accepted evidence are recorded and applied', async () => {
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1 });
     const assessment = await evaluated(harness, BOUND_EVIDENCE);
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-01', 'pass', ['ev-SV-01']));
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-02', 'partial', ['ev-SV-02']));
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-03', 'fail', ['ev-SV-03']));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-01', 'pass', ['ev-SV-01']));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-02', 'partial', ['ev-SV-02']));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-03', 'fail', ['ev-SV-03']));
     const reevaluated = await harness.service.evaluateAssessment(ASSURANCE_ORG, assessment.assessmentId);
     assert.equal(statusOf(reevaluated, 'SV-01'), 'pass');
     assert.equal(statusOf(reevaluated, 'SV-02'), 'partial');
@@ -197,7 +197,7 @@ describe('SEC-01A service: insufficient_evidence stays available and maps to unk
   it('#12 insufficient_evidence with no evidence at all is accepted -> unknown, never fail', async () => {
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1 });
     const assessment = await evaluated(harness, []);
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-08', 'insufficient_evidence'));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-08', 'insufficient_evidence'));
     const reevaluated = await harness.service.evaluateAssessment(ASSURANCE_ORG, assessment.assessmentId);
     assert.equal(statusOf(reevaluated, 'SV-08'), 'unknown');
   });
@@ -206,7 +206,7 @@ describe('SEC-01A service: insufficient_evidence stays available and maps to unk
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1 });
     const late = artifact('ev-late', { requirementIds: [requirementOf('SV-08')], occurredAt: '2027-01-01T00:00:00.000Z' });
     const assessment = await evaluated(harness, [late, artifact('ev-unbound')]);
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-08', 'insufficient_evidence', ['ev-late', 'ev-unbound']));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-08', 'insufficient_evidence', ['ev-late', 'ev-unbound']));
     const reevaluated = await harness.service.evaluateAssessment(ASSURANCE_ORG, assessment.assessmentId);
     assert.equal(statusOf(reevaluated, 'SV-08'), 'unknown');
     assert.notEqual(statusOf(reevaluated, 'SV-08'), 'fail');
@@ -231,7 +231,7 @@ describe('SEC-01A persisted state (INV-10/11)', () => {
   it('#15 a stored PASS whose evidence is withdrawn resolves nothing on re-evaluation', async () => {
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1 });
     const assessment = await evaluated(harness, BOUND_EVIDENCE);
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-08', 'pass', ['ev-SV-08']));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-08', 'pass', ['ev-SV-08']));
     const before = await harness.service.evaluateAssessment(ASSURANCE_ORG, assessment.assessmentId);
     assert.equal(statusOf(before, 'SV-08'), 'pass');
 
@@ -253,7 +253,7 @@ describe('SEC-01A persisted state (INV-10/11)', () => {
     const store = await createSqliteAssuranceStore(':memory:', { now: buildAssuranceClock() });
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1, store });
     const assessment = await evaluated(harness, BOUND_EVIDENCE);
-    const recorded = await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-08', 'pass', ['ev-SV-08']));
+    const recorded = await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-08', 'pass', ['ev-SV-08']));
     const stored = await store.listManualReviews(ASSURANCE_ORG, assessment.assessmentId);
     assert.deepEqual(stored, [recorded]);
     const reloaded = await store.getAssessment(ASSURANCE_ORG, assessment.assessmentId);
@@ -272,8 +272,8 @@ describe('SEC-01A persisted state (INV-10/11)', () => {
   it('re-evaluation over the same evidence and reviews is semantically deterministic', async () => {
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1 });
     const assessment = await evaluated(harness, BOUND_EVIDENCE);
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-08', 'pass', ['ev-SV-08']));
-    await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, 'SV-06', 'insufficient_evidence'));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-08', 'pass', ['ev-SV-08']));
+    await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, 'SV-06', 'insufficient_evidence'));
     const semantics = (value: AssuranceAssessment) => ({
       statuses: value.controlEvaluations.map((evaluation) => [evaluation.controlId, evaluation.status, evaluation.reasonCodes]),
       score: value.score.normalizedScore,
@@ -288,7 +288,7 @@ describe('SEC-01A persisted state (INV-10/11)', () => {
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1 });
     const assessment = await evaluated(harness, BOUND_EVIDENCE);
     for (const controlId of SV_CONTROL_IDS) {
-      await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, controlId, 'pass', [`ev-${controlId}`]));
+      await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, controlId, 'pass', [`ev-${controlId}`]));
     }
     await harness.service.evaluateAssessment(ASSURANCE_ORG, assessment.assessmentId);
     const completed = await harness.service.completeAssessment(ASSURANCE_ORG, assessment.assessmentId);
@@ -338,6 +338,7 @@ describe('SEC-01A control evaluator called directly (defense in depth)', () => {
       rationale: 'Stored without passing through the service.',
       evidenceReferenceIds,
       reviewedAt: '2026-06-14T12:00:00.000Z',
+      reviewerAuthentication: 'assurance_reviewer_credential' as const,
     };
     return { ...base, reviewDigest: computeDigest(base) };
   }
@@ -385,7 +386,7 @@ describe('SEC-01A assessment verification (integrity is not authenticity, INV-12
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1 });
     const assessment = await evaluated(harness, BOUND_EVIDENCE);
     for (const controlId of SV_CONTROL_IDS) {
-      await harness.service.recordManualReview(ASSURANCE_ORG, review(assessment.assessmentId, controlId, 'pass', [`ev-${controlId}`]));
+      await harness.service.recordManualReview(reviewerContext(harness), review(assessment.assessmentId, controlId, 'pass', [`ev-${controlId}`]));
     }
     await harness.service.evaluateAssessment(ASSURANCE_ORG, assessment.assessmentId);
     const completed = await harness.service.completeAssessment(ASSURANCE_ORG, assessment.assessmentId);

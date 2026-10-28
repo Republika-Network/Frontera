@@ -3,7 +3,9 @@ import { createInMemoryAssuranceStore } from '../assurance/in-memory-assurance-s
 import { createAssuranceService, type AssuranceService } from '../assurance/service.js';
 import type { AssuranceStore } from '../assurance/assurance-store.js';
 import type { AssuranceEvidenceSources } from '../assurance/evidence-resolver.js';
+import type { AssuranceReviewerCredential } from '../assurance/reviewer-identity.js';
 import type {
+  AssuranceAccessContext,
   AssuranceEvidenceReference,
   AssuranceFramework,
   AssuranceScope,
@@ -26,6 +28,31 @@ export const ASSURANCE_ORG_2 = { organizationId: 'org-2', system: false } as con
 export const ASSURANCE_SYSTEM = { system: true } as const;
 
 export const ASSURANCE_CUTOFF = '2026-06-15T00:00:00.000Z';
+
+/**
+ * ASSURE-SEC-01B: synthetic Assurance reviewer credentials (test-only
+ * secrets). Identity, tenant and roles come from here, never from a review body.
+ */
+export const TEST_REVIEWERS: readonly AssuranceReviewerCredential[] = [
+  { reviewerId: 'human-1', organizationId: 'org-1', roles: ['reviewer'], key: 'test-only-assurance-reviewer-secret-human-1' },
+  { reviewerId: 'reviewer-1', organizationId: 'org-1', roles: ['assure.reviewer', 'assurance-reviewer'], key: 'test-only-assurance-reviewer-secret-reviewer-1' },
+  { reviewerId: 'reviewer-2', organizationId: 'org-1', roles: ['assure.reviewer'], key: 'test-only-assurance-reviewer-secret-reviewer-2' },
+  { reviewerId: 'intern-1', organizationId: 'org-1', roles: ['intern'], key: 'test-only-assurance-reviewer-secret-intern-1' },
+  { reviewerId: 'reviewer-org-2', organizationId: 'org-2', roles: ['assure.reviewer', 'reviewer'], key: 'test-only-assurance-reviewer-secret-org-2' },
+];
+
+export function testReviewerSecret(reviewerId: string): string {
+  const credential = TEST_REVIEWERS.find((candidate) => candidate.reviewerId === reviewerId);
+  if (credential === undefined) throw new Error(`No test reviewer '${reviewerId}'.`);
+  return credential.key;
+}
+
+/** The access context an authenticated reviewer acts under: the principal comes from the service's own authenticator. */
+export function reviewerContext(harness: AssuranceTestHarness, reviewerId = 'reviewer-1'): AssuranceAccessContext {
+  const reviewer = harness.service.authenticateReviewer(testReviewerSecret(reviewerId));
+  if (reviewer === undefined) throw new Error(`Test reviewer '${reviewerId}' is not configured on this harness.`);
+  return { system: false, organizationId: reviewer.organizationId, actorId: reviewer.reviewerId, roles: reviewer.roles, reviewer };
+}
 
 /**
  * A small, fully valid test framework exercising every criteria kind:
@@ -255,7 +282,9 @@ export interface AssuranceTestHarness {
 }
 
 /** A service over the in-memory store with the test framework registered and no external evidence sources beyond manual attestations. */
-export function buildAssuranceHarness(options: { framework?: AssuranceFramework; sources?: AssuranceEvidenceSources; store?: AssuranceStore } = {}): AssuranceTestHarness {
+export function buildAssuranceHarness(
+  options: { framework?: AssuranceFramework; sources?: AssuranceEvidenceSources; store?: AssuranceStore; reviewers?: readonly AssuranceReviewerCredential[] } = {},
+): AssuranceTestHarness {
   const now = buildAssuranceClock();
   const nextId = buildAssuranceIdGenerator();
   const framework = options.framework ?? buildTestFramework();
@@ -270,6 +299,7 @@ export function buildAssuranceHarness(options: { framework?: AssuranceFramework;
     nextId,
     enterpriseVersion: 'test-1.0.0',
     moduleSnapshot: () => [{ moduleId: 'test.module', version: '1.0.0', status: 'ready' }],
+    reviewers: options.reviewers ?? TEST_REVIEWERS,
   });
   return { service, store, registry, now, nextId };
 }

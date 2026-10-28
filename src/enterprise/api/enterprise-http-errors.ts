@@ -75,6 +75,7 @@ export type EnterpriseHttpErrorCode =
   | 'ASSURANCE_CONTROL_EVALUATION_FAILED'
   | 'ASSURANCE_MANUAL_REVIEW_REQUIRED'
   | 'ASSURANCE_MANUAL_REVIEW_INVALID'
+  | 'ASSURANCE_REVIEWER_UNAUTHORIZED'
   | 'ASSURANCE_ASSESSMENT_NOT_FOUND'
   | 'ASSURANCE_ASSESSMENT_IMMUTABLE'
   | 'ASSURANCE_ASSESSMENT_INCOMPLETE'
@@ -248,6 +249,7 @@ export function mapAssuranceErrorToHttp(error: AssuranceError): EnterpriseHttpEr
       return new EnterpriseHttpError(400, error.code, error.message, undefined, extra);
     case 'ASSURANCE_TENANT_SCOPE_REQUIRED':
     case 'ASSURANCE_ACCESS_SCOPE_VIOLATION':
+    case 'ASSURANCE_REVIEWER_UNAUTHORIZED':
     case 'ASSURANCE_EVIDENCE_WRONG_TENANT':
       return new EnterpriseHttpError(403, error.code, error.message, undefined, extra);
     case 'ASSURANCE_FRAMEWORK_NOT_FOUND':

@@ -87,6 +87,26 @@ export interface EnterpriseAuditor {
 }
 
 /**
+ * ASSURE-SEC-01B: one Assurance reviewer -- a named credential that may record
+ * manual control reviews (`POST /api/assurance/manual-reviews`) in exactly one
+ * organization, under exactly the roles listed here, and nothing else.
+ *
+ * Deliberately **not** an `EnterpriseApiKey`, never merged into
+ * `authentication.apiKeys`: a reviewer secret authenticates the manual-review
+ * route only. `reviewerId` and `roles` are trusted configuration -- every
+ * review is recorded under them -- and no request can state either. No role is
+ * implied: an administrator, operator, auditor, organization key or the system
+ * context holds no reviewer role. Supplied through the Host's governed-action
+ * file (`assuranceReviewers`).
+ */
+export interface EnterpriseAssuranceReviewer {
+  readonly reviewerId: string;
+  readonly organizationId: string;
+  readonly roles: readonly string[];
+  readonly key: string;
+}
+
+/**
  * G-01A: how legacy API keys (`AOC_ENTERPRISE_API_KEYS`) are treated.
  *
  * * `restricted` — the default in secure profiles (`staging`, `production`).
@@ -187,6 +207,8 @@ export interface EnterpriseConfiguration {
     readonly servicePrincipals?: readonly EnterpriseServicePrincipal[];
     /** G-01A: read-only auditors for the Governance Record read routes only. Absent means none. */
     readonly auditors?: readonly EnterpriseAuditor[];
+    /** ASSURE-SEC-01B: Assurance reviewers for the manual-review route only. Absent means none, and no manual review can be recorded. */
+    readonly assuranceReviewers?: readonly EnterpriseAssuranceReviewer[];
     /** G-01A: absent means the environment's default (`effectiveLegacyKeyMode`): `restricted` for staging and production, `compat` elsewhere. */
     readonly legacyKeyMode?: EnterpriseLegacyKeyMode;
   };

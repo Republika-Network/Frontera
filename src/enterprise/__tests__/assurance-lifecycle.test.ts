@@ -11,6 +11,7 @@ import {
   buildTestFramework,
   buildTestSubject,
   persistHarnessFramework,
+  reviewerContext,
   type AssuranceTestHarness,
 } from './assurance-support.js';
 import type { AssuranceAssessment, AssuranceEvidenceReference } from '../assurance/contracts.js';
@@ -149,7 +150,7 @@ describe('Assurance manual review flow (mission sections 20-21/85)', () => {
     const evaluated = await runToEvaluated(harness);
     assert.equal(evaluated.status, 'manual_review');
 
-    const review = await harness.service.recordManualReview(ASSURANCE_ORG, {
+    const review = await harness.service.recordManualReview(reviewerContext(harness, 'human-1'), {
       assessmentId: evaluated.assessmentId,
       controlId: 'c.manual',
       reviewerId: 'human-1',
@@ -169,7 +170,7 @@ describe('Assurance manual review flow (mission sections 20-21/85)', () => {
     assert.equal(completed.status, 'completed');
   });
 
-  it('rejects anonymous reviews, missing rationale, wrong reviewer role, and missing required evidence references', async () => {
+  it('rejects a mismatched (or empty) declared reviewer, missing rationale, a role the reviewer does not hold, and missing required evidence references', async () => {
     const harness = buildAssuranceHarness();
     const evaluated = await runToEvaluated(harness);
     const base = {
@@ -182,19 +183,19 @@ describe('Assurance manual review flow (mission sections 20-21/85)', () => {
       evidenceReferenceIds: ['attest-1'],
     };
     await assert.rejects(
-      () => harness.service.recordManualReview(ASSURANCE_ORG, { ...base, reviewerId: '' }),
+      () => harness.service.recordManualReview(reviewerContext(harness, 'human-1'), { ...base, reviewerId: '' }),
+      (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_REVIEWER_UNAUTHORIZED',
+    );
+    await assert.rejects(
+      () => harness.service.recordManualReview(reviewerContext(harness, 'human-1'), { ...base, rationale: '   ' }),
       (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_MANUAL_REVIEW_INVALID',
     );
     await assert.rejects(
-      () => harness.service.recordManualReview(ASSURANCE_ORG, { ...base, rationale: '   ' }),
-      (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_MANUAL_REVIEW_INVALID',
+      () => harness.service.recordManualReview(reviewerContext(harness, 'human-1'), { ...base, reviewerRole: 'intern' }),
+      (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_REVIEWER_UNAUTHORIZED',
     );
     await assert.rejects(
-      () => harness.service.recordManualReview(ASSURANCE_ORG, { ...base, reviewerRole: 'intern' }),
-      (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_MANUAL_REVIEW_INVALID',
-    );
-    await assert.rejects(
-      () => harness.service.recordManualReview(ASSURANCE_ORG, { ...base, evidenceReferenceIds: [] }),
+      () => harness.service.recordManualReview(reviewerContext(harness, 'human-1'), { ...base, evidenceReferenceIds: [] }),
       (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_MANUAL_REVIEW_INVALID',
     );
   });

@@ -225,10 +225,15 @@ export type AssuranceAssessment = Readonly<Record<string, unknown>> & {
 
 export type AssuranceVerificationResult = Readonly<Record<string, unknown>> & { readonly valid?: boolean };
 
+/**
+ * ASSURE-SEC-01B: send with a client whose `apiKey` is an Assurance reviewer
+ * credential. The reviewer is that credential; `reviewerId` / `reviewerRole`
+ * are optional assertions, refused (403) when they do not match it.
+ */
 export interface ManualReviewRequest {
   readonly assessmentId: string;
   readonly controlId: string;
-  readonly reviewerId: string;
+  readonly reviewerId?: string;
   readonly outcome: 'pass' | 'partial' | 'fail' | 'insufficient_evidence';
   readonly rationale: string;
   readonly reviewerRole?: string;

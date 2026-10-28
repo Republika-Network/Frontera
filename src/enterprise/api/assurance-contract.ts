@@ -97,12 +97,19 @@ export function validateFindingEventRequestBody(body: unknown, findingId: string
 
 const MANUAL_REVIEW_OUTCOMES: readonly AssuranceManualReviewOutcome[] = ['pass', 'partial', 'fail', 'insufficient_evidence'];
 
+/**
+ * ASSURE-SEC-01B: `reviewerId` and `reviewerRole` are optional and carry no
+ * authority. The reviewer is the authenticated Assurance reviewer credential;
+ * when either field is present the service refuses a value that does not match
+ * that credential instead of replacing it.
+ */
 export function validateManualReviewRequestBody(body: unknown): RecordManualReviewInput {
   if (!isPlainObject(body)) throw EnterpriseHttpErrors.invalidRequest('Request body must be a JSON object.');
   const violations: string[] = [];
   if (!isNonEmptyString(body.assessmentId)) violations.push('assessmentId is a required non-empty string.');
   if (!isNonEmptyString(body.controlId)) violations.push('controlId is a required non-empty string.');
-  if (!isNonEmptyString(body.reviewerId)) violations.push('reviewerId is a required non-empty string.');
+  if (body.reviewerId !== undefined && !isNonEmptyString(body.reviewerId)) violations.push('reviewerId, when present, must be a non-empty string.');
+  if (body.reviewerRole !== undefined && !isNonEmptyString(body.reviewerRole)) violations.push('reviewerRole, when present, must be a non-empty string.');
   if (!isNonEmptyString(body.rationale)) violations.push('rationale is a required non-empty string.');
   if (typeof body.outcome !== 'string' || !(MANUAL_REVIEW_OUTCOMES as readonly string[]).includes(body.outcome)) {
     violations.push(`outcome must be one of: ${MANUAL_REVIEW_OUTCOMES.join(', ')}.`);
@@ -111,9 +118,9 @@ export function validateManualReviewRequestBody(body: unknown): RecordManualRevi
   return {
     assessmentId: body.assessmentId as string,
     controlId: body.controlId as string,
-    reviewerId: body.reviewerId as string,
     outcome: body.outcome as AssuranceManualReviewOutcome,
     rationale: body.rationale as string,
+    ...(typeof body.reviewerId === 'string' ? { reviewerId: body.reviewerId } : {}),
     ...(typeof body.reviewerRole === 'string' ? { reviewerRole: body.reviewerRole } : {}),
     ...(isStringArray(body.evidenceReferenceIds) ? { evidenceReferenceIds: body.evidenceReferenceIds } : {}),
   };

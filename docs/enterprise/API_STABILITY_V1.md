@@ -166,6 +166,23 @@ it; a record without attribution (committed before G-01A, or with
 authentication disabled) never answers a customer or service principal. See
 `docs/security/G-01A-TRUSTED-IDENTITY-ATTRIBUTION.md`.
 
+**Manual reviews (ASSURE-SEC-01B, an intentional v1 security tightening of
+`POST /api/assurance/manual-reviews`).** The URL and method are unchanged; who
+may call it is not. A manual review is authenticated by an **Assurance reviewer
+credential** (governed-action file `assuranceReviewers`: `reviewerId`, explicit
+`roles`, `apiKeyEnv`; never `AOC_ENTERPRISE_API_KEYS`) and by nothing else --
+not an organization key, an operator, administrator or auditor credential, and
+not the unauthenticated system context, even with `AOC_ENTERPRISE_REQUIRE_AUTH`
+off. Without one the route answers `401 AUTHENTICATION_FAILED`. The recorded
+`reviewerId` and `reviewerRole` are the credential's; the body's `reviewerId`
+and `reviewerRole` became optional assertions, and one that names another
+reviewer, or a role the credential does not hold, is refused with `403
+ASSURANCE_REVIEWER_UNAUTHORIZED` -- never silently replaced. No role is
+implied for any other principal. Callers that recorded reviews with an
+organization key must be issued a reviewer credential. Reviews recorded before
+this change keep their caller-declared identity on record, carry no
+`reviewerAuthentication`, and resolve no control on re-evaluation.
+
 #### Governance reads
 
 | Method + Path | Purpose | Success | Errors |
@@ -270,7 +287,7 @@ semantics.
 | `GET /api/assurance/assessments/{id}/findings` | List an assessment's findings. | -- | `200` `{ assessmentId, findings }` (full collection) | `404 ASSURANCE_ASSESSMENT_NOT_FOUND` |
 | `GET /api/assurance/assessments/{id}` | Fetch an assessment. | -- | `200` `AssuranceAssessment` | `404 ASSURANCE_ASSESSMENT_NOT_FOUND` |
 | `POST /api/assurance/findings/{id}/events` | Append a finding lifecycle event. | Required: `eventType` (one of `AssuranceFindingCreated`, `AssuranceFindingAccepted`, `AssuranceRemediationPlanned`, `AssuranceFindingRemediated`, `AssuranceFindingClosed`, `AssuranceFindingSuperseded`, `AssuranceFindingReopened`); `actorId`. Optional: `rationale`, `payload` (object). | `201` `AssuranceFindingEvent` | `404 ASSURANCE_FINDING_NOT_FOUND`; `409 ASSURANCE_INVALID_FINDING_TRANSITION` |
-| `POST /api/assurance/manual-reviews` | Record a manual control review. | Required: `assessmentId`, `controlId`, `reviewerId`, `rationale`, `outcome` (one of `pass`, `partial`, `fail`, `insufficient_evidence`). Optional: `reviewerRole`, `evidenceReferenceIds[]`. | `201` `AssuranceManualReviewRecord` | `400 ASSURANCE_MANUAL_REVIEW_INVALID`; `404 ASSURANCE_ASSESSMENT_NOT_FOUND` / `ASSURANCE_CONTROL_NOT_FOUND`; `409 ASSURANCE_ASSESSMENT_IMMUTABLE` |
+| `POST /api/assurance/manual-reviews` | Record a manual control review. **Authenticated by an Assurance reviewer credential only** (ASSURE-SEC-01B, see below). | Required: `assessmentId`, `controlId`, `rationale`, `outcome` (one of `pass`, `partial`, `fail`, `insufficient_evidence`). Optional: `reviewerId`, `reviewerRole` (assertions; must match the credential), `evidenceReferenceIds[]`. | `201` `AssuranceManualReviewRecord` (`reviewerId`/`reviewerRole` from the credential, `reviewerAuthentication: 'assurance_reviewer_credential'`) | `401 AUTHENTICATION_FAILED` (no reviewer credential); `403 ASSURANCE_REVIEWER_UNAUTHORIZED`; `400 ASSURANCE_MANUAL_REVIEW_INVALID`; `404 ASSURANCE_ASSESSMENT_NOT_FOUND` / `ASSURANCE_CONTROL_NOT_FOUND`; `409 ASSURANCE_ASSESSMENT_IMMUTABLE` |
 | `POST /api/assurance/signals` | Ingest a continuous-assurance signal. | Required: `organizationId`, `subjectId`, `subjectType`, `signalType` (a supported `AssuranceSignalType`, see `ASSURANCE_SIGNAL_TYPES` in `src/enterprise/assurance/contracts.ts`), `sourceType` (an `AssuranceEvidenceType`, see `ASSURANCE_EVIDENCE_TYPES` there), `sourceId`, `occurredAt`. Optional: `observedAt` (defaults to `occurredAt`), `sourceDigest`, `affectedControlIds[]`, `affectedDomainIds[]`, `payload` (object). | `201` `AssuranceSignalProcessingResult` (`signalId`, `outcomes`, `affectedAssessmentIds`, `detail`, `processedAt`) | `400 ASSURANCE_SIGNAL_INVALID`; `403 ASSURANCE_ACCESS_SCOPE_VIOLATION` for a cross-org `organizationId` |
 | `GET /api/assurance/subjects/{id}/state?frameworkId=&frameworkVersion=` | Derived continuous-assurance state. Both query parameters optional (latest completed assessment used when omitted). | -- | `200` `ContinuousAssuranceState` (`subjectId`, `frameworkId`, `frameworkVersion`, `latestCompletedAssessmentId?`, `state`, `openFindingCounts`, `activeSignalIds`, `eligibilityState?`, `staleReasons`, `updatedAt`) | -- |
 | `POST /api/assurance/subjects/{id}/reassess` | Request a reassessment (creates a new assessment). | Required: `reason`, `requestedBy`. Optional: `assessmentId`, `evidenceCutoffAt`. | `201` `AssuranceAssessment` | `404 ASSURANCE_ASSESSMENT_NOT_FOUND` / `ASSURANCE_SUBJECT_NOT_FOUND` / `ASSURANCE_FRAMEWORK_NOT_FOUND` |
@@ -673,7 +690,7 @@ Complete `EnterpriseHttpErrorCode` table (from
 | --- | --- |
 | 400 | `INVALID_REQUEST`, `EVIDENCE_VALIDATION_ERROR`, `EVIDENCE_DISCLOSURE_POLICY_UNKNOWN`, `PASSPORT_VALIDATION_ERROR`, `PASSPORT_REFERENCE_INVALID`, `ASSURANCE_SCOPE_INVALID`, `ASSURANCE_FRAMEWORK_INVALID`, `ASSURANCE_FRAMEWORK_VERSION_UNSUPPORTED`, `ASSURANCE_SIGNAL_INVALID`, `ASSURANCE_EVIDENCE_INVALID`, `ASSURANCE_MANUAL_REVIEW_INVALID`, `ASSURANCE_VALIDATION_ERROR` |
 | 401 | `AUTHENTICATION_FAILED` |
-| 403 | `AUTHORIZATION_FAILED`, `GOVERNANCE_ACCESS_SCOPE_VIOLATION`, `EVIDENCE_ACCESS_SCOPE_VIOLATION`, `EVIDENCE_TENANT_SCOPE_REQUIRED`, `PASSPORT_TENANT_SCOPE_REQUIRED`, `PASSPORT_ACCESS_SCOPE_VIOLATION`, `ASSURANCE_TENANT_SCOPE_REQUIRED`, `ASSURANCE_ACCESS_SCOPE_VIOLATION`, `ASSURANCE_EVIDENCE_WRONG_TENANT` |
+| 403 | `AUTHORIZATION_FAILED`, `GOVERNANCE_ACCESS_SCOPE_VIOLATION`, `EVIDENCE_ACCESS_SCOPE_VIOLATION`, `EVIDENCE_TENANT_SCOPE_REQUIRED`, `PASSPORT_TENANT_SCOPE_REQUIRED`, `PASSPORT_ACCESS_SCOPE_VIOLATION`, `ASSURANCE_TENANT_SCOPE_REQUIRED`, `ASSURANCE_ACCESS_SCOPE_VIOLATION`, `ASSURANCE_EVIDENCE_WRONG_TENANT`, `ASSURANCE_REVIEWER_UNAUTHORIZED` |
 | 404 | `NOT_FOUND`, `AUTHORITY_ADMIN_TARGET_NOT_FOUND`, `AUTHORITY_ADMIN_CAPABILITY_NOT_COMPOSED`, `GOVERNANCE_RECORD_NOT_FOUND`, `EVIDENCE_SOURCE_RECORD_NOT_FOUND`, `EVIDENCE_BUNDLE_NOT_FOUND`, `PASSPORT_NOT_FOUND`, `PASSPORT_EVIDENCE_NOT_FOUND`, `PASSPORT_GOVERNANCE_RECORD_NOT_FOUND`, `ASSURANCE_FRAMEWORK_NOT_FOUND`, `ASSURANCE_ASSESSMENT_NOT_FOUND`, `ASSURANCE_FINDING_NOT_FOUND`, `ASSURANCE_SUBJECT_NOT_FOUND`, `ASSURANCE_CONTROL_NOT_FOUND` |
 | 409 | `CONCURRENCY_CONFLICT`, `AUTHORITY_ADMIN_OPERATION_REFUSED`, `GOVERNANCE_IDEMPOTENCY_CONFLICT`, `EVIDENCE_BUNDLE_ALREADY_EXISTS`, `PASSPORT_ALREADY_EXISTS`, `PASSPORT_IDEMPOTENCY_CONFLICT`, `PASSPORT_INVALID_STATE_TRANSITION`, `PASSPORT_ALREADY_REVOKED`, `PASSPORT_EXPIRED`, `ASSURANCE_ASSESSMENT_IMMUTABLE`, `ASSURANCE_ASSESSMENT_INCOMPLETE`, `ASSURANCE_INVALID_FINDING_TRANSITION` |
 | 413 | `GOVERNANCE_RECORD_TOO_LARGE` |

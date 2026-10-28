@@ -57,6 +57,8 @@ function review(outcome: AssuranceManualReviewRecord['outcome'], overrides: Part
     rationale: 'Reviewed against operating records.',
     evidenceReferenceIds: ['attest-x'],
     reviewedAt: '2026-06-14T12:00:00.000Z',
+    // ASSURE-SEC-01B: a review the service recorded from an authenticated reviewer credential.
+    reviewerAuthentication: 'assurance_reviewer_credential' as const,
   };
   return { ...base, ...overrides, reviewDigest: computeDigest(base) };
 }

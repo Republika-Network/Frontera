@@ -13,6 +13,7 @@ import {
 import { governGovernedActionRequest } from '../orchestration/govern-governed-action-request.js';
 import { assertLegacyKeyConfiguration, assertServicePrincipalConfiguration } from '../orchestration/advisory-identity.js';
 import { assertAuditorConfiguration } from '../orchestration/governance-record-disclosure.js';
+import { assertAssuranceReviewerConfiguration } from '../orchestration/assurance-reviewer-credentials.js';
 import type { EnterpriseGovernedActionResponse } from '../api/governed-action-contract.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
@@ -1549,6 +1550,7 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   // anything is opened.
   assertServicePrincipalConfiguration(configuration, configuration.kernelAuthority.organizationId);
   assertAuditorConfiguration(configuration, configuration.kernelAuthority.organizationId);
+  assertAssuranceReviewerConfiguration(configuration, configuration.kernelAuthority.organizationId);
   assertLegacyKeyConfiguration(configuration);
   if (customerIdentityRequested) {
     if (options.kernelAuthorityStore === undefined && !configuration.kernelAuthority.enabled) {
@@ -2833,6 +2835,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     nextId: eventIdGenerator.nextId,
     enterpriseVersion: configuration.enterpriseVersion,
     moduleSnapshot: () => lifecycle.modules().map((module) => ({ moduleId: module.id, version: module.version, status: module.state })),
+    // ASSURE-SEC-01B: the only credentials that can record a manual review.
+    reviewers: configuration.authentication.assuranceReviewers ?? [],
   });
 
   // CTRL-01: composed from the objects above — never a second path to any of
