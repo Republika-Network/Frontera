@@ -2,6 +2,7 @@ import type { AssuranceAssessment, AssuranceAssessmentVerificationResult, Assura
 import { recomputeAssessmentIntegrity } from './assessment.js';
 import { computeDomainAssessments, computeOverallScore } from './scoring.js';
 import { evaluateEligibility } from './eligibility.js';
+import { boundEvidenceViolation, manualReviewEvidencePolicy } from './manual-review-evidence.js';
 
 /**
  * Independent assessment verification (mission sections 64-65): recomputes
@@ -78,6 +79,21 @@ export function verifyAssuranceAssessment(input: VerifyAssuranceAssessmentInput)
       if (!controlIds.has(evaluation.controlId)) {
         controlsOk = false;
         fail('controls', `Control evaluation '${evaluation.controlEvaluationId}' references controlId '${evaluation.controlId}', which the framework does not define.`);
+      }
+    }
+
+    // -- Evidence-bound manual conclusions (ASSURE-SEC-01A): a definitive
+    // manual result under the `control_bound` policy must have bound,
+    // sufficient evidence in the stored resolutions. This detects the absence
+    // of support; it cannot show which references the reviewer relied on.
+    for (const evaluation of assessment.controlEvaluations) {
+      const control = framework.controls.find((candidate) => candidate.controlId === evaluation.controlId);
+      if (control === undefined || control.criteria.type !== 'manual_review' || manualReviewEvidencePolicy(control.criteria) !== 'control_bound') continue;
+      if (!evaluation.reasonCodes.includes('CONTROL_MANUAL_REVIEW_APPLIED') || !['pass', 'partial', 'fail'].includes(evaluation.status)) continue;
+      const violation = boundEvidenceViolation(control, assessment.evidenceResolutions, assessment.subject.organizationId, evaluation.status !== 'fail');
+      if (violation !== undefined) {
+        controlsOk = false;
+        fail('controls', `Control '${evaluation.controlId}' carries a definitive manual result (${evaluation.status}) without bound evidence: ${violation.violation}. ${violation.message}`);
       }
     }
 

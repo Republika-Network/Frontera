@@ -358,6 +358,14 @@ export interface AssuranceEvidenceReference {
   readonly verificationReference?: string;
   readonly provenance: AssuranceEvidenceProvenance;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  /**
+   * Explicit association of manually supplied evidence with the framework
+   * evidence requirements it is offered for (ASSURE-SEC-01A). Under the
+   * `control_bound` manual-review policy, manual evidence supports a
+   * definitive conclusion only for the requirements named here. It is a
+   * declaration by the supplier, not proof of authenticity.
+   */
+  readonly requirementIds?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------

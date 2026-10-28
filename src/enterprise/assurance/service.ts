@@ -9,6 +9,7 @@ import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { AssuranceError, isAssuranceError } from './errors.js';
 import { resolveFrameworkForAssessment, type AssuranceFrameworkRegistry } from './framework-registry.js';
 import { createAssuranceEvidenceResolver, type AssuranceEvidenceSources } from './evidence-resolver.js';
+import { checkManualReviewEvidence } from './manual-review-evidence.js';
 import { createAssuranceControlEvaluator } from './control-evaluator.js';
 import { deriveAssuranceMetrics } from './metrics.js';
 import { buildFindingEvent, deriveFindingsFromEvaluations } from './findings.js';
@@ -652,8 +653,20 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
             requiredReviewerRole: requiredRole,
           });
         }
-        if ((control.criteria.requiredEvidenceRequirementIds?.length ?? 0) > 0 && (input.evidenceReferenceIds?.length ?? 0) === 0) {
-          throw new AssuranceError('ASSURANCE_MANUAL_REVIEW_INVALID', `Control '${input.controlId}' requires the manual review to reference supporting evidence.`);
+        // Evidence-bound conclusions (ASSURE-SEC-01A): validated before anything is persisted.
+        const evidenceCheck = checkManualReviewEvidence({
+          control,
+          criteria: control.criteria,
+          outcome: input.outcome,
+          citedEvidenceReferenceIds: input.evidenceReferenceIds ?? [],
+          resolutions: assessment.evidenceResolutions,
+          organizationId: assessment.subject.organizationId,
+        });
+        if (!evidenceCheck.valid) {
+          throw new AssuranceError('ASSURANCE_MANUAL_REVIEW_INVALID', evidenceCheck.message ?? `Control '${input.controlId}' review is not supported by bound evidence.`, {
+            policy: evidenceCheck.policy,
+            ...(evidenceCheck.violation !== undefined ? { violation: evidenceCheck.violation } : {}),
+          });
         }
       }
 
