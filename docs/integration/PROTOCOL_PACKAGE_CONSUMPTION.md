@@ -168,7 +168,9 @@ restriction in this document is unchanged.
 One private package, and only files under `packages/sovereign-receiver-verification/`, may import
 `@aoc/protocol/identity`, `@aoc/protocol/manifest`, `@aoc/protocol/portability` and
 `@aoc/protocol/interoperability` (founder decision, RSDK-00B, for RSDK-01 receiver-side
-verification). These subpaths are not allowed imports for any other path: they are absent from the
+verification), and `@aoc/protocol/licensing` (approved for FV-P2: `verifyDocumentUseEligibility`
+validates a `soberania.document-use/1` terms claim with `validateLicenseTermsClaim`, which only that
+subpath exports). These subpaths are not allowed imports for any other path: they are absent from the
 list above and from `ALLOWED_PROTOCOL_SUBPATHS`, and all three import gates
 (`scripts/check-protocol-consumption.mjs`, `scripts/check-node16-imports.mjs` and the forbidden import
 scan of `scripts/protocol/validate-enterprise-against-protocol-tarball.mjs`) still reject them

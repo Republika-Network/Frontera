@@ -15,3 +15,18 @@ export type {
   VerifiedManifestEvidence,
   VerifyReceivedSovereignAssetOptions,
 } from './types.js';
+// FV-P2: opt-in eligibility check for soberania.document-use/1 assets. Additive:
+// verifyReceivedSovereignAsset and its reason set are unchanged.
+export { verifyDocumentUseEligibility } from './document-use.js';
+export { DOCUMENT_USE_INELIGIBILITY_REASONS, DOCUMENT_USE_PROFILE, DOCUMENT_USE_RECEIVER_PROFILE } from './document-use-types.js';
+export type {
+  DocumentUseEligibilityResult,
+  DocumentUseEligible,
+  DocumentUseIneligibilityReason,
+  DocumentUseIneligibilityStage,
+  DocumentUseIneligible,
+  DocumentUseProfile,
+  DocumentUseReceiverProfile,
+  DocumentUseTermsEvidence,
+  VerifyDocumentUseEligibilityOptions,
+} from './document-use-types.js';

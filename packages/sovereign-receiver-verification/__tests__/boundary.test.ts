@@ -7,7 +7,7 @@ import { validFixture, validOptions } from './fixtures.js';
 
 // Compiled to dist-test/__tests__; the package root is two levels up.
 const packageRoot = join(__dirname, '..', '..');
-const APPROVED_PROTOCOL_SUBPATHS = ['@aoc/protocol/identity', '@aoc/protocol/interoperability', '@aoc/protocol/manifest', '@aoc/protocol/portability'];
+const APPROVED_PROTOCOL_SUBPATHS = ['@aoc/protocol/identity', '@aoc/protocol/interoperability', '@aoc/protocol/licensing', '@aoc/protocol/manifest', '@aoc/protocol/portability'];
 const repoRoot = join(packageRoot, '..', '..');
 const RECEIVER_DIRECTORY = 'packages/sovereign-receiver-verification';
 // FRONTERA-SOBE-PILOT-01C0: the only workspace approved to own a production dependency on
@@ -152,10 +152,18 @@ test('an unexpected exception inside Protocol verification fails closed', async 
   }
 });
 
-test('the public surface is exactly the verifier, its reasons and its profile', () => {
+test('the public surface is exactly the two verifiers, their reasons and their profiles', () => {
   const sdk = require('../src/index.js') as Record<string, unknown>;
   const exported = Object.keys(sdk).filter((name) => name !== '__esModule' && name !== 'default').sort();
-  assert.deepEqual(exported, ['RECEIVER_VERIFICATION_REJECTION_REASONS', 'STRICT_RECEIVER_PROFILE', 'verifyReceivedSovereignAsset']);
+  assert.deepEqual(exported, [
+    'DOCUMENT_USE_INELIGIBILITY_REASONS',
+    'DOCUMENT_USE_PROFILE',
+    'DOCUMENT_USE_RECEIVER_PROFILE',
+    'RECEIVER_VERIFICATION_REJECTION_REASONS',
+    'STRICT_RECEIVER_PROFILE',
+    'verifyDocumentUseEligibility',
+    'verifyReceivedSovereignAsset',
+  ]);
 });
 
 test('no Protocol value is reachable through the package surface', () => {
