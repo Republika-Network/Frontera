@@ -23,6 +23,7 @@ import type {
   AssuranceSignal,
 } from './contracts.js';
 import { ASSURANCE_STORE_SCHEMA_VERSION, ASSURANCE_TERMINAL_STATUSES } from './contracts.js';
+import { commercialReleaseCustodyViolations, type CommercialReleaseCustodyRecord } from './commercial-release-custody.js';
 
 export interface CreateSqliteAssuranceStoreOptions {
   readonly now?: () => string;
@@ -173,6 +174,70 @@ const SCHEMA_V1 = `
   CREATE INDEX IF NOT EXISTS idx_assurance_signals_subject ON assurance_signals(organization_id, subject_id);
 `;
 
+/**
+ * ASSURE-REL-01A: commercial release custody. Added at open time to an
+ * existing database -- like the Governance Store's reference-integrity
+ * columns, without changing the frozen schema identifier: an older runtime
+ * opens the database and never reads this table; this runtime creates it on an
+ * older database without touching any existing row. Each row carries its own
+ * `custody_version`. The primary key on `report_id` makes a release unique per
+ * report version; the triggers refuse any UPDATE or DELETE.
+ */
+const COMMERCIAL_RELEASE_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS assurance_commercial_releases (
+    report_id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assurance_assessments(assessment_id),
+    organization_id TEXT NOT NULL,
+    framework_id TEXT NOT NULL,
+    framework_version TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    release_digest TEXT NOT NULL,
+    approved_by TEXT NOT NULL,
+    approved_at TEXT NOT NULL,
+    custody_version TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    record_digest TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_assurance_releases_assessment ON assurance_commercial_releases(assessment_id);
+  CREATE TRIGGER IF NOT EXISTS assurance_commercial_releases_no_update BEFORE UPDATE ON assurance_commercial_releases
+    BEGIN SELECT RAISE(ABORT, 'assurance_commercial_releases is append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS assurance_commercial_releases_no_delete BEFORE DELETE ON assurance_commercial_releases
+    BEGIN SELECT RAISE(ABORT, 'assurance_commercial_releases is append-only'); END;
+`;
+
+interface CommercialReleaseRow {
+  readonly report_id: string;
+  readonly assessment_id: string;
+  readonly organization_id: string;
+  readonly content_digest: string;
+  readonly release_digest: string;
+  readonly approved_by: string;
+  readonly record_json: string;
+  readonly record_digest: string;
+}
+
+/** A stored release, checked against its own columns and digests: a row edited outside the store is reported, never returned as custody. */
+function rowToCommercialRelease(row: CommercialReleaseRow): CommercialReleaseCustodyRecord {
+  let record: CommercialReleaseCustodyRecord;
+  try {
+    record = JSON.parse(row.record_json) as CommercialReleaseCustodyRecord;
+  } catch {
+    throw new AssuranceError('ASSURANCE_INTEGRITY_FAILED', `The release custody record for '${row.report_id}' is corrupted.`, { reportId: row.report_id });
+  }
+  const consistent =
+    record.reportId === row.report_id &&
+    record.assessmentId === row.assessment_id &&
+    record.organizationId === row.organization_id &&
+    record.recordDigest === row.record_digest &&
+    record.release?.releaseDigest === row.release_digest &&
+    record.release?.contentDigest === row.content_digest &&
+    record.release?.approvedBy === row.approved_by;
+  if (!consistent || commercialReleaseCustodyViolations(record).length > 0) {
+    throw new AssuranceError('ASSURANCE_INTEGRITY_FAILED', `The release custody record for '${row.report_id}' is corrupted.`, { reportId: row.report_id });
+  }
+  return record;
+}
+
 interface AssessmentRow {
   readonly assessment_id: string;
   readonly organization_id: string;
@@ -247,6 +312,7 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
   }
 
   db.exec(SCHEMA_V1);
+  db.exec(COMMERCIAL_RELEASE_SCHEMA);
 
   const latestVersion = db.prepare(`SELECT schema_version FROM assurance_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
   if (latestVersion === undefined) {
@@ -289,6 +355,12 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
     VALUES (@assessmentId, @normalizedScore, @methodologyId, @methodologyVersion, @scoreJson)`);
   const insertEligibility = db.prepare(`INSERT OR IGNORE INTO assurance_eligibility_results (assessment_id, profile_id, eligible, provisional, result_json)
     VALUES (@assessmentId, @profileId, @eligible, @provisional, @resultJson)`);
+
+  const selectCommercialRelease = db.prepare(`SELECT * FROM assurance_commercial_releases WHERE report_id = ?`);
+  const selectCommercialReleasesByAssessment = db.prepare(`SELECT * FROM assurance_commercial_releases WHERE assessment_id = ? ORDER BY approved_at ASC, report_id ASC`);
+  const insertCommercialRelease = db.prepare(`INSERT INTO assurance_commercial_releases
+    (report_id, assessment_id, organization_id, framework_id, framework_version, content_digest, release_digest, approved_by, approved_at, custody_version, record_json, record_digest)
+    VALUES (@reportId, @assessmentId, @organizationId, @frameworkId, @frameworkVersion, @contentDigest, @releaseDigest, @approvedBy, @approvedAt, @custodyVersion, @recordJson, @recordDigest)`);
 
   let closed = false;
 
@@ -783,6 +855,74 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
         .get(assessment.frameworkId, assessment.frameworkVersion) as { definition_json: string } | undefined;
       const framework = frameworkRow === undefined ? undefined : (JSON.parse(frameworkRow.definition_json) as AssuranceFramework);
       return verifyAssuranceAssessment({ assessment, ...(framework !== undefined ? { framework } : {}), now });
+    },
+
+    async commitCommercialRelease(context, record) {
+      assertOpen();
+      requireAccessToAssuranceOrganization(context, record.organizationId);
+      const violations = commercialReleaseCustodyViolations(record);
+      if (violations.length > 0) {
+        throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `The commercial release record for '${record.reportId}' is not coherent and was not recorded.`, { violations });
+      }
+      // ASSURE-REL-01A: one IMMEDIATE transaction -- the write lock is taken
+      // before anything is read, so two connections cannot both find no
+      // release and both insert; the primary key is the backstop.
+      const runCommit = db.transaction((): { outcome: 'committed' | 'existing'; record: CommercialReleaseCustodyRecord } => {
+        const assessment = loadAssessmentRow(record.assessmentId);
+        if (assessment === undefined || assessment.organization_id !== record.organizationId) {
+          throw new AssuranceError('ASSURANCE_ASSESSMENT_NOT_FOUND', `No Assurance assessment for assessmentId '${record.assessmentId}' within this scope.`);
+        }
+        if (assessment.status !== 'completed') {
+          throw new AssuranceError('ASSURANCE_ASSESSMENT_INCOMPLETE', `Only the report of a completed, current assessment can be released; '${record.assessmentId}' is '${assessment.status}'.`);
+        }
+        const existing = selectCommercialRelease.get(record.reportId) as CommercialReleaseRow | undefined;
+        if (existing !== undefined) {
+          if (existing.organization_id !== record.organizationId) {
+            throw new AssuranceError('ASSURANCE_INTEGRITY_FAILED', `The release custody for '${record.reportId}' is inconsistent.`);
+          }
+          return { outcome: 'existing', record: rowToCommercialRelease(existing) };
+        }
+        insertCommercialRelease.run({
+          reportId: record.reportId,
+          assessmentId: record.assessmentId,
+          organizationId: record.organizationId,
+          frameworkId: record.manifest.frameworkId,
+          frameworkVersion: record.manifest.frameworkVersion,
+          contentDigest: record.release.contentDigest,
+          releaseDigest: record.release.releaseDigest,
+          approvedBy: record.release.approvedBy,
+          approvedAt: record.release.approvedAt,
+          custodyVersion: record.custodyVersion,
+          recordJson: JSON.stringify(record),
+          recordDigest: record.recordDigest,
+        });
+        return { outcome: 'committed', record };
+      });
+      try {
+        return runCommit.immediate();
+      } catch (error) {
+        if (error instanceof AssuranceError) throw error;
+        // The driver's message may name paths or SQL; it never leaves the store.
+        throw new AssuranceError('ASSURANCE_STORE_UNAVAILABLE', `The release of '${record.reportId}' could not be recorded: the Assurance Store did not persist it. Nothing was released; the release can be retried.`, {
+          reportId: record.reportId,
+          retryable: true,
+        });
+      }
+    },
+
+    async getCommercialRelease(context, reportId) {
+      assertOpen();
+      requireAssuranceTenantScope(context);
+      const row = selectCommercialRelease.get(reportId) as CommercialReleaseRow | undefined;
+      if (row === undefined || !canAccessAssuranceOrganization(context, row.organization_id)) return null;
+      return rowToCommercialRelease(row);
+    },
+
+    async listCommercialReleases(context, assessmentId) {
+      assertOpen();
+      requireAssuranceTenantScope(context);
+      const rows = selectCommercialReleasesByAssessment.all(assessmentId) as CommercialReleaseRow[];
+      return rows.filter((row) => canAccessAssuranceOrganization(context, row.organization_id)).map(rowToCommercialRelease);
     },
 
     async health() {

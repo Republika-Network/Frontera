@@ -29,7 +29,16 @@ import {
   type CommercialReportDraft,
   type CommercialReportRelease,
 } from './commercial-report.js';
-import type { AssuranceStore } from './assurance-store.js';
+import { requireAssuranceTenantScope, type AssuranceStore } from './assurance-store.js';
+import {
+  buildCommercialReleaseCustodyRecord,
+  commercialReleaseConflict,
+  verifyCommercialReleaseAgainstCustody,
+  type CommercialReleaseAuthorityLookup,
+  type CommercialReleaseAuthorityVerification,
+  type CommercialReleaseCustodyRecord,
+  type CommercialReleasePackage,
+} from './commercial-release-custody.js';
 import type {
   AssuranceAccessContext,
   AssuranceAssessment,
@@ -163,13 +172,45 @@ export interface AssuranceService {
    * authenticated reviewer holding `assure.report-release` for the assessment's
    * organization, who names the exact content digest approved. The draft is
    * rebuilt from the store, so the approval binds what the store holds now.
-   * Returns the release record; nothing is persisted.
+   *
+   * ASSURE-REL-01A: the release is recorded in the store's custody before it
+   * is returned, once per report version. A repeated request by the same
+   * approver for the same content returns the release already kept
+   * (`custody.outcome: 'replayed'`); any other request for a report version
+   * already released is refused (`ASSURANCE_ASSESSMENT_IMMUTABLE`, reason
+   * `commercial_release_conflict`). A store without custody cannot release.
+   * `custody.durable` is false for the in-memory store.
    */
   releaseCommercialReport(
     context: AssuranceAccessContext,
     assessmentId: string,
     request: CommercialReportReleaseRequest,
-  ): Promise<{ readonly draft: CommercialReportDraft; readonly release: CommercialReportRelease }>;
+  ): Promise<CommercialReportReleaseResult>;
+  /** ASSURE-REL-01A: the release kept for a report version within the caller's organization, or `null`. */
+  getCommercialRelease(context: AssuranceAccessContext, reportId: string): Promise<CommercialReleaseCustodyRecord | null>;
+  /** ASSURE-REL-01A: every release kept for an assessment the caller can see, oldest first. */
+  listCommercialReleases(context: AssuranceAccessContext, assessmentId: string): Promise<readonly CommercialReleaseCustodyRecord[]>;
+  /**
+   * ASSURE-REL-01A: verifies a delivered package against this Host's own
+   * release custody -- the authority is this service's store, never something
+   * the caller supplies. Reports package integrity and the authority's answer
+   * separately; a match proves the Host recorded that approval, not that a
+   * signature exists (`externalSignature` is always
+   * `EXTERNAL_SIGNATURE_NOT_AVAILABLE`).
+   */
+  verifyCommercialRelease(context: AssuranceAccessContext, delivered: CommercialReleasePackage): Promise<CommercialReleaseAuthorityVerification>;
+}
+
+/** ASSURE-REL-01A: a release and how custody answered it. */
+export interface CommercialReportReleaseResult {
+  readonly draft: CommercialReportDraft;
+  readonly release: CommercialReportRelease;
+  readonly custody: {
+    /** `committed`: recorded by this call. `replayed`: already in custody; the original record is returned. */
+    readonly outcome: 'committed' | 'replayed';
+    /** Whether the custody survives a restart: true for the SQLite store only. */
+    readonly durable: boolean;
+  };
 }
 
 export interface AssuranceServiceDependencies {
@@ -196,6 +237,35 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
 
   function unauthorizedReviewer(message: string, details?: Readonly<Record<string, unknown>>): AssuranceError {
     return new AssuranceError('ASSURANCE_REVIEWER_UNAUTHORIZED', message, details);
+  }
+
+  function custodyUnsupported(): AssuranceError {
+    return new AssuranceError('ASSURANCE_STORE_UNAVAILABLE', 'This Assurance Store keeps no commercial release custody; a commercial report cannot be released or verified against it.');
+  }
+
+  /** ASSURE-REL-01A: the store's release custody. A store without it cannot release: a release is never returned without being kept. */
+  function releaseCustody() {
+    const { commitCommercialRelease, getCommercialRelease } = store;
+    if (commitCommercialRelease === undefined || getCommercialRelease === undefined) throw custodyUnsupported();
+    return {
+      commit: (context: AssuranceAccessContext, record: CommercialReleaseCustodyRecord) => commitCommercialRelease.call(store, context, record),
+      get: (context: AssuranceAccessContext, reportId: string) => getCommercialRelease.call(store, context, reportId),
+    };
+  }
+
+  /** A request for a report version already in custody: the same approver and content get the kept release back; anything else is refused. */
+  function replayOrRefuse(kept: CommercialReleaseCustodyRecord, draft: CommercialReportDraft, approvedBy: string): CommercialReportReleaseResult {
+    const conflict = commercialReleaseConflict(kept, { ...draft.manifest, approvedBy });
+    if (conflict !== undefined) {
+      logger?.warn('assurance.commercial_report.release_conflict', { assessmentId: kept.assessmentId, reportId: kept.reportId, status: 'conflict', errorCode: `release_conflict_${conflict}` });
+      throw new AssuranceError(
+        'ASSURANCE_ASSESSMENT_IMMUTABLE',
+        `Report '${kept.reportId}' was already released ${conflict === 'content' ? 'with different content' : 'by another approver'}; a released report version is never replaced. Issue a new report version for a new approval.`,
+        { reason: 'commercial_release_conflict', reportId: kept.reportId, conflict },
+      );
+    }
+    logger?.info('assurance.commercial_report.released', { assessmentId: kept.assessmentId, reportId: kept.reportId, status: 'replayed' });
+    return { draft, release: kept.release, custody: { outcome: 'replayed', durable: store.providerKind === 'sqlite' } };
   }
 
   function publish(type: AssuranceEnterpriseEventType, fields: { assessmentId?: string; organizationId?: string; subjectId?: string; detail?: Readonly<Record<string, unknown>> }): void {
@@ -1048,6 +1118,7 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
     },
 
     async releaseCommercialReport(context, assessmentId, request) {
+      const custody = releaseCustody();
       const approver = context.reviewer;
       if (!reviewerAuthenticator.isAuthenticated(approver)) {
         throw unauthorizedReviewer('Releasing a commercial report requires an authenticated Assurance reviewer credential; a system context or declared identity is not accepted.');
@@ -1071,6 +1142,11 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
       if (request.acknowledgements?.limitationsReviewed !== true || request.acknowledgements?.commercialUseRestrictionAcknowledged !== true) {
         throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', 'A release must acknowledge the reviewed limitations and the framework’s commercial-use restriction.');
       }
+      // A release already kept for this report version answers the request before
+      // anything is written: an idempotent retry gets the original record, even
+      // after the issue date; anything else is refused.
+      const kept = await custody.get(approverContext, draft.content.reportId);
+      if (kept !== null) return replayOrRefuse(kept, draft, approver.reviewerId);
       const approvedAt = now();
       if (approvedAt.slice(0, 10) > draft.content.cover.issuedOn) {
         throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `A report dated ${draft.content.cover.issuedOn} cannot be approved after its issue date; draft it again with the current issue date.`);
@@ -1081,8 +1157,52 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
         approvedAt,
         acknowledgements: { limitationsReviewed: true, commercialUseRestrictionAcknowledged: true },
       });
-      logger?.info('assurance.commercial_report.released', { assessmentId, status: 'released' });
-      return { draft, release };
+      // The organization is the stored assessment's, through the approver's own scope; the approver is the credential's.
+      const record = buildCommercialReleaseCustodyRecord({ organizationId: approver.organizationId, manifest: draft.manifest, release });
+      const commit = await custody.commit(approverContext, record);
+      // Another release for this report version won the write (a concurrent request): answer as that one dictates.
+      if (commit.outcome === 'existing') return replayOrRefuse(commit.record, draft, approver.reviewerId);
+      logger?.info('assurance.commercial_report.released', { assessmentId, reportId: record.reportId, status: 'committed' });
+      return { draft, release: commit.record.release, custody: { outcome: 'committed', durable: store.providerKind === 'sqlite' } };
+    },
+
+    async getCommercialRelease(context, reportId) {
+      requireAssuranceTenantScope(context);
+      return releaseCustody().get(context, reportId);
+    },
+
+    async listCommercialReleases(context, assessmentId) {
+      await requireAssessment(context, assessmentId);
+      const list = store.listCommercialReleases;
+      if (list === undefined) throw custodyUnsupported();
+      return list.call(store, context, assessmentId);
+    },
+
+    async verifyCommercialRelease(context, delivered) {
+      requireAssuranceTenantScope(context);
+      const reportId: unknown = delivered?.manifest?.reportId;
+      let lookup: CommercialReleaseAuthorityLookup;
+      if (typeof reportId !== 'string' || reportId.length === 0) {
+        lookup = { kind: 'absent' };
+      } else {
+        try {
+          const record = await releaseCustody().get(context, reportId);
+          lookup = record === null ? { kind: 'absent' } : { kind: 'record', record };
+        } catch (error) {
+          lookup = { kind: 'unavailable', code: isAssuranceError(error) ? error.code : 'ASSURANCE_STORE_UNAVAILABLE' };
+        }
+      }
+      const currentlyAuthorized =
+        lookup.kind === 'record' ? reviewerAuthenticator.isCurrentlyAuthorized(lookup.record.release.approvedBy, lookup.record.organizationId, COMMERCIAL_REPORT_RELEASE_ROLE) : undefined;
+      const verification = verifyCommercialReleaseAgainstCustody(delivered, lookup, currentlyAuthorized);
+      if (!verification.releaseAuthenticated) {
+        logger?.warn('assurance.commercial_report.verification_failed', {
+          ...(typeof reportId === 'string' ? { reportId } : {}),
+          status: verification.authority,
+          errorCode: verification.integrity,
+        });
+      }
+      return verification;
     },
   };
 }

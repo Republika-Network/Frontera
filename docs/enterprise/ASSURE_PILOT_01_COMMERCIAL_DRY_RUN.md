@@ -85,10 +85,10 @@ batch, each with a timeout):
 | 13 | Release without `assure.report-release` | Detected | Release role check |
 | 14 | Wrong approved digest; older draft; stale approval after a finding event | Detected | Draft re-derived at release (`ASSURANCE_INTEGRITY_FAILED`) |
 | 15–16 | Report or manifest modified | Detected | Verifier |
-| 17 | Release record modified | Detected; **not detected if every digest is recomputed (F01)** | Verifier / none |
+| 17 | Release record modified | Detected. With every digest recomputed: detected against custody since ASSURE-REL-01A; **still not detected offline (F01)** | Verifier; `verifyCommercialRelease` |
 | 18 | JSON and Markdown inconsistent | Detected with re-render or trusted source; **coherent forgeries pass offline** | Verifier |
 | 19 | Evidence reused across controls | Detected | `MANUAL_REVIEW_EVIDENCE_NOT_BOUND` |
-| 20 | Double release | **Not detected (F01)** | None |
+| 20 | Double release | Resolved by ASSURE-REL-01A: the kept release is returned; another approver or other content is refused | Release custody |
 
 ## 3. Reproducing it
 
@@ -98,7 +98,7 @@ node --test dist/src/enterprise/__tests__/assure-pilot-01-commercial-dry-run.tes
 # a package for inspection, then its independent verification
 node scripts/assurance/run-pilot-01-dry-run.mjs --out /tmp/pilot-01
 node scripts/assurance/verify-commercial-package.mjs /tmp/pilot-01/founding-assessment \
-  --trusted-db /tmp/pilot-01/trusted-source/assurance-store.snapshot.db \
+  --store-copy /tmp/pilot-01/trusted-source/assurance-store.snapshot.db \
   --renderer dist/src/enterprise/assurance/commercial-report-markdown.js
 ```
 
@@ -123,7 +123,8 @@ The verifier reports each dimension separately:
 | Artifact integrity | The four files are unchanged since their digests were computed | The package |
 | Report consistency | Identifiers agree across the files; the framework is the published rn.sv@0.1.0 digest; Markdown and JSON agree on controls, statuses, counts, score and classification; `limitations.md` re-extracts | The package. `--renderer` adds a full re-render, which loads the generator's renderer and says so |
 | Approval consistency | The release record names the manifest's three digests, the release role and both acknowledgements, and is dated no later than the issue | The package |
-| Assessment consistency | The report matches the stored assessment: status, digest, every control, score and findings | `--trusted-db`, the issuer's store |
+| Assessment consistency | The report matches the stored assessment: status, digest, every control, score and findings | `--store-copy`, a copy of the issuer's store |
+| Release custody | The release record and manifest equal the release the issuer kept (ASSURE-REL-01A) | `--store-copy`. The copy is comparison material (`UNAUTHENTICATED_COPY`); only `AssuranceService.verifyCommercialRelease` against the Host's own store is authoritative |
 | **External authenticity** | Who produced the package | **Never demonstrated.** No signature, timestamp or anchor exists |
 
 A package verified offline is consistent and unchanged since its digests were
@@ -141,13 +142,28 @@ inverted, not deleted.
 
 ### F01 — Release approval forgery (and double release)
 
-Changing `approvedBy` in `release-record.json` and recomputing every digest
-yields a package that verifies in every mode, **including against the issuer's
-store**. The issuer persists no release record (REP-01 §12), so nothing
-independent can name the approver. For the same reason, a second
-`releaseCommercialReport` of the same report is accepted. It yields a second,
-distinct approval record for identical content. Consequence: a customer cannot
-establish who approved a report from the package alone.
+**As found:** changing `approvedBy` in `release-record.json` and recomputing
+every digest yielded a package that verified in every mode, including against
+the issuer's store. The issuer persisted no release record. A second release
+of the same report was also accepted, yielding a second, distinct approval
+record for identical content.
+
+**Resolved under authoritative verification by ASSURE-REL-01A**
+(`docs/security/ASSURE-REL-01A-DURABLE-RELEASE-AUTHENTICITY.md`):
+
+- The Host keeps every release in custody.
+- The forged package fails against the issuer's store copy, and
+  `verifyCommercialRelease` answers `RELEASE_MISMATCH` on `release.approvedBy`
+  against the Host's own store. The kept record names the real approver, also
+  after the store is closed and reopened.
+- A second release of the same report returns the kept record.
+
+The test cases were kept and inverted, not deleted.
+
+**Remaining offline limitation:** the forged package is still self-consistent,
+so offline it still verifies, and external authenticity remains
+`NOT_DEMONSTRATED`. A customer holding only the package cannot tell who
+approved it without asking the issuer. No signature exists.
 
 ### F02 — Contradiction deadlock
 
@@ -204,7 +220,7 @@ exists.
 | Report generation | READY |
 | Confidentiality | CONDITIONAL (reviewer IDs disclosed; customer-confidential terms that look harmless rest on the approver) |
 | Human approval | READY (technical) |
-| Release-record custody | **BLOCKED** (F01) |
+| Release-record custody | CONDITIONAL (ASSURE-REL-01A: durable, authenticated, unique custody; issuer-controlled, no signature, offline authenticity not demonstrated) |
 | Reproducibility | CONDITIONAL |
 | Customer delivery | CONDITIONAL (no signature; CRLF fragility; F03) |
 | Commercial-use policy | **BLOCKED** (`commercialUse: restricted`; needs a governance decision and a new framework version) |
@@ -214,9 +230,9 @@ exists.
 
 ## 7. Recommendations for REL-01 (not implemented here)
 
-1. Persist release records, append-only and unique per `reportId`. Refuse a
-   second release, and let the verifier consult the record (F01). This touches
-   a persisted schema and needs an architecture decision.
+1. ~~Persist release records, append-only and unique per `reportId`. Refuse a
+   second release, and let the verifier consult the record (F01).~~ Done in
+   ASSURE-REL-01A.
 2. Sign the `releaseDigest` with an issuer key. Consider reusing the signed
    verifier pattern of FV-P4B (#234). Until then, customers must confirm the
    digests over an independent channel.

@@ -13,7 +13,7 @@
 //
 // Then verify independently:
 //   node scripts/assurance/verify-commercial-package.mjs <out>/founding-assessment \
-//     [--trusted-db <out>/trusted-source/assurance-store.snapshot.db]
+//     [--store-copy <out>/trusted-source/assurance-store.snapshot.db]
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';

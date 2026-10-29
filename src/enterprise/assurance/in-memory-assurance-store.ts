@@ -2,6 +2,7 @@ import { AssuranceError } from './errors.js';
 import { verifyAssuranceAssessment } from './verification.js';
 import { applyFindingTransition, foldFindingStatus } from './findings.js';
 import { assertCompletionCommit } from './finding-history.js';
+import { commercialReleaseCustodyViolations, type CommercialReleaseCustodyRecord } from './commercial-release-custody.js';
 import {
   canAccessAssuranceOrganization,
   requireAccessToAssuranceOrganization,
@@ -43,6 +44,8 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
   const findingEventIds = new Set<string>();
   const manualReviews = new Map<string, AssuranceManualReviewRecord[]>();
   const signals: AssuranceSignal[] = [];
+  /** ASSURE-REL-01A: release custody, keyed by `reportId`. Records are stored and returned as copies, so no caller can alter one. */
+  const commercialReleases = new Map<string, CommercialReleaseCustodyRecord>();
   let closed = false;
 
   function assertOpen(): void {
@@ -310,6 +313,49 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
       const assessment = requireVisibleAssessment(context, assessmentId);
       const framework = frameworks.get(frameworkKey(assessment.frameworkId, assessment.frameworkVersion));
       return verifyAssuranceAssessment({ assessment, ...(framework !== undefined ? { framework } : {}), now });
+    },
+
+    async commitCommercialRelease(context, record) {
+      assertOpen();
+      requireAccessToAssuranceOrganization(context, record.organizationId);
+      const violations = commercialReleaseCustodyViolations(record);
+      if (violations.length > 0) {
+        throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `The commercial release record for '${record.reportId}' is not coherent and was not recorded.`, { violations });
+      }
+      // Synchronous from here to the map write: no other call can interleave.
+      const assessment = assessments.get(record.assessmentId);
+      if (assessment === undefined || assessment.subject.organizationId !== record.organizationId) {
+        throw new AssuranceError('ASSURANCE_ASSESSMENT_NOT_FOUND', `No Assurance assessment for assessmentId '${record.assessmentId}' within this scope.`);
+      }
+      if (assessment.status !== 'completed') {
+        throw new AssuranceError('ASSURANCE_ASSESSMENT_INCOMPLETE', `Only the report of a completed, current assessment can be released; '${record.assessmentId}' is '${assessment.status}'.`);
+      }
+      const existing = commercialReleases.get(record.reportId);
+      if (existing !== undefined) {
+        if (existing.organizationId !== record.organizationId) {
+          throw new AssuranceError('ASSURANCE_INTEGRITY_FAILED', `The release custody for '${record.reportId}' is inconsistent.`);
+        }
+        return { outcome: 'existing', record: structuredClone(existing) };
+      }
+      commercialReleases.set(record.reportId, structuredClone(record));
+      return { outcome: 'committed', record: structuredClone(record) };
+    },
+
+    async getCommercialRelease(context, reportId) {
+      assertOpen();
+      requireAssuranceTenantScope(context);
+      const record = commercialReleases.get(reportId);
+      if (record === undefined || !canAccessAssuranceOrganization(context, record.organizationId)) return null;
+      return structuredClone(record);
+    },
+
+    async listCommercialReleases(context, assessmentId) {
+      assertOpen();
+      requireAssuranceTenantScope(context);
+      return [...commercialReleases.values()]
+        .filter((record) => record.assessmentId === assessmentId && canAccessAssuranceOrganization(context, record.organizationId))
+        .sort((left, right) => left.release.approvedAt.localeCompare(right.release.approvedAt) || left.reportId.localeCompare(right.reportId))
+        .map((record) => structuredClone(record));
     },
 
     async health() {

@@ -34,6 +34,8 @@ export interface EnterpriseLogContext {
   readonly normalizedScore?: number;
   readonly findingCount?: number;
   readonly evaluatorVersion?: string;
+  /** ASSURE-REL-01A: the report version a commercial release is kept under. An identifier only. */
+  readonly reportId?: string;
   /** CTRL-01 authority administration fields. The trusted operator id (from configuration, never a request), the operation, and the target's canonical id. Never a credential. */
   readonly operatorId?: string;
   readonly operation?: string;

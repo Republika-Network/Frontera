@@ -11,7 +11,8 @@ import { AssuranceError } from '../assurance/errors.js';
 import { computeDigest } from '../governance-store/digest.js';
 import { findingHistoryViolations } from '../assurance/finding-history.js';
 import { escapeMarkdownText } from '../assurance/commercial-report-markdown.js';
-import { COMMERCIAL_REPORT_RELEASE_ROLE, type CommercialReportDraft, type CommercialReportRelease } from '../assurance/commercial-report.js';
+import { COMMERCIAL_REPORT_RELEASE_ROLE, type CommercialReportDraft, type CommercialReportManifest, type CommercialReportRelease } from '../assurance/commercial-report.js';
+import type { CommercialReleasePackage } from '../assurance/commercial-release-custody.js';
 import { RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_V0_1, RN_SV_FRAMEWORK_VERSION } from '../assurance/frameworks/rn-sv-framework.js';
 import { AOC_SAF_FRAMEWORK_ID, AOC_SAF_FRAMEWORK_VERSION } from '../assurance/saf-framework.js';
 import type { AssuranceAssessment, AssuranceEvidenceResolution } from '../assurance/contracts.js';
@@ -61,7 +62,10 @@ import {
  * The second suite pins the pilot's KNOWN LIMITATIONS (F01-F04). Each asserts
  * the CURRENT behaviour; none is a claim that the product is safe. A fix
  * (REL-01) is expected to break the assertion it addresses, which must then be
- * inverted, not deleted. See docs/enterprise/ASSURE_PILOT_01_COMMERCIAL_DRY_RUN.md.
+ * inverted, not deleted. F01 was inverted by ASSURE-REL-01A: its forgery cases
+ * remain and now show both halves -- the forged package still passes offline
+ * integrity, and custody rejects it. See
+ * docs/enterprise/ASSURE_PILOT_01_COMMERCIAL_DRY_RUN.md.
  */
 
 const VERIFIER = join(process.cwd(), 'scripts', 'assurance', 'verify-commercial-package.mjs');
@@ -109,7 +113,7 @@ interface VerifierRun {
 }
 
 function verify(dir: string, options: { readonly trustedDb?: string; readonly render?: boolean } = {}): VerifierRun {
-  const extra = [...(options.trustedDb !== undefined ? ['--trusted-db', options.trustedDb] : []), ...(options.render === true ? ['--renderer', RENDERER] : [])];
+  const extra = [...(options.trustedDb !== undefined ? ['--store-copy', options.trustedDb] : []), ...(options.render === true ? ['--renderer', RENDERER] : [])];
   const run = spawnSync(process.execPath, [VERIFIER, dir, ...extra], { encoding: 'utf8', timeout: 60_000, env: {} });
   let output: Record<string, unknown> = {};
   try {
@@ -118,7 +122,7 @@ function verify(dir: string, options: { readonly trustedDb?: string; readonly re
     output = { verdict: `unparseable output (exit ${String(run.status)}): ${run.stderr.slice(0, 300)}` };
   }
   const failed: string[] = [];
-  for (const section of ['files', 'artifactIntegrity', 'reportConsistency', 'approvalConsistency', 'assessmentConsistency']) {
+  for (const section of ['files', 'artifactIntegrity', 'reportConsistency', 'approvalConsistency', 'assessmentConsistency', 'releaseCustody']) {
     for (const [name, value] of Object.entries((output[section] ?? {}) as Record<string, unknown>)) {
       if (value === false || (typeof value === 'object' && value !== null && (value as { ok?: unknown }).ok === false)) failed.push(`${section}: ${name}`);
     }
@@ -135,6 +139,13 @@ function tampered(source: string, mutate: (dir: string) => void): string {
 }
 const sha256 = (data: Buffer): string => `sha256:${createHash('sha256').update(data).digest('hex')}`;
 const readJson = (dir: string, file: string): Record<string, unknown> => JSON.parse(readFileSync(join(dir, file), 'utf8')) as Record<string, unknown>;
+/** A delivered package as a verifier receives it: every file parsed, nothing trusted. */
+const readPackage = (dir: string): CommercialReleasePackage => ({
+  content: readJson(dir, 'report.json'),
+  markdown: readFileSync(join(dir, 'report.md'), 'utf8'),
+  manifest: readJson(dir, 'integrity-manifest.json') as unknown as CommercialReportManifest,
+  release: readJson(dir, 'release-record.json') as unknown as CommercialReportRelease,
+});
 const writeJson = (dir: string, file: string, value: unknown): void => writeFileSync(join(dir, file), `${JSON.stringify(value, null, 2)}\n`);
 const editJson = (dir: string, file: string, edit: (value: Record<string, unknown>) => void): void => {
   const value = readJson(dir, file);
@@ -370,7 +381,7 @@ describe('ASSURE-PILOT-01 -- end-to-end commercial dry run over SQLite', () => {
     assert.deepEqual(offline.failed, []);
     const full = verify(copy, { trustedDb, render: true });
     assert.equal(full.exit, 0, full.verdict);
-    assert.match(full.verdict, /^PASS \(files, artifactIntegrity, reportConsistency, approvalConsistency, assessmentConsistency\); external authenticity NOT DEMONSTRATED$/);
+    assert.match(full.verdict, /^PASS \(files, artifactIntegrity, reportConsistency, approvalConsistency, assessmentConsistency, releaseCustody\); external authenticity NOT DEMONSTRATED$/);
     assert.equal(full.externalAuthenticity, 'NOT_DEMONSTRATED');
   });
 
@@ -440,7 +451,7 @@ describe('ASSURE-PILOT-01 -- end-to-end commercial dry run over SQLite', () => {
 
 // ===========================================================================
 
-describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS (each pins current behaviour; none is a PASS of the property it names)', () => {
+describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS and their resolutions (each pins current behaviour; none is a PASS of a property the product lacks)', () => {
   let world: PilotWorld;
   let assessment: AssuranceAssessment;
   let draft: CommercialReportDraft;
@@ -458,31 +469,48 @@ describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS (each pins current behaviour; non
     await snapshotPilotStore(world, trustedDb);
   });
 
-  it('F01 KNOWN LIMITATION -- release approval forgery: approvedBy changed and every digest recomputed still verifies, even against the trusted store, because no release record is kept', () => {
+  it('F01 RESOLVED UNDER AUTHORITATIVE VERIFICATION (ASSURE-REL-01A) -- a forged approver with every digest recomputed still passes offline integrity, but custody rejects it, also after the store is reopened', async () => {
     const forged = tampered(packageDir, (dir) => {
       editJson(dir, 'release-record.json', (record) => { record['approvedBy'] = 'forged-approver'; });
       reseal(dir);
     });
-    for (const run of [verify(forged), verify(forged, { trustedDb, render: true })]) {
-      assert.equal(run.exit, 0, 'the forgery is NOT detected: the package cannot authenticate its approver');
-      assert.equal(run.externalAuthenticity, 'NOT_DEMONSTRATED');
-    }
-    const raw = new Database(trustedDb, { readonly: true });
-    try {
-      const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map((table) => table.name);
-      assert.deepEqual(tables.filter((name) => /release/i.test(name)), [], 'the issuer persists no release record a verifier could consult');
-    } finally {
-      raw.close();
-    }
+    // Integrity is not authenticity: offline, the forgery is still self-consistent and nothing is claimed.
+    const offline = verify(forged);
+    assert.equal(offline.exit, 0, 'offline the forgery is still self-consistent -- the remaining offline limitation');
+    assert.equal(offline.externalAuthenticity, 'NOT_DEMONSTRATED');
+    // Compared with a copy of the issuer's store, the approver is not the one kept in custody.
+    const compared = verify(forged, { trustedDb, render: true });
+    assert.equal(compared.exit, 1, compared.verdict);
+    assert.ok(compared.failed.includes('releaseCustody: approver as recorded in custody'), compared.failed.join(' | '));
+    assert.equal(compared.externalAuthenticity, 'NOT_DEMONSTRATED');
+    // Authoritatively, against the Host's own store.
+    const checkAgainstHost = async (current: PilotWorld): Promise<void> => {
+      const verdict = await current.service.verifyCommercialRelease(PILOT_ORG_CONTEXT, readPackage(forged));
+      assert.equal(verdict.integrity, 'INTEGRITY_VALID');
+      assert.equal(verdict.authority, 'RELEASE_MISMATCH');
+      assert.ok(verdict.mismatchedFields.includes('release.approvedBy'), verdict.mismatchedFields.join());
+      assert.equal(verdict.releaseAuthenticated, false);
+      assert.equal(verdict.externalSignature, 'EXTERNAL_SIGNATURE_NOT_AVAILABLE');
+      assert.equal(verdict.custody?.approvedBy, PILOT_CREDENTIALS.approver.reviewerId, 'custody keeps the approver the Host authenticated');
+      const genuine = await current.service.verifyCommercialRelease(PILOT_ORG_CONTEXT, readPackage(packageDir));
+      assert.equal(genuine.authority, 'RELEASE_MATCHES_AUTHORITY');
+      assert.equal(genuine.releaseAuthenticated, true);
+      assert.equal((await current.service.getCommercialRelease(PILOT_ORG_CONTEXT, release.reportId))?.release.approvedBy, PILOT_CREDENTIALS.approver.reviewerId);
+    };
+    await checkAgainstHost(world);
+    await world.store.close();
+    world = track(await buildPilotWorld(world.dbPath, { startTick: 2_000_000, startId: 200_000 }));
+    await checkAgainstHost(world);
   });
 
-  it('F01 KNOWN LIMITATION -- a second release of the same report is not refused: two distinct approval records for one content', async () => {
+  it('F01 RESOLVED (ASSURE-REL-01A) -- a second release of the same report returns the kept record; it is never a second approval', async () => {
     const again = await releasePilotReport(world, assessment.assessmentId);
-    assert.equal(again.release.contentDigest, release.contentDigest);
-    assert.notEqual(again.release.releaseDigest, release.releaseDigest);
+    assert.equal(again.custody.outcome, 'replayed');
+    assert.deepEqual(again.release, release, 'the original approval, unchanged');
+    assert.deepEqual((await world.service.listCommercialReleases(PILOT_ORG_CONTEXT, assessment.assessmentId)).map((kept) => kept.release.releaseDigest), [release.releaseDigest]);
   });
 
-  it('F01 KNOWN LIMITATION -- offline verification cannot see a coherent content forgery; only the trusted source or a full re-render can', () => {
+  it('F01 KNOWN LIMITATION (remaining offline) -- offline verification cannot see a coherent content forgery; only the store or a full re-render can', () => {
     const reworded = tampered(packageDir, (dir) => {
       editText(dir, 'report.md', (text) => text.replace('not a certification', 'a certification'));
       reseal(dir);

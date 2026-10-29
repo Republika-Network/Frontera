@@ -3,8 +3,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 
-import { createAssuranceService, type AssuranceService, type RecordManualReviewInput } from '../assurance/service.js';
+import { createAssuranceService, type AssuranceService, type CommercialReportReleaseResult, type RecordManualReviewInput } from '../assurance/service.js';
 import { createSqliteAssuranceStore } from '../assurance/sqlite-assurance-store.js';
+import { createInMemoryAssuranceStore } from '../assurance/in-memory-assurance-store.js';
 import { createAssuranceFrameworkRegistry, type AssuranceFrameworkRegistry } from '../assurance/framework-registry.js';
 import { RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_V0_1, RN_SV_FRAMEWORK_VERSION, RN_SV_REVIEWER_ROLE } from '../assurance/frameworks/rn-sv-framework.js';
 import { AOC_SAF_FRAMEWORK_V1 } from '../assurance/saf-framework.js';
@@ -12,6 +13,7 @@ import { COMMERCIAL_REPORT_RELEASE_ROLE, type CommercialEngagementDeclaration, t
 import { computeDigest } from '../governance-store/digest.js';
 import { createInProcessEventPublisher, type EnterpriseEvent } from '../events/enterprise-events.js';
 import type { AssuranceStore } from '../assurance/assurance-store.js';
+import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import type { AssuranceReviewerCredential } from '../assurance/reviewer-identity.js';
 import type { AssuranceAccessContext, AssuranceAssessment, AssuranceEvidenceReference, AssuranceManualReviewOutcome } from '../assurance/contracts.js';
 
@@ -81,14 +83,25 @@ export interface PilotWorld {
 /**
  * A service over a SQLite store at `dbPath` with rn.sv@0.1.0 and aoc.saf
  * registered. The clock and id counter start at `startTick`/`startId`, so a
- * world opened over a copy of another store continues after it.
+ * world opened over a copy of another store continues after it. `reviewers`
+ * replaces the configured credentials (e.g. to model a later revocation);
+ * `inMemory` uses the in-memory store instead (`dbPath` is then unused).
  */
-export async function buildPilotWorld(dbPath: string, options: { readonly startTick?: number; readonly startId?: number } = {}): Promise<PilotWorld> {
+export async function buildPilotWorld(
+  dbPath: string,
+  options: {
+    readonly startTick?: number;
+    readonly startId?: number;
+    readonly reviewers?: readonly AssuranceReviewerCredential[];
+    readonly inMemory?: boolean;
+    readonly logger?: EnterpriseLogger;
+  } = {},
+): Promise<PilotWorld> {
   let tick = options.startTick ?? 0;
   const now = (): string => new Date(Date.UTC(2026, 9, 28, 9, 0, 0, tick++)).toISOString();
   let counter = options.startId ?? 0;
   const nextId = (prefix: string): string => `${prefix}-${(counter += 1)}`;
-  const store = await createSqliteAssuranceStore(dbPath, { now });
+  const store = options.inMemory === true ? createInMemoryAssuranceStore({ now }) : await createSqliteAssuranceStore(dbPath, { now });
   const registry = createAssuranceFrameworkRegistry();
   registry.register(RN_SV_FRAMEWORK_V0_1);
   registry.register(AOC_SAF_FRAMEWORK_V1);
@@ -102,9 +115,10 @@ export async function buildPilotWorld(dbPath: string, options: { readonly startT
     now,
     nextId,
     eventPublisher,
+    ...(options.logger !== undefined ? { logger: options.logger } : {}),
     enterpriseVersion: 'assure-pilot-01',
     moduleSnapshot: () => [{ moduleId: 'assurance', version: '0.1.0', status: 'ready' }],
-    reviewers: Object.values(PILOT_CREDENTIALS),
+    reviewers: options.reviewers ?? Object.values(PILOT_CREDENTIALS),
   });
   return { dbPath, store, registry, service, events };
 }
@@ -266,7 +280,7 @@ export async function reviewPilotAssessment(world: PilotWorld, assessmentId: str
 export const PILOT_ACKNOWLEDGEMENTS = { limitationsReviewed: true, commercialUseRestrictionAcknowledged: true } as const;
 
 /** Drafts the report as the preparer and releases it as the approver, approving the exact draft digest. */
-export async function releasePilotReport(world: PilotWorld, assessmentId: string): Promise<{ readonly draft: CommercialReportDraft; readonly release: CommercialReportRelease }> {
+export async function releasePilotReport(world: PilotWorld, assessmentId: string): Promise<CommercialReportReleaseResult> {
   const draft = await world.service.buildCommercialReportDraft(PILOT_ORG_CONTEXT, assessmentId, { engagement: PILOT_ENGAGEMENT, issue: PILOT_ISSUE });
   return world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, {
     engagement: PILOT_ENGAGEMENT,
