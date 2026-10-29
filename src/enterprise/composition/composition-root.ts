@@ -2820,6 +2820,8 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
     evidenceSources: {
       governanceStore: persistence,
       evidenceStore,
+      // ASSURE-SEC-01D: v2 bundles are verified against the same canonical trace sources as the Evidence Service.
+      traceSources,
       passportStore,
       runtimeHealth: async () => ({
         ready: lifecycle.isReady(),

@@ -27,7 +27,7 @@
 | Type | Source | Gathering | `verified` means |
 | --- | --- | --- | --- |
 | `governance_record` | Governance Store public contract | tenant-scoped `query()` (actor-scoped for agent/passport subjects, bounded window, bounded candidate count), then `verify()` per hit | the stored aggregate's digests recompute (`governance-verify:<evaluationId>`) |
-| `evidence_bundle` | Evidence Bundle Store | `listByEvaluationId()` over the gathered governance evaluations | `verifyEvidenceBundle` structural verification passes |
+| `evidence_bundle` | Evidence Bundle Store | `listByEvaluationId()` over the gathered governance evaluations | `verifyEvidenceBundle` passes against canonical sources read in the assessed organization's scope: v1 against its source Governance Record, v2 against the Authority-to-Outcome trace rebuilt now (ASSURE-SEC-01D) |
 | `agent_passport` | Passport Store | `findByAgentId`/`reconstruct` + `verify` for the subject's passport | event chain and lifecycle verify |
 | `passport_view` | manual/injected references only in v1 | — | as supplied |
 | `enterprise_health` / `module_health` / `lifecycle_event` | injected runtime-health snapshot (Enterprise lifecycle) | one bounded observation per collection | live internal observation |
@@ -46,6 +46,34 @@ lifecycle validity; module status) — never payloads.
 `EVIDENCE_CONTRADICTORY`, `EVIDENCE_SOURCE_UNAVAILABLE`, `EVIDENCE_NOT_BOUND`,
 `EVIDENCE_METRIC_NOT_PERMITTED` (the last two since ASSURE-SEC-01C). Every
 rejected reference carries one or more codes plus a human-readable detail.
+A detail never names another organization.
+
+## Host evidence attribution and bundle verification (ASSURE-SEC-01D)
+
+- **Attribution.** Host evidence carries the organization its canonical store
+  recorded: a Governance Record's request organization, an Evidence Bundle's
+  store owner (`EvidenceBundleRecord.organizationId`). It is never filled in
+  with the assessed organization. Evidence whose source records no
+  organization has `organizationId: ''` and is rejected with
+  `EVIDENCE_WRONG_TENANT` ("no organization attributable"); so is a bundle
+  whose disclosed organization contradicts its owner. A system caller sees
+  more, but accepts nothing more.
+- **Bundle verification.** A v2 bundle is checked against its request's
+  trace rebuilt from the canonical stores (`rebuildEvidenceBundleCurrentTrace`,
+  shared with the Evidence Service), never against the bundle's own content.
+  Failures keep their cause:
+
+  | Failure | Code |
+  | --- | --- |
+  | content, digest binding, source record or policy | `EVIDENCE_DIGEST_MISMATCH` |
+  | canonical trace cannot be rebuilt or read in the assessed scope | `EVIDENCE_SOURCE_UNAVAILABLE` |
+  | canonical records contradict a disclosed fact | `EVIDENCE_CONTRADICTORY` |
+  | canonical trace does not verify | `EVIDENCE_UNVERIFIED` |
+  | required field missing / version unsupported | `EVIDENCE_INCOMPLETE` / `EVIDENCE_VERSION_UNSUPPORTED` |
+
+  A bundle that cannot be verified is rejected and counts toward no
+  requirement: in `aoc.saf` its controls stay unresolved, not failed. Only an
+  integrity failure is reported as a digest mismatch.
 
 ## Manually supplied evidence (ASSURE-SEC-01C)
 

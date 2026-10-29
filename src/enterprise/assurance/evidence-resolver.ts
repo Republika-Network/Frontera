@@ -1,6 +1,9 @@
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import type { EvidenceStore } from '../evidence/evidence-store.js';
 import { verifyEvidenceBundle } from '../evidence/verifier.js';
+import { EVIDENCE_BUNDLE_SCHEMA_VERSION_V2 } from '../evidence/contracts.js';
+import { rebuildEvidenceBundleCurrentTrace, type EvidenceBundleCurrentTraceLookup } from '../evidence/bundle-current-trace.js';
+import type { AuthorityTraceSources } from '../evidence/trace-builder.js';
 import type { AgentPassportStore } from '../passport/passport-store.js';
 import { AssuranceError } from './errors.js';
 import type {
@@ -16,6 +19,7 @@ import type {
 } from './contracts.js';
 import { ASSURANCE_RESOLVER_VERSION } from './contracts.js';
 import { MANUAL_EVIDENCE_TYPES, asSuppliedManualReference, isHostVerified, manualMetricNameViolation } from './manual-evidence-trust.js';
+import { UNATTRIBUTED_ORGANIZATION, attributeEvidenceBundle, classifyBundleVerification } from './evidence-bundle-trust.js';
 
 /**
  * The Assurance Evidence Resolver (mission section 14): turns one evidence
@@ -41,6 +45,13 @@ export interface AssuranceRuntimeHealthSnapshot {
 export interface AssuranceEvidenceSources {
   readonly governanceStore?: GovernanceStore;
   readonly evidenceStore?: EvidenceStore;
+  /**
+   * ASSURE-SEC-01D: the read-only canonical sources a v2 bundle's current
+   * trace is rebuilt from -- the same ones the Evidence Service verifies
+   * against. Defaults to the Governance Store alone, as the Evidence Service
+   * does (every other stage `not-composed`).
+   */
+  readonly traceSources?: AuthorityTraceSources;
   readonly passportStore?: AgentPassportStore;
   readonly runtimeHealth?: () => Promise<AssuranceRuntimeHealthSnapshot>;
 }
@@ -104,7 +115,9 @@ export function createAssuranceEvidenceResolver(options: CreateEvidenceResolverO
             evidenceReferenceId: nextId('assurance-evidence'),
             evidenceType: 'governance_record',
             externalId: summary.evaluationId,
-            organizationId: summary.organizationId ?? scope.subject.organizationId,
+            // ASSURE-SEC-01D: the record's own organization. The query is bounded to the
+            // assessed organization; a record that names none is not attributed to it.
+            organizationId: summary.organizationId ?? UNATTRIBUTED_ORGANIZATION,
             subjectId: summary.actorId,
             digest: summary.aggregateDigest,
             occurredAt: summary.evaluatedAt,
@@ -138,6 +151,10 @@ export function createAssuranceEvidenceResolver(options: CreateEvidenceResolverO
     }
     try {
       const storeContext = { organizationId: scope.subject.organizationId, system: context.system };
+      // ASSURE-SEC-01D: canonical sources are re-read in the assessed organization's
+      // scope only -- a system caller does not widen what a bundle is checked against.
+      const assessedScope = { organizationId: scope.subject.organizationId, system: false } as const;
+      const traceSources = sources.traceSources ?? (sources.governanceStore !== undefined ? { governance: sources.governanceStore } : undefined);
       const candidates: Candidate[] = [];
       const seenBundleIds = new Set<string>();
 
@@ -147,13 +164,35 @@ export function createAssuranceEvidenceResolver(options: CreateEvidenceResolverO
         for (const record of records) {
           if (seenBundleIds.has(record.bundle.bundleId)) continue;
           seenBundleIds.add(record.bundle.bundleId);
-          const verification = verifyEvidenceBundle(record.bundle, { now });
+          // ASSURE-SEC-01D: verified as the Evidence Service verifies it -- v2 against
+          // the canonical trace rebuilt now, v1 against its source Governance Record.
+          let trace: EvidenceBundleCurrentTraceLookup | undefined;
+          let sourceRecord;
+          if (record.bundle.bundleVersion === EVIDENCE_BUNDLE_SCHEMA_VERSION_V2) {
+            trace = traceSources !== undefined ? await rebuildEvidenceBundleCurrentTrace(traceSources, assessedScope, record.bundle, now) : { status: 'read-failed' };
+            if (trace.status === 'rebuilt') sourceRecord = trace.record;
+          } else {
+            sourceRecord = (await sources.governanceStore?.getByEvaluationId(assessedScope, record.bundle.source.evaluationId).catch(() => null)) ?? undefined;
+          }
+          const verification = verifyEvidenceBundle(record.bundle, {
+            ...(sourceRecord !== undefined ? { record: sourceRecord } : {}),
+            now,
+            ...(trace?.status === 'rebuilt' && trace.currentTrace !== undefined ? { currentTrace: trace.currentTrace } : {}),
+          });
+          const rejection = classifyBundleVerification(verification, trace);
+          const attribution = attributeEvidenceBundle(record.organizationId, record.bundle.source.organizationId);
+          const gatheringRejections: AssuranceEvidenceRejectionCode[] = [...rejection.codes];
+          const gatheringDetails = rejection.detail !== undefined ? [rejection.detail] : [];
+          if (attribution.conflict === true) {
+            gatheringRejections.push('EVIDENCE_WRONG_TENANT');
+            gatheringDetails.push('The bundle\'s disclosed organization contradicts the owner its store recorded.');
+          }
           candidates.push({
             reference: {
               evidenceReferenceId: nextId('assurance-evidence'),
               evidenceType: 'evidence_bundle',
               externalId: record.bundle.bundleId,
-              organizationId: record.bundle.source.organizationId ?? scope.subject.organizationId,
+              organizationId: attribution.organizationId,
               ...(scope.subject.subjectType === 'agent' || scope.subject.subjectType === 'passport' ? { subjectId: scope.subject.subjectId } : {}),
               digest: record.bundle.integrity.bundleDigest,
               version: record.bundle.bundleVersion,
@@ -171,8 +210,8 @@ export function createAssuranceEvidenceResolver(options: CreateEvidenceResolverO
               },
               metadata: { state: record.state, evaluationId: record.bundle.source.evaluationId },
             },
-            gatheringRejections: verification.valid ? [] : ['EVIDENCE_DIGEST_MISMATCH'],
-            ...(verification.valid ? {} : { gatheringDetail: 'Evidence Bundle failed structural verification.' }),
+            gatheringRejections,
+            ...(gatheringDetails.length > 0 ? { gatheringDetail: gatheringDetails.join(' ') } : {}),
           });
         }
       }
@@ -398,8 +437,13 @@ export function createAssuranceEvidenceResolver(options: CreateEvidenceResolverO
           details.push(`Evidence type '${reference.evidenceType}' is not accepted by requirement '${requirement.requirementId}'.`);
         }
         if (reference.organizationId !== scope.subject.organizationId) {
+          // ASSURE-SEC-01D: never echo another organization's identifier.
           codes.push('EVIDENCE_WRONG_TENANT');
-          details.push(`Evidence is bound to organization '${reference.organizationId}', not '${scope.subject.organizationId}'.`);
+          details.push(
+            reference.organizationId === UNATTRIBUTED_ORGANIZATION
+              ? 'Evidence has no organization attributable from its canonical source.'
+              : 'Evidence belongs to a different organization than the assessment.',
+          );
         }
         if (requirement.mustReferenceSubject === true) {
           const boundToSubject = reference.subjectId === scope.subject.subjectId || (scope.subject.passportId !== undefined && reference.subjectId === scope.subject.passportId);
