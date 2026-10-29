@@ -310,26 +310,49 @@ export function pilotLimitationsExtract(content: CommercialReportDraft['content'
   return `# Limitations — ${content.reportId}\n\nExtracted from report.json \`limitations\`; report.json is authoritative. This file is not separately digested.\n\n${content.limitations.map((line) => `- ${line}`).join('\n')}\n`;
 }
 
-const VERIFICATION_INSTRUCTIONS = `# How to verify this report package
+const VERIFICATION_INSTRUCTIONS = `# How to read and verify this report package
 
 SYNTHETIC DRY RUN (ASSURE-PILOT-01). Every organization, system and piece of
 evidence in this package is fictional. This is not an audit and not a
 certification.
 
-- report.md: SHA-256 of its exact bytes (LF line endings) is \`markdownDigest\`. Copy it byte for byte; never re-save it.
-- report.json: SHA-256 of its canonical JSON (aoc.canonical-json.v1) is \`contentDigest\`. Whitespace does not matter; values do.
-- integrity-manifest.json: binds the assessment, the framework, \`contentDigest\` and \`markdownDigest\`; \`manifestDigest\` covers the rest of it.
-- release-record.json: the human approval of those three digests; \`releaseDigest\` covers the rest of it.
+## What each file is
+
+- report.md: the assessment, for people to read. It states the results and
+  does NOT state whether it was released.
+- report.json: the same content, structured. It is authoritative.
+- integrity-manifest.json: the digests of report.json and report.md, the
+  assessment and the framework.
+- release-record.json: the release. It records who approved this exact
+  report (by its digests), when, and what they acknowledged.
 - limitations.md: an extract of report.json \`limitations\`, not separately digested.
 - This file: informational, covered by no digest.
 
-Run: node scripts/assurance/verify-commercial-package.mjs <this directory>
+## Three different statements
 
-A successful verification shows that the files are mutually consistent and
-unchanged since the digests were computed. It does NOT show who produced them:
-the digests are not a signature, and anyone who edits a file and recomputes
-every digest produces a package that verifies. Confirm the digests with the
-issuer over an independent channel.
+1. Ready for release (in report.md): the report passed every release check.
+   That is preparation, not approval.
+2. Released (release-record.json): an authenticated approver at the issuer
+   approved these digests. The issuer keeps that approval in its release
+   custody. A report without a matching release record is NOT released.
+3. Authentic: shown only by the issuer confirming that this release record
+   matches its custody. These files alone cannot show it.
+
+## How to verify
+
+1. Run: node scripts/assurance/verify-commercial-package.mjs <this directory>
+   It checks that the files are unchanged and agree with each other: report.md
+   byte for byte (LF), report.json canonically, the manifest, and the release
+   record's digests.
+2. Ask the issuer to verify the package against its release custody, or
+   compare the release record and manifest with the issuer over a separate,
+   trusted channel.
+3. If the issuer cannot be reached, the package is consistent but its
+   approval is not corroborated. Do not treat it as authenticated.
+
+A digest is not a digital signature. Anyone who edits a file and recomputes
+every digest produces a package that verifies offline. Never re-save
+report.md in an editor, since a CRLF conversion changes its digest.
 `;
 
 /** Writes the generator's and the approval's own output -- nothing composed by hand -- into `dir`. */

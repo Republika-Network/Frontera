@@ -1,4 +1,5 @@
 import type { CommercialReportContent } from './commercial-report.js';
+import { readinessBanner } from './commercial-report-format.js';
 
 /**
  * Markdown rendering of the commercial report (ASSURE-REP-01). Pure and
@@ -37,10 +38,8 @@ function table(headers: readonly string[], rows: readonly (readonly (string | nu
 
 export function renderCommercialReportMarkdown(report: CommercialReportContent): string {
   const { cover, executiveSummary: summary, scope, methodology, results, integrity } = report;
-  const banner =
-    report.readiness.status === 'READY_FOR_RELEASE'
-      ? '> **READY FOR RELEASE** — not yet released. This document may be delivered only together with a release record whose digests match its manifest.'
-      : '> **DRAFT — NOT FOR DELIVERY.** One or more release checks failed; see “Release readiness”.';
+  // ASSURE-REL-01C: the wording follows the generator version the content was drafted with, so a v1 report re-renders to its original bytes.
+  const banner = readinessBanner(report.readiness.status, integrity.generatorVersion);
 
   const sections: string[] = [
     `# ${text(cover.title)}`,

@@ -1,0 +1,803 @@
+{
+  "schemaVersion": "rn.sv.commercial-report.v1",
+  "reportId": "rn-sv-report:assurance-assessment-1:v1.0",
+  "cover": {
+    "title": "Republika Sovereignty Assessment — Founding Assessment",
+    "service": "Republika Sovereignty Assessment",
+    "assessmentId": "assurance-assessment-1",
+    "organization": "Meridian Commons Cooperative (fictional)",
+    "system": "Harborline Member Services Platform (fictional)",
+    "framework": {
+      "id": "rn.sv",
+      "version": "0.1.0",
+      "name": "Republika Sovereignty Assessment"
+    },
+    "evidenceCutoffAt": "2026-05-31T00:00:00.000Z",
+    "issuedOn": "2026-06-01",
+    "confidentiality": "CONFIDENTIAL",
+    "reportVersion": "1.0"
+  },
+  "readiness": {
+    "status": "READY_FOR_RELEASE",
+    "checks": [
+      {
+        "check": "scope_declared",
+        "passed": true,
+        "detail": "Organization, system, purpose, in-scope items, exclusions, dependencies and access limitations are declared and cleared for disclosure."
+      },
+      {
+        "check": "assessment_completed",
+        "passed": true,
+        "detail": "The assessment is completed and current."
+      },
+      {
+        "check": "framework_exact",
+        "passed": true,
+        "detail": "rn.sv@0.1.0, definition digest matches."
+      },
+      {
+        "check": "assessment_verified",
+        "passed": true,
+        "detail": "Assessment integrity and structure verify."
+      },
+      {
+        "check": "finding_histories_consistent",
+        "passed": true,
+        "detail": "Every finding has a complete, intact event history."
+      },
+      {
+        "check": "control_coverage",
+        "passed": true,
+        "detail": "All ten rn.sv@0.1.0 controls were evaluated."
+      },
+      {
+        "check": "human_review_authenticated",
+        "passed": true,
+        "detail": "Every control was concluded by an authenticated reviewer."
+      },
+      {
+        "check": "rejected_evidence_not_presented_as_verified",
+        "passed": true,
+        "detail": "No rejected or supplier-provided reference is presented as Host-verified."
+      },
+      {
+        "check": "disclosure_policy",
+        "passed": true,
+        "detail": "Only allowlisted fields are disclosed; all declared text was cleared."
+      }
+    ]
+  },
+  "executiveSummary": {
+    "assessed": "Harborline Member Services Platform (fictional), operated by Meridian Commons Cooperative (fictional), assessed against the ten controls of Republika Sovereignty Assessment (rn.sv@0.1.0) with evidence up to 2026-05-31T00:00:00.000Z.",
+    "purpose": "Founding assessment of the platform’s digital-sovereignty posture before onboarding new member organizations.",
+    "demonstrated": [
+      "SV-01 Actor identity and authority",
+      "SV-02 Consent and revocation",
+      "SV-04 Evidence integrity",
+      "SV-05 Execution traceability",
+      "SV-08 Effective revocation of authority"
+    ],
+    "partiallyDemonstrated": [
+      "SV-03 Policy compliance",
+      "SV-10 Governance and accountability"
+    ],
+    "observedFailures": [
+      "SV-06 Isolation between organizations"
+    ],
+    "insufficientEvidence": [
+      "SV-07 Minimal disclosure",
+      "SV-09 Remediation and revalidation"
+    ],
+    "pendingReview": [],
+    "principalRisks": [
+      "SV-03: Decisions taken outside the declared policy.",
+      "SV-06: One organization reading or altering another organization’s data.",
+      "SV-10: No one accountable for sovereignty decisions."
+    ],
+    "priorityFindings": [
+      "F-01 (critical) — SV-06 Isolation between organizations"
+    ],
+    "nextActions": [
+      "F-01: corrective action for SV-06 (Immediate priority).",
+      "F-02: corrective action for SV-03 (Normal priority).",
+      "F-03: provide evidence for SV-07 (Low priority).",
+      "F-04: provide evidence for SV-09 (Low priority).",
+      "F-05: corrective action for SV-10 (Low priority)."
+    ]
+  },
+  "scope": {
+    "organization": "Meridian Commons Cooperative (fictional)",
+    "system": "Harborline Member Services Platform (fictional)",
+    "systemDescription": "A synthetic multi-tenant platform through which member organizations manage consent, service requests and payouts. Invented for this example.",
+    "subjectType": "system",
+    "inScope": [
+      "Member consent and revocation service",
+      "Request decision and execution pipeline",
+      "Tenant data partitioning",
+      "Partner export interface"
+    ],
+    "exclusions": [
+      "Payment processor internals (third party)",
+      "Corporate IT and end-user devices",
+      "Disaster recovery site"
+    ],
+    "dependencies": [
+      "Managed identity provider operated by a third party"
+    ],
+    "accessLimitations": [
+      "Evidence was provided by the cooperative; no direct access to production systems was granted."
+    ],
+    "periodFrom": "Not specified (evidence up to the cutoff was considered)",
+    "periodTo": "2026-05-31T00:00:00.000Z",
+    "evidenceCutoffAt": "2026-05-31T00:00:00.000Z",
+    "evidenceSources": [
+      "external_artifact_reference (10 reference(s))"
+    ],
+    "activitiesNotPerformed": [
+      "Active or penetration testing of the assessed systems (rn.sv@0.1.0 performs no active testing).",
+      "Source code review.",
+      "On-site visits.",
+      "Interviews: none are recorded in the assessment, and none are represented in this report.",
+      "Independent collection of evidence from the assessed systems: evidence was supplied by the assessed organization."
+    ]
+  },
+  "methodology": {
+    "steps": [
+      "Scope declared and fixed in the assessment record before evaluation (immutable scope).",
+      "The ten rn.sv@0.1.0 controls identified for the scope.",
+      "Evidence references collected; each manually supplied reference is bound to the requirement it was offered for.",
+      "Structural and provenance checks available to the Host applied: binding, tenant attribution, digests where present. Supplier claims of verification are recorded as claims only.",
+      "Each control reviewed by an authenticated reviewer holding the required role; a definitive conclusion must cite evidence accepted for that control.",
+      "Controls evaluated and scored under the framework methodology.",
+      "Findings derived and classified by rule-based severity.",
+      "Assessment integrity and finding histories verified.",
+      "This report generated deterministically from the verified assessment.",
+      "Release reviewed and approved by an authenticated human approver before delivery."
+    ],
+    "reviewerRole": "assure.reviewer",
+    "scoring": "rn.sv.scoring@0.1.0: pass = 1, partial = 0.5, fail = 0; unknown and pending reviews score 0 and stay in the denominator; domain-weighted; a failed SV-06 or SV-08 marks its domain unhealthy."
+  },
+  "controls": [
+    {
+      "controlId": "SV-01",
+      "title": "Actor identity and authority",
+      "domain": "Authority & Consent",
+      "objective": "Demonstrate that privileged operations are performed only by identified actors with authority in force.",
+      "status": "pass",
+      "statusLabel": "PASS",
+      "conclusion": "The reviewer concluded the control's criteria were met over the reviewed sample: Every sampled privileged action maps to a unique identity holding authority in force at the time.",
+      "evidence": [
+        "E-08"
+      ],
+      "findings": [],
+      "limitations": [
+        "Sample-based: conclusions cover the sampled actions only.",
+        "Legitimate service accounts can look like shared accounts without their inventory."
+      ],
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    },
+    {
+      "controlId": "SV-02",
+      "title": "Consent and revocation",
+      "domain": "Authority & Consent",
+      "objective": "Demonstrate that data subjects’ consent decisions are recorded and honored, including withdrawal.",
+      "status": "pass",
+      "statusLabel": "PASS",
+      "conclusion": "The reviewer concluded the control's criteria were met over the reviewed sample: Every sampled operation relied on consent in force and no operation followed a sampled revocation.",
+      "evidence": [
+        "E-07"
+      ],
+      "findings": [],
+      "limitations": [
+        "Consent captured outside the system may be invisible to the sample."
+      ],
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    },
+    {
+      "controlId": "SV-03",
+      "title": "Policy compliance",
+      "domain": "Policy & Governance",
+      "objective": "Demonstrate that the declared policy is the policy actually applied.",
+      "status": "partial",
+      "statusLabel": "PARTIAL",
+      "conclusion": "The reviewer concluded the criteria were met only in part over the reviewed sample.",
+      "evidence": [
+        "E-03"
+      ],
+      "findings": [
+        "F-02"
+      ],
+      "limitations": [
+        "Exceptions approved outside the tooling may appear as inconsistencies."
+      ],
+      "revalidation": "A new decision sample under the corrected policy version.",
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    },
+    {
+      "controlId": "SV-04",
+      "title": "Evidence integrity",
+      "domain": "Evidence & Traceability",
+      "objective": "Demonstrate that recorded evidence cannot be altered without detection.",
+      "status": "pass",
+      "statusLabel": "PASS",
+      "conclusion": "The reviewer concluded the control's criteria were met over the reviewed sample: An integrity mechanism covers the critical records and verification succeeds over the sample.",
+      "evidence": [
+        "E-06",
+        "E-09"
+      ],
+      "findings": [],
+      "limitations": [
+        "Integrity is not truthfulness: a record that was false when written verifies as intact.",
+        "Without signatures, a privileged writer can recompute digests consistently."
+      ],
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    },
+    {
+      "controlId": "SV-05",
+      "title": "Execution traceability",
+      "domain": "Evidence & Traceability",
+      "objective": "Demonstrate that what was authorized can be connected to what actually happened.",
+      "status": "pass",
+      "statusLabel": "PASS",
+      "conclusion": "The reviewer concluded the control's criteria were met over the reviewed sample: Each sampled operation is reconstructable from request to observed outcome.",
+      "evidence": [
+        "E-05"
+      ],
+      "findings": [],
+      "limitations": [
+        "Relies on the customer’s logs; log completeness is not independently established."
+      ],
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    },
+    {
+      "controlId": "SV-06",
+      "title": "Isolation between organizations",
+      "domain": "Data Boundaries",
+      "objective": "Demonstrate that one organization cannot read or alter another organization’s data.",
+      "status": "fail",
+      "statusLabel": "FAIL",
+      "conclusion": "The reviewer observed the control not satisfied: A cross-organization read or write succeeded, or an in-scope path does not enforce the organization scope.",
+      "evidence": [
+        "E-10"
+      ],
+      "findings": [
+        "F-01"
+      ],
+      "limitations": [
+        "This framework performs no active testing against customer systems; active testing requires separate written authorization and is out of scope for 0.1.0.",
+        "Legitimate global administrative roles cross organizations by design."
+      ],
+      "revalidation": "Re-execution of the isolation tests after the correction, witnessed or recorded.",
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    },
+    {
+      "controlId": "SV-07",
+      "title": "Minimal disclosure",
+      "domain": "Data Boundaries",
+      "objective": "Demonstrate that the platform discloses no more than each audience requires.",
+      "status": "unknown",
+      "statusLabel": "UNKNOWN",
+      "conclusion": "Not determined: the evidence available did not allow a defensible conclusion. This is an evidence gap, not an observed failure. Typical cause: No field inventory or samples were provided.",
+      "evidence": [],
+      "findings": [
+        "F-03"
+      ],
+      "limitations": [
+        "Field-level review only; no automated detection of personal data by value."
+      ],
+      "revalidation": "A new export sample after the correction.",
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    },
+    {
+      "controlId": "SV-08",
+      "title": "Effective revocation of authority",
+      "domain": "Authority & Consent",
+      "objective": "Demonstrate that revocation is effective in practice, not only recorded.",
+      "status": "pass",
+      "statusLabel": "PASS",
+      "conclusion": "The reviewer concluded the control's criteria were met over the reviewed sample: The first attempt after revocation was denied within the documented bound.",
+      "evidence": [
+        "E-04"
+      ],
+      "findings": [],
+      "limitations": [
+        "This framework performs no active testing against customer systems; the test is executed by the customer in staging.",
+        "Caches with a documented time-to-live can delay denial legitimately."
+      ],
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    },
+    {
+      "controlId": "SV-09",
+      "title": "Remediation and revalidation",
+      "domain": "Remediation",
+      "objective": "Demonstrate that the organization corrects issues and confirms the corrections.",
+      "status": "unknown",
+      "statusLabel": "UNKNOWN",
+      "conclusion": "Not determined: the evidence available did not allow a defensible conclusion. This is an evidence gap, not an observed failure. Typical cause: No tracking records were provided.",
+      "evidence": [],
+      "findings": [
+        "F-04"
+      ],
+      "limitations": [
+        "On a first assessment there may be no prior findings to sample."
+      ],
+      "revalidation": "Review of closures made after the correction date.",
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    },
+    {
+      "controlId": "SV-10",
+      "title": "Governance and accountability",
+      "domain": "Policy & Governance",
+      "objective": "Demonstrate that someone is accountable for sovereignty decisions and that the posture is reviewed.",
+      "status": "partial",
+      "statusLabel": "PARTIAL",
+      "conclusion": "The reviewer concluded the criteria were met only in part over the reviewed sample.",
+      "evidence": [
+        "E-01"
+      ],
+      "findings": [
+        "F-05"
+      ],
+      "limitations": [
+        "Documentary: the existence of a process does not prove its effectiveness."
+      ],
+      "revalidation": "Evidence of the next scheduled review after the correction.",
+      "review": {
+        "authenticated": true,
+        "reviewers": [
+          "reviewer-1"
+        ],
+        "reviewedOn": "2026-06-01"
+      }
+    }
+  ],
+  "results": {
+    "normalizedScore": 60,
+    "methodology": "rn.sv.scoring@0.1.0",
+    "interpretation": "The score summarizes this framework’s methodology over the declared scope. A high score is not demonstrated sovereignty, and an UNKNOWN control lowers the score without being a failure. Read every control result and its limitations.",
+    "domains": [
+      {
+        "domain": "Authority & Consent",
+        "status": "healthy",
+        "normalizedScore": 100
+      },
+      {
+        "domain": "Data Boundaries",
+        "status": "unhealthy",
+        "normalizedScore": 0
+      },
+      {
+        "domain": "Evidence & Traceability",
+        "status": "healthy",
+        "normalizedScore": 100
+      },
+      {
+        "domain": "Policy & Governance",
+        "status": "degraded",
+        "normalizedScore": 50
+      },
+      {
+        "domain": "Remediation",
+        "status": "degraded",
+        "normalizedScore": 0
+      }
+    ],
+    "controlsEvaluated": 10,
+    "counts": {
+      "pass": 5,
+      "partial": 2,
+      "fail": 1,
+      "unknown": 2,
+      "manual_review_required": 0,
+      "not_applicable": 0
+    },
+    "blockingRisks": [
+      "SV-06 failed: the Data Boundaries domain is marked unhealthy regardless of its numeric score."
+    ],
+    "openFindings": 5,
+    "findingsRecordedAfterCompletion": 0
+  },
+  "findings": [
+    {
+      "label": "F-01",
+      "findingId": "assurance-finding-49",
+      "controlId": "SV-06",
+      "controlTitle": "Isolation between organizations",
+      "severity": "critical",
+      "findingType": "control_failure",
+      "status": "open",
+      "description": "The reviewer observed the control not satisfied: A cross-organization read or write succeeded, or an in-scope path does not enforce the organization scope.",
+      "evidence": [
+        "E-10"
+      ],
+      "risk": "One organization reading or altering another organization’s data.",
+      "remediationType": "Corrective action",
+      "recommendation": "Enforce the tenant scope on every read and write path and cover it with automated isolation tests.",
+      "closureCriterion": "Re-execution of the isolation tests after the correction, witnessed or recorded.",
+      "priority": "Immediate"
+    },
+    {
+      "label": "F-02",
+      "findingId": "assurance-finding-48",
+      "controlId": "SV-03",
+      "controlTitle": "Policy compliance",
+      "severity": "medium",
+      "findingType": "evidence_gap",
+      "status": "open",
+      "description": "The reviewer concluded the criteria were met only in part over the reviewed sample.",
+      "evidence": [
+        "E-03"
+      ],
+      "risk": "Decisions taken outside the declared policy.",
+      "remediationType": "Corrective action",
+      "recommendation": "Version the policy, record which version each decision used, and route exceptions through an attributable approval.",
+      "closureCriterion": "A new decision sample under the corrected policy version.",
+      "priority": "Normal"
+    },
+    {
+      "label": "F-03",
+      "findingId": "assurance-finding-50",
+      "controlId": "SV-07",
+      "controlTitle": "Minimal disclosure",
+      "severity": "low",
+      "findingType": "evidence_gap",
+      "status": "open",
+      "description": "Not determined: the evidence available did not allow a defensible conclusion. This is an evidence gap, not an observed failure. Typical cause: No field inventory or samples were provided.",
+      "evidence": [],
+      "remediationType": "Provide evidence",
+      "recommendation": "Provide the evidence the control requires so it can be concluded. If a gap is then confirmed: Define per-audience disclosure profiles and strip every field an audience does not need.",
+      "closureCriterion": "A new export sample after the correction.",
+      "priority": "Low"
+    },
+    {
+      "label": "F-04",
+      "findingId": "assurance-finding-51",
+      "controlId": "SV-09",
+      "controlTitle": "Remediation and revalidation",
+      "severity": "low",
+      "findingType": "evidence_gap",
+      "status": "open",
+      "description": "Not determined: the evidence available did not allow a defensible conclusion. This is an evidence gap, not an observed failure. Typical cause: No tracking records were provided.",
+      "evidence": [],
+      "remediationType": "Provide evidence",
+      "recommendation": "Provide the evidence the control requires so it can be concluded. If a gap is then confirmed: Track findings to closure with evidence, and close only after a later check confirms the fix.",
+      "closureCriterion": "Review of closures made after the correction date.",
+      "priority": "Low"
+    },
+    {
+      "label": "F-05",
+      "findingId": "assurance-finding-52",
+      "controlId": "SV-10",
+      "controlTitle": "Governance and accountability",
+      "severity": "low",
+      "findingType": "evidence_gap",
+      "status": "open",
+      "description": "The reviewer concluded the criteria were met only in part over the reviewed sample.",
+      "evidence": [
+        "E-01"
+      ],
+      "risk": "No one accountable for sovereignty decisions.",
+      "remediationType": "Corrective action",
+      "recommendation": "Name accountable owners, document responsibilities, and review the sovereignty posture on a fixed cadence.",
+      "closureCriterion": "Evidence of the next scheduled review after the correction.",
+      "priority": "Low"
+    }
+  ],
+  "remediationRoadmap": {
+    "items": [
+      {
+        "order": 1,
+        "finding": "F-01",
+        "controlId": "SV-06",
+        "severity": "critical",
+        "remediationType": "Corrective action",
+        "priority": "Immediate",
+        "dependencies": "None identified by the assessment",
+        "revalidation": "Re-execution of the isolation tests after the correction, witnessed or recorded.",
+        "owner": "To be agreed with customer",
+        "targetDate": "To be agreed with customer",
+        "source": "engine-generated"
+      },
+      {
+        "order": 2,
+        "finding": "F-02",
+        "controlId": "SV-03",
+        "severity": "medium",
+        "remediationType": "Corrective action",
+        "priority": "Normal",
+        "dependencies": "None identified by the assessment",
+        "revalidation": "A new decision sample under the corrected policy version.",
+        "owner": "To be agreed with customer",
+        "targetDate": "To be agreed with customer",
+        "source": "engine-generated"
+      },
+      {
+        "order": 3,
+        "finding": "F-03",
+        "controlId": "SV-07",
+        "severity": "low",
+        "remediationType": "Provide evidence",
+        "priority": "Low",
+        "dependencies": "None identified by the assessment",
+        "revalidation": "A new export sample after the correction.",
+        "owner": "To be agreed with customer",
+        "targetDate": "To be agreed with customer",
+        "source": "engine-generated"
+      },
+      {
+        "order": 4,
+        "finding": "F-04",
+        "controlId": "SV-09",
+        "severity": "low",
+        "remediationType": "Provide evidence",
+        "priority": "Low",
+        "dependencies": "None identified by the assessment",
+        "revalidation": "Review of closures made after the correction date.",
+        "owner": "To be agreed with customer",
+        "targetDate": "To be agreed with customer",
+        "source": "engine-generated"
+      },
+      {
+        "order": 5,
+        "finding": "F-05",
+        "controlId": "SV-10",
+        "severity": "low",
+        "remediationType": "Corrective action",
+        "priority": "Low",
+        "dependencies": "None identified by the assessment",
+        "revalidation": "Evidence of the next scheduled review after the correction.",
+        "owner": "To be agreed with customer",
+        "targetDate": "To be agreed with customer",
+        "source": "engine-generated"
+      }
+    ],
+    "humanProposals": "Human-proposed actions: none. Every item above is derived by the engine from a finding; any proposal beyond them requires separate human approval and is not part of this report."
+  },
+  "evidenceRegister": [
+    {
+      "label": "E-01",
+      "controls": [
+        "SV-10"
+      ],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "accepted",
+      "rejectionCodes": [],
+      "verification": "Supplier-provided; not verified by the Host",
+      "relevantDate": "2026-05-20",
+      "digest": "sha256:179355062ad5d2a3394d87152834c527ba4bc400bc318e3b682052d11b041762",
+      "authenticityLimitation": "Authenticity not established: the digest identifies the referenced bytes, not their author or their truth."
+    },
+    {
+      "label": "E-02",
+      "controls": [],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "rejected",
+      "rejectionCodes": [
+        "EVIDENCE_WRONG_TENANT"
+      ],
+      "verification": "Supplier-provided; not verified by the Host",
+      "relevantDate": "Withheld (rejected reference)",
+      "authenticityLimitation": "Rejected: it supports no conclusion in this report."
+    },
+    {
+      "label": "E-03",
+      "controls": [
+        "SV-03"
+      ],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "accepted",
+      "rejectionCodes": [],
+      "verification": "Supplier-provided; not verified by the Host",
+      "relevantDate": "2026-05-20",
+      "digest": "sha256:46be90290189e99519cba5448d8b5561545bf432a9666d0bb43fb2bc050de58f",
+      "authenticityLimitation": "Authenticity not established: the digest identifies the referenced bytes, not their author or their truth."
+    },
+    {
+      "label": "E-04",
+      "controls": [
+        "SV-08"
+      ],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "accepted",
+      "rejectionCodes": [],
+      "verification": "Supplier-provided; not verified by the Host",
+      "relevantDate": "2026-05-20",
+      "digest": "sha256:5cf9cc62ac6522b52746b98bcc123747054cf650a2d87c5f241e8aeb7c6ab68b",
+      "authenticityLimitation": "Authenticity not established: the digest identifies the referenced bytes, not their author or their truth."
+    },
+    {
+      "label": "E-05",
+      "controls": [
+        "SV-05"
+      ],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "accepted",
+      "rejectionCodes": [],
+      "verification": "Supplier-provided; not verified by the Host",
+      "relevantDate": "2026-05-20",
+      "digest": "sha256:e058077adddb1a7caf61517c5cfd4e4a097ca3063fd9c43fde80bb08707ed823",
+      "authenticityLimitation": "Authenticity not established: the digest identifies the referenced bytes, not their author or their truth."
+    },
+    {
+      "label": "E-06",
+      "controls": [
+        "SV-04"
+      ],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "accepted",
+      "rejectionCodes": [],
+      "verification": "Supplier-provided; the supplier claims verification (claim only, not verified by the Host)",
+      "relevantDate": "2026-05-20",
+      "digest": "sha256:e764e8c92331dfcc77707f336a9b0f3d21e70b6a241d1be66b6f6eb914492784",
+      "authenticityLimitation": "Authenticity not established: the digest identifies the referenced bytes, not their author or their truth."
+    },
+    {
+      "label": "E-07",
+      "controls": [
+        "SV-02"
+      ],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "accepted",
+      "rejectionCodes": [],
+      "verification": "Supplier-provided; not verified by the Host",
+      "relevantDate": "2026-05-20",
+      "digest": "sha256:ebd7362476b30cafd86d505a4b0c2e652c1c5741d321ff1e3e74bf1b091d5bce",
+      "authenticityLimitation": "Authenticity not established: the digest identifies the referenced bytes, not their author or their truth."
+    },
+    {
+      "label": "E-08",
+      "controls": [
+        "SV-01"
+      ],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "accepted",
+      "rejectionCodes": [],
+      "verification": "Supplier-provided; not verified by the Host",
+      "relevantDate": "2026-05-20",
+      "digest": "sha256:f50f013cc696b11995509438358760a0c78775a196e9910501a034e61109e8e7",
+      "authenticityLimitation": "Authenticity not established: the digest identifies the referenced bytes, not their author or their truth."
+    },
+    {
+      "label": "E-09",
+      "controls": [
+        "SV-04"
+      ],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "accepted",
+      "rejectionCodes": [],
+      "verification": "Supplier-provided; not verified by the Host",
+      "relevantDate": "2026-05-20",
+      "digest": "sha256:fb6894abe305cefbcf8bff6bc85a1ee4a1363234d58f5920270398f586a17737",
+      "authenticityLimitation": "Authenticity not established: the digest identifies the referenced bytes, not their author or their truth."
+    },
+    {
+      "label": "E-10",
+      "controls": [
+        "SV-06"
+      ],
+      "evidenceType": "external_artifact_reference",
+      "acceptance": "accepted",
+      "rejectionCodes": [],
+      "verification": "Supplier-provided; not verified by the Host",
+      "relevantDate": "2026-05-20",
+      "digest": "sha256:fd11176ab4937a5ce37302c13d0d4ac3e9ccaaa7b28c8967e59fe4263f574141",
+      "authenticityLimitation": "Authenticity not established: the digest identifies the referenced bytes, not their author or their truth."
+    }
+  ],
+  "limitations": [
+    "This is a limited-scope assessment of the declared scope only; conditions outside it were not examined.",
+    "Results are point-in-time, as of the evidence cutoff, and do not describe the system before or after it.",
+    "Conclusions depend on the evidence made available; most evidence was supplied by the assessed organization and was not independently authenticated.",
+    "Every rn.sv control is concluded by an authenticated human reviewer; the conclusions involve professional judgement.",
+    "This report is not a certification, accreditation, attestation of compliance, or seal of any kind.",
+    "This report is not a legal opinion and does not state compliance with any law or regulation.",
+    "This report does not establish the absence of vulnerabilities, and no security testing was performed against the assessed systems.",
+    "The score is specific to the rn.sv@0.1.0 framework, its methodology and the declared scope; it is not a general trust or security score.",
+    "Document digests show that this report has not changed since it was generated; they do not show that the underlying evidence is true, and they are not a digital signature."
+  ],
+  "revalidation": {
+    "findingsToRevalidate": [
+      "F-01",
+      "F-02",
+      "F-03",
+      "F-04",
+      "F-05"
+    ],
+    "controlsToReevaluate": [
+      "SV-03",
+      "SV-06",
+      "SV-07",
+      "SV-09",
+      "SV-10"
+    ],
+    "evidenceRequired": [
+      "SV-03: The policy in force with its version history, plus a sample of decisions taken under it.",
+      "SV-06: Tenant-isolation design documentation and the output of isolation tests executed by the customer, witnessed or recorded.",
+      "SV-07: A field inventory for the in-scope exports and APIs, plus sample exports or responses.",
+      "SV-09: The finding-tracking process and closure evidence for previously identified issues.",
+      "SV-10: Named accountable owners, a responsibility matrix, review cadence records, and the escalation path."
+    ],
+    "invalidatingChanges": [
+      "Changes to the in-scope systems, their architecture or their tenancy model.",
+      "Changes to the authority, consent or revocation mechanisms.",
+      "A new policy version or a change in how decisions record the policy applied.",
+      "Changes to logging, record integrity or disclosure profiles.",
+      "Material incidents affecting the in-scope systems after the evidence cutoff."
+    ],
+    "linkage": "A revalidation is a new assessment that references assurance-assessment-1; this assessment and this report are never modified.",
+    "monitoring": "Not included. This report describes one point-in-time assessment; continuous monitoring is a separate service."
+  },
+  "integrity": {
+    "assessmentId": "assurance-assessment-1",
+    "assessmentDigest": "sha256:7346ed20936b70d1f6516772308c4907617661a0ef9cb6f8b7e63a2cc3899127",
+    "frameworkId": "rn.sv",
+    "frameworkVersion": "0.1.0",
+    "frameworkDigest": "sha256:e71fafe1a10af95514823e35d43138b1b93cdb72e37765200447a37748c13a58",
+    "generatorVersion": "aoc.assurance.commercial-report.v1",
+    "issuedOn": "2026-06-01",
+    "evidenceCutoffAt": "2026-05-31T00:00:00.000Z",
+    "reviewers": [
+      "reviewer-1"
+    ],
+    "commercialUse": {
+      "frameworkStatus": "restricted",
+      "statement": "The framework definition records commercial use as restricted pending controlled review. Release of this report requires an authenticated human approver to acknowledge that restriction and act as that review; the release record states whether this happened."
+    },
+    "release": "Not released by this document. Release is a separate record that binds an authenticated human approval to this report’s digests.",
+    "limitation": "The digests in the manifest show integrity only. They are not a digital signature, do not provide non-repudiation, and do not authenticate the evidence."
+  }
+}

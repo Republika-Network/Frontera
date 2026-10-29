@@ -45,6 +45,15 @@ const option = (name) => {
 /** The published rn.sv@0.1.0 framework digest, pinned as the verifier's own expectation. */
 const RN_SV_GOLDEN_DIGEST = 'sha256:e71fafe1a10af95514823e35d43138b1b93cdb72e37765200447a37748c13a58';
 const RELEASE_ROLE = 'assure.report-release';
+/**
+ * Report formats this verifier knows (ASSURE-REL-01C). v1 reports said "not yet
+ * released" in their READY banner and "Not released by this document" in their
+ * integrity section, which stays true of their bytes after a release; they are
+ * verified unchanged. v2 reports make no claim about their own release.
+ */
+const GENERATOR_V1 = 'aoc.assurance.commercial-report.v1';
+const GENERATOR_V2 = 'aoc.assurance.commercial-report.v2';
+const KNOWN_GENERATORS = [GENERATOR_V1, GENERATOR_V2];
 const REQUIRED = ['report.md', 'report.json', 'integrity-manifest.json', 'release-record.json'];
 const INFORMATIONAL = ['verification-instructions.md', 'limitations.md'];
 
@@ -154,6 +163,16 @@ if (content && manifest && release) {
   record('reportConsistency', 'report.md carries the reportId and assessmentId', markdown.includes(escapeMarkdown(content.reportId)) && markdown.includes(escapeMarkdown(content.cover?.assessmentId)));
   record('reportConsistency', 'classification shown', ['CONFIDENTIAL', 'RESTRICTED'].includes(content.cover?.confidentiality) && markdown.includes(`| Classification | ${content.cover?.confidentiality} |`), content.cover?.confidentiality);
   record('reportConsistency', 'not marked DRAFT', !markdown.includes('DRAFT — NOT FOR DELIVERY'));
+  const generator = content.integrity?.generatorVersion;
+  record('reportConsistency', 'known report format', KNOWN_GENERATORS.includes(generator), generator);
+  if (generator === GENERATOR_V2) {
+    // A v2 report never states whether it was released: the release record and the issuer's custody do.
+    record('reportConsistency', 'report makes no claim about its own release (v2)', !/not yet released|Not released by this document/.test(markdown) && !/not yet released|Not released by this document/.test(JSON.stringify(content.integrity ?? {})));
+  }
+  result.reportFormat =
+    generator === GENERATOR_V1
+      ? `${GENERATOR_V1} (historical): its text says "not yet released" / "Not released by this document"; that wording predates ASSURE-REL-01C and is left as approved. Release status comes from release-record.json and the issuer's custody, never from the report text.`
+      : `${String(generator)}: the report states no release status of its own; release status comes from release-record.json and the issuer's custody.`;
   if (present.includes('limitations.md')) {
     record('reportConsistency', 'limitations.md equals a re-extraction from report.json', bytes('limitations.md').toString('utf8') === limitationsExtract(content));
   }
