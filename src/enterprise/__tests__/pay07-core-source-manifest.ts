@@ -175,6 +175,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       providers: 'non-payment providers',
       'reference-executor': 'G-02C1A reference independent executor (verification only): a separate process with its own closed trust configuration; imports no Host module and is composed by none',
       registry: 'Host adapter registry',
+      'sovereign-status-history': 'FV-P4C-2A durable SQLite store for the receiver-side document freshness history (status high-water marks); a library store composed by no Host, route or qualified run; not on the governed payment path',
       telemetry: 'Host telemetry',
       'tokenization-governance': 'outside the governed payment path',
       'transfer-governance': 'outside the governed payment path',

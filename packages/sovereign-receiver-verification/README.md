@@ -350,5 +350,7 @@ Checks, in order, and the first that fails decides:
 than one it saw is detected. A revocation that never reached it is not, and nothing here learns of
 statuses from other receivers. The in-memory store protects one process while it lives: a restart, a
 second instance or a worker starts uninitialized and refuses. It is not persistent rollback protection,
-and a rollback of the whole store cannot be detected. Persistent, anchored storage is FV-P4C-2. Evidence
+and a rollback of the whole store cannot be detected. A durable SQLite store for Node hosts lives outside this
+portable package, in Frontera's `src/enterprise/sovereign-status-history/` (FV-P4C-2A). It survives restarts and
+serializes connections and processes on one file, but it is still not anchored against a whole-file rollback. Evidence
 fields for ASSURE: `docs/integration/FV_DOCUMENT_FRESHNESS_HANDOFF.md`.
