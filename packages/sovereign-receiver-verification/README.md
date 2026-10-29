@@ -222,3 +222,49 @@ become `ALLOWED` here. **Evaluation is not authorization**: a decision reports `
 `revocation` and `freshness` as `not_evaluated` and `execution` as `not_performed`. It carries no
 capability, no document content and no secret. Handoff for later signed evidence:
 `docs/integration/FV_DOCUMENT_POLICY_DECISION_HANDOFF.md`.
+
+## Signed sovereign status (FV-P4B)
+
+`verifySovereignStatus` verifies one `soberania.sovereign-status/1` artifact: a statement, signed by the
+asset's registrant, that the asset is `active` or `withdrawn`, which manifest and which terms are
+current, and where the statement sits in the registrant's sequence. The profile is Soberanía's
+`docs/protocol/profiles/SOVEREIGN_STATUS_PROFILE.md` (PROPOSED).
+
+```ts
+import { verifySovereignStatus } from '@aoc-enterprise/sovereign-receiver-verification';
+
+const status = await verifySovereignStatus(signedStatusText, {   // aoc-canonical-json/1 text
+  verificationKeyResolver,                 // the same trusted resolver RSDK-01 uses
+  expectedSovereignAssetId,                // from the host's own verification of the asset
+  expectedRegistrant,                      // RSDK-01 currentIssuer
+  expectedManifestDigest,                  // the verified current manifest's digest
+  expectedTerms: { claimId, claimDigest }, // optional: the terms the host is about to rely on
+  evaluationTime,                          // canonical UTC timestamp from the host's trusted clock
+});
+```
+
+`authentic_authorized` means exactly this, and nothing more:
+
+1. **Form.** Exact `schemaVersion` and `purpose`, exact keys at every level, typed values, a safe-integer
+   `sequence` ≥ 1 with `previousStatusDigest` `null` exactly at 1, `withdrawn` only with `currentTerms:
+   null`, and the text is the one `aoc-canonical-json/1` serialization (no duplicate keys, whitespace or
+   alternative spellings). Protocol's signature carries no domain prefix, so `schemaVersion`, `purpose`
+   and the closed schema are what keep a status from being read as a manifest or a claim.
+2. **Integrity.** `verifySovereignSignature` (rc.3) recomputes the payload hash and checks the Ed25519
+   signature. `statusDigest` is that hash.
+3. **Authority.** The status issuer is `expectedRegistrant`, and the resolver, asked once and only for
+   that registrant, binds the signing key with the same invariants as Protocol's SOBE-SEC-01 issuer
+   binding. One deliberate difference: a descriptor carrying `publicKeyJwk` is refused, because
+   Protocol's JWK comparison is not public. There is no delegation and no key rotation.
+4. **Binding.** The asset and the manifest digest, and the terms when `expectedTerms` is given, equal the
+   host's expected values. A status naming no current terms does not match expected terms.
+5. **Window.** `issuedAt ≤ evaluationTime < validUntil`, exactly to the nanosecond, with no grace, and the
+   window is at most seven days. That bound limits the artifact; it is not a freshness policy.
+
+**A verified status may already be stale.** Without a trusted history the verifier cannot know whether a
+newer status revoked or superseded the one presented, so a correctly signed status keeps verifying until
+its `validUntil`. Every result reports `freshness` and `revocationCurrentness` as `not_evaluated`,
+`authorization` as `not_evaluated` and `execution` as `not_performed`; `active` is an assertion, not a
+permit. Replay detection against a high-water mark is FV-P4C. Rejections carry exactly one reason from
+`SOVEREIGN_STATUS_REJECTION_REASONS`. The verifier reads no clock, environment, network or storage, and
+never throws.

@@ -4,6 +4,14 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4B signed sovereign status verification (verification only)
+- **Entry point**: `verifySovereignStatus` in `@aoc-enterprise/sovereign-receiver-verification`, additive. It verifies one `soberania.sovereign-status/1` artifact (Soberanía profile, PROPOSED) and returns `authentic_authorized` or `rejected` with one closed reason (`SOVEREIGN_STATUS_REJECTION_REASONS`).
+  - **Form**: exact `schemaVersion` and `purpose` (payload-embedded domain separation, since Protocol's proof has no domain prefix), exact keys, safe-integer `sequence` with a declarative `previousStatusDigest`, `withdrawn` only without terms, and a single canonical text encoding.
+  - **Integrity and authority**: Protocol rc.3's `verifySovereignSignature`; the issuer must be the host's expected registrant, and its key is bound through the trusted resolver with SOBE-SEC-01's invariants rebuilt from public APIs (a descriptor `publicKeyJwk` is refused because Protocol's comparison is not public).
+  - **Binding and time**: expected asset, manifest digest and, optionally, terms; `issuedAt ≤ t < validUntil` against a host-supplied instant, exact to the nanosecond, with a seven-day maximum window.
+- **Not freshness**: a correctly signed but superseded status still verifies inside its window. Every result reports `freshness`, `revocationCurrentness` and `authorization` as `not_evaluated` and `execution` as `not_performed`. No high-water mark, witness, enforcement, capability or Fileverse integration; FV-P2, FV-P3 and RSDK-02B are unchanged. Only `./identity` and `./manifest` are imported, so the Protocol allowance is unchanged.
+- **Tests**: `sovereign-status.test.ts` adds 57 tests (structure, canonical encoding, signature malleability, domain confusion, issuer binding equivalence with Protocol, time boundaries, context hardening, pinned limits). The public-surface test is updated.
+
 ### Added — FV-P3 deterministic document-use policy evaluation (evaluation only)
 - **Entry point**: `evaluateDocumentUsePolicy` in `@aoc-enterprise/sovereign-receiver-verification`, additive. It turns an eligible `soberania.document-use/1` result into `ALLOWED`, `DENIED` or `WITHHELD` with one closed reason (`DOCUMENT_USE_POLICY_REASONS`) and the settling rule ids.
   - **Semantics**: Restriction wins, no default permission, owner-approval obligation means `WITHHELD`, misplaced effects and unknown concepts or actions mean `DENIED`.
