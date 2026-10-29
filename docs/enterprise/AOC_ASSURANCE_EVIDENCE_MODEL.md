@@ -43,8 +43,32 @@ lifecycle validity; module status) — never payloads.
 `EVIDENCE_UNVERIFIED`, `EVIDENCE_WRONG_TENANT`, `EVIDENCE_WRONG_SUBJECT`,
 `EVIDENCE_DISCLOSURE_INSUFFICIENT`, `EVIDENCE_DIGEST_MISMATCH`,
 `EVIDENCE_VERSION_UNSUPPORTED`, `EVIDENCE_INCOMPLETE`,
-`EVIDENCE_CONTRADICTORY`, `EVIDENCE_SOURCE_UNAVAILABLE`. Every rejected
-reference carries one or more codes plus a human-readable detail.
+`EVIDENCE_CONTRADICTORY`, `EVIDENCE_SOURCE_UNAVAILABLE`, `EVIDENCE_NOT_BOUND`,
+`EVIDENCE_METRIC_NOT_PERMITTED` (the last two since ASSURE-SEC-01C). Every
+rejected reference carries one or more codes plus a human-readable detail.
+
+## Manually supplied evidence (ASSURE-SEC-01C)
+
+Manual evidence (`control_attestation`, `external_artifact_reference`,
+`passport_view`) is candidate evidence, never authority:
+
+- **Binding.** It is offered only to the requirements it names in
+  `requirementIds`. Without a binding it is rejected with
+  `EVIDENCE_NOT_BOUND`. An empty list, a repeated id, an id the framework does
+  not define, or one `evidenceReferenceId` naming two different references
+  refuses the whole set (`ASSURANCE_EVIDENCE_INVALID`) before anything is
+  collected.
+- **Verification.** It enters an assessment with `verified: false`. A
+  supplier's `verified: true` or `verificationReference` is kept as
+  `supplierClaims` and never counts: not for `mustBeVerified`, confidence, or
+  the eligibility verified-evidence rate. A digest proves which bytes were
+  referenced, not who wrote them or whether they are true.
+- **Metrics.** An attestation may assert a metric only under a canonical name
+  (lower-case ASCII segments separated by single dots) outside the namespaces
+  reserved for Host-derived metrics: `governance`, `evidence`, `passport`,
+  `enterprise`, `modules`. Otherwise it is rejected with
+  `EVIDENCE_METRIC_NOT_PERMITTED`. Attestations that disagree on a metric
+  leave it absent (evaluated `unknown`), independent of order.
 
 ## Resolution result
 

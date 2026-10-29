@@ -360,12 +360,22 @@ export interface AssuranceEvidenceReference {
   readonly metadata?: Readonly<Record<string, unknown>>;
   /**
    * Explicit association of manually supplied evidence with the framework
-   * evidence requirements it is offered for (ASSURE-SEC-01A). Under the
-   * `control_bound` manual-review policy, manual evidence supports a
-   * definitive conclusion only for the requirements named here. It is a
-   * declaration by the supplier, not proof of authenticity.
+   * evidence requirements it is offered for (ASSURE-SEC-01A). Since
+   * ASSURE-SEC-01C the resolver offers manual evidence ONLY to the
+   * requirements named here, and rejects manual evidence that names none
+   * (`EVIDENCE_NOT_BOUND`). It is a declaration by the supplier, not proof of
+   * authenticity.
    */
   readonly requirementIds?: readonly string[];
+  /**
+   * ASSURE-SEC-01C: what the supplier of a manual reference claimed about its
+   * verification, kept as a claim. A manual reference enters an assessment
+   * with `verified: false`; only a Host mechanism verifies.
+   */
+  readonly supplierClaims?: {
+    readonly verified?: true;
+    readonly verificationReference?: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +395,11 @@ export type AssuranceEvidenceRejectionCode =
   | 'EVIDENCE_VERSION_UNSUPPORTED'
   | 'EVIDENCE_INCOMPLETE'
   | 'EVIDENCE_CONTRADICTORY'
-  | 'EVIDENCE_SOURCE_UNAVAILABLE';
+  | 'EVIDENCE_SOURCE_UNAVAILABLE'
+  /** ASSURE-SEC-01C: manual evidence names no requirement it is offered for. */
+  | 'EVIDENCE_NOT_BOUND'
+  /** ASSURE-SEC-01C: an attestation asserts a metric name that is not canonical or lies in a namespace reserved for Host-derived metrics. */
+  | 'EVIDENCE_METRIC_NOT_PERMITTED';
 
 export interface AssuranceRejectedEvidence {
   readonly evidenceReference: AssuranceEvidenceReference;

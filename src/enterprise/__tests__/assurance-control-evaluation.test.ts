@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createAssuranceControlEvaluator, type AssuranceEvaluationContext } from '../assurance/control-evaluator.js';
 import { computeDigest } from '../governance-store/digest.js';
 import type { AssuranceControlCriteria, AssuranceControlDefinition, AssuranceEvidenceResolution, AssuranceManualReviewRecord } from '../assurance/contracts.js';
-import { buildAttestation, buildTestFramework, buildTestScope } from './assurance-support.js';
+import { buildAttestation, buildHostVerifiedReference, buildTestFramework, buildTestScope } from './assurance-support.js';
 
 const framework = buildTestFramework();
 const evaluator = createAssuranceControlEvaluator();
@@ -235,10 +235,15 @@ describe('Assurance Control Evaluator -- determinism and confidence (mission sec
     assert.deepEqual(forward.reasonCodes, backward.reasonCodes);
   });
 
-  it('confidence is high with verified satisfied evidence, medium with unverified evidence, low for unknown', async () => {
+  it('confidence is high with Host-verified satisfied evidence, medium with unverified or self-declared evidence, low for unknown', async () => {
     const control = controlById('c.bool');
-    const high = await evaluator.evaluate(control, scope, [resolution()], buildContext({ metrics: { 'test.bool': true } }));
+    const hostVerified = resolution({ acceptedEvidence: [buildHostVerifiedReference('host-1')] });
+    const high = await evaluator.evaluate(control, scope, [hostVerified], buildContext({ metrics: { 'test.bool': true } }));
     assert.equal(high.confidence, 'high');
+
+    // ASSURE-SEC-01C: a manual attestation's own `verified: true` never raises confidence.
+    const selfDeclared = await evaluator.evaluate(control, scope, [resolution({ acceptedEvidence: [buildAttestation('test.bool', true, { verified: true })] })], buildContext({ metrics: { 'test.bool': true } }));
+    assert.equal(selfDeclared.confidence, 'medium');
 
     const unverified = resolution({ acceptedEvidence: [buildAttestation('test.bool', true, { verified: false })] });
     const medium = await evaluator.evaluate(control, scope, [unverified], buildContext({ metrics: { 'test.bool': true } }));

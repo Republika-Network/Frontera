@@ -12,6 +12,7 @@ import type {
 } from './contracts.js';
 import { ASSURANCE_EVALUATOR_VERSION } from './contracts.js';
 import { checkManualReviewEvidence } from './manual-review-evidence.js';
+import { isHostVerified } from './manual-evidence-trust.js';
 
 /**
  * The deterministic Assurance Control Evaluator (mission section 17). For
@@ -296,7 +297,8 @@ function deriveConfidence(
   if (status === 'unknown' || status === 'manual_review_required' || hasContradictions) return 'low';
   if (resolutions.length === 0) return 'medium';
   const allSatisfied = resolutions.every((resolution) => resolution.status === 'satisfied');
-  const allVerified = resolutions.every((resolution) => resolution.acceptedEvidence.every((evidence) => evidence.verified));
+  // ASSURE-SEC-01C: only Host verification counts; a supplier's own `verified` never raises confidence.
+  const allVerified = resolutions.every((resolution) => resolution.acceptedEvidence.every((evidence) => isHostVerified(evidence)));
   const anyUnavailable = resolutions.some((resolution) => resolution.status === 'unavailable' || resolution.status === 'unsatisfied');
   if (anyUnavailable) return 'low';
   if (allSatisfied && allVerified) return 'high';

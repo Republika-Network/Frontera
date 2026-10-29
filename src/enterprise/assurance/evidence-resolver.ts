@@ -15,6 +15,7 @@ import type {
   AssuranceScope,
 } from './contracts.js';
 import { ASSURANCE_RESOLVER_VERSION } from './contracts.js';
+import { MANUAL_EVIDENCE_TYPES, asSuppliedManualReference, isHostVerified, manualMetricNameViolation } from './manual-evidence-trust.js';
 
 /**
  * The Assurance Evidence Resolver (mission section 14): turns one evidence
@@ -58,7 +59,7 @@ export interface CreateEvidenceResolverOptions {
   readonly maxCandidatesPerType?: number;
 }
 
-export const MANUAL_EVIDENCE_TYPES: readonly AssuranceEvidenceType[] = ['control_attestation', 'external_artifact_reference', 'passport_view'];
+export { MANUAL_EVIDENCE_TYPES };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -316,14 +317,44 @@ export function createAssuranceEvidenceResolver(options: CreateEvidenceResolverO
     }
   }
 
+  /**
+   * Manually supplied evidence (ASSURE-SEC-01C, `manual-evidence-trust.ts`):
+   * offered only to the requirements it names in `requirementIds` (bound
+   * elsewhere, it is not a candidate here at all); rejected when it names
+   * none; carried with `verified: false` and its supplier's verification
+   * claims kept apart; and rejected when an attestation asserts a metric
+   * name that is not canonical or that is reserved for Host-derived metrics.
+   */
   function gatherManualEvidence(requirement: AssuranceEvidenceRequirement): Candidate[] {
-    return manualEvidence
-      .filter((reference) => MANUAL_EVIDENCE_TYPES.includes(reference.evidenceType))
-      .map((reference) => ({
-        reference,
-        gatheringRejections: requirement.manualEvidenceAllowed === true ? [] : (['EVIDENCE_TYPE_NOT_ACCEPTED'] as const),
-        ...(requirement.manualEvidenceAllowed === true ? {} : { gatheringDetail: 'This requirement does not allow manually supplied evidence.' }),
-      }));
+    const candidates: Candidate[] = [];
+    for (const supplied of manualEvidence) {
+      if (!MANUAL_EVIDENCE_TYPES.includes(supplied.evidenceType)) continue;
+      const boundTo = supplied.requirementIds ?? [];
+      if (boundTo.length > 0 && !boundTo.includes(requirement.requirementId)) continue;
+      const reference = asSuppliedManualReference(supplied);
+      const codes: AssuranceEvidenceRejectionCode[] = [];
+      const details: string[] = [];
+      if (requirement.manualEvidenceAllowed !== true) {
+        codes.push('EVIDENCE_TYPE_NOT_ACCEPTED');
+        details.push('This requirement does not allow manually supplied evidence.');
+      }
+      if (boundTo.length === 0) {
+        codes.push('EVIDENCE_NOT_BOUND');
+        details.push('Manually supplied evidence must name the requirement(s) it is offered for in requirementIds.');
+      }
+      const metric = reference.evidenceType === 'control_attestation' ? reference.metadata?.['metric'] : undefined;
+      const metricViolation = metric === undefined ? undefined : manualMetricNameViolation(metric);
+      if (metricViolation !== undefined) {
+        codes.push('EVIDENCE_METRIC_NOT_PERMITTED');
+        details.push(
+          metricViolation === 'reserved_namespace'
+            ? 'The attested metric lies in a namespace reserved for Host-derived metrics; an attestation cannot set it.'
+            : 'The attested metric name is not canonical (lower-case ASCII segments separated by single dots).',
+        );
+      }
+      candidates.push({ reference, gatheringRejections: codes, ...(details.length > 0 ? { gatheringDetail: details.join(' ') } : {}) });
+    }
+    return candidates;
   }
 
   return {
@@ -377,7 +408,7 @@ export function createAssuranceEvidenceResolver(options: CreateEvidenceResolverO
             details.push(`Evidence subject '${reference.subjectId ?? 'absent'}' does not reference assessment subject '${scope.subject.subjectId}'.`);
           }
         }
-        if (requirement.mustBeVerified === true && !reference.verified) {
+        if (requirement.mustBeVerified === true && !isHostVerified(reference)) {
           codes.push('EVIDENCE_UNVERIFIED');
           details.push('The requirement demands verified evidence and this reference is unverified.');
         }

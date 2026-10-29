@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { evaluateEligibility } from '../assurance/eligibility.js';
 import { computeDomainAssessments, computeOverallScore } from '../assurance/scoring.js';
 import { deriveFindingsFromEvaluations } from '../assurance/findings.js';
-import { buildAttestation, buildTestFramework, buildTestScope } from './assurance-support.js';
+import { buildAttestation, buildHostVerifiedReference, buildTestFramework, buildTestScope } from './assurance-support.js';
 import type { AssuranceControlEvaluation, AssuranceControlStatus, AssuranceEligibilityProfile, AssuranceEvidenceReference, AssuranceFinding } from '../assurance/contracts.js';
 
 const framework = buildTestFramework();
@@ -61,7 +61,7 @@ function evaluate(options: {
     domainAssessments,
     controlEvaluations: evaluations,
     findings,
-    evidenceReferences: options.evidence ?? [buildAttestation('test.bool', true)],
+    evidenceReferences: options.evidence ?? [buildHostVerifiedReference('host-evidence-1')],
     evaluatedAt: 't',
   });
 }
@@ -130,6 +130,15 @@ describe('Assurance eligibility (mission sections 33-35/83)', () => {
     const result = evaluate({
       profile: framework.eligibilityProfiles[1]!,
       evidence: [buildAttestation('a', true, { verified: false }), buildAttestation('b', true, { verified: false }), buildAttestation('c', true)],
+    });
+    assert.equal(result.evidenceRequirementsSatisfied, false);
+    assert.ok(result.reasonCodes.includes('ELIGIBILITY_EVIDENCE_RATE_BELOW_MINIMUM'));
+  });
+
+  it('ASSURE-SEC-01C: manual evidence declaring itself verified does not count toward the verified-evidence rate', () => {
+    const result = evaluate({
+      profile: framework.eligibilityProfiles[1]!,
+      evidence: [buildAttestation('a', true, { verified: true }), buildAttestation('b', true, { verified: true }), buildAttestation('c', true, { verified: true })],
     });
     assert.equal(result.evidenceRequirementsSatisfied, false);
     assert.ok(result.reasonCodes.includes('ELIGIBILITY_EVIDENCE_RATE_BELOW_MINIMUM'));
