@@ -7,9 +7,10 @@ import { getDisclosurePolicy } from './disclosure-policies.js';
 import { EvidenceError } from './errors.js';
 import { EVIDENCE_PROJECTION_ENGINE_VERSION_V2, buildEvidenceBundle, buildEvidenceBundleV2 } from './projector.js';
 import { authorityTraceVerificationOf, buildAuthorityTrace, validateTraceRequestId, type AuthorityTraceBuild, type AuthorityTraceSources } from './trace-builder.js';
+import { rebuildEvidenceBundleCurrentTrace } from './bundle-current-trace.js';
 import type { AuthorityTraceVerification } from './trace-contracts.js';
-import { discloseAuthorityTrace, discloseTraceVerification, disclosedTraceDigest, findDisclosurePolicyV2ById, getDisclosurePolicyV2, type DisclosedAuthorityTrace, type DisclosurePolicyV2 } from './trace-disclosure.js';
-import { verifyEvidenceBundle, type EvidenceBundleCurrentTrace } from './verifier.js';
+import { discloseAuthorityTrace, disclosedTraceDigest, getDisclosurePolicyV2, type DisclosedAuthorityTrace, type DisclosurePolicyV2 } from './trace-disclosure.js';
+import { verifyEvidenceBundle } from './verifier.js';
 import type { EvidenceStore } from './evidence-store.js';
 import type { EvidenceBundleRecord, EvidenceDisclosureMetadata, EvidenceReference, EvidenceVerificationResult } from './contracts.js';
 
@@ -185,19 +186,12 @@ export function createEvidenceService(deps: EvidenceServiceDependencies): Eviden
       if (stored.bundle.bundleVersion === EVIDENCE_BUNDLE_SCHEMA_VERSION_V2) {
         // The bundle is checked against the canonical records as they stand now,
         // read in the caller's own scope.
-        let current: EvidenceBundleCurrentTrace | undefined;
-        let record;
-        const policy = findDisclosurePolicyV2ById(stored.bundle.disclosure.policyId);
-        try {
-          const build = await buildAuthorityTrace(traceSources, context, stored.bundle.source.requestId);
-          if (build !== null) {
-            record = build.record;
-            if (policy !== undefined) current = { disclosed: discloseAuthorityTrace(build.trace, policy), verification: discloseTraceVerification(authorityTraceVerificationOf(build, now()), policy) };
-          }
-        } catch {
-          current = undefined;
-        }
-        result = verifyEvidenceBundle(stored.bundle, { ...(record !== undefined ? { record } : {}), now, ...(current !== undefined ? { currentTrace: current } : {}) });
+        const lookup = await rebuildEvidenceBundleCurrentTrace(traceSources, context, stored.bundle, now);
+        result = verifyEvidenceBundle(stored.bundle, {
+          ...(lookup.status === 'rebuilt' ? { record: lookup.record } : {}),
+          now,
+          ...(lookup.status === 'rebuilt' && lookup.currentTrace !== undefined ? { currentTrace: lookup.currentTrace } : {}),
+        });
       } else {
         let sourceRecord;
         try {
