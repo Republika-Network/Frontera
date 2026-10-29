@@ -63,14 +63,25 @@ import type {
   AssuranceSignal,
   AssuranceSignalProcessingResult,
   AssuranceSubject,
+  AssuranceTerminationReasonCode,
   ContinuousAssuranceState,
 } from './contracts.js';
+import {
+  ASSURANCE_TERMINATION_RATIONALE_MAX_LENGTH,
+  ASSURANCE_TERMINATION_REASON_CODES,
+  ASSURANCE_TERMINATION_ROLE,
+  assessmentTerminationViolations,
+  buildAssessmentTermination,
+  isSameTermination,
+  unresolvedContradictions,
+} from './assessment-termination.js';
 import {
   AOC_ASSURANCE_RUNTIME_VERSION,
   ASSURANCE_ELIGIBILITY_VERSION,
   ASSURANCE_EVALUATOR_VERSION,
   ASSURANCE_SCORING_VERSION,
   ASSURANCE_SUBJECT_TYPES,
+  ASSURANCE_TERMINAL_STATUSES,
 } from './contracts.js';
 
 /**
@@ -119,8 +130,24 @@ export interface AppendFindingEventInput {
   readonly payload?: Readonly<Record<string, unknown>>;
 }
 
+/** ASSURE-REL-01B: why an attempt is ended without a conclusion. */
+export interface TerminateAssessmentInput {
+  readonly reasonCode: AssuranceTerminationReasonCode;
+  readonly rationale: string;
+}
+
+/** ASSURE-REL-01B: the ended attempt, and whether this call ended it or found it already ended the same way. */
+export interface AssuranceAssessmentTerminationResult {
+  readonly assessment: AssuranceAssessment;
+  readonly outcome: 'terminated' | 'replayed';
+}
+
 export interface RequestReassessmentInput {
-  /** The completed assessment to supersede. Provide either this or `subjectId` (the latest completed assessment for the subject is resolved). */
+  /**
+   * The completed assessment to supersede, or (ASSURE-REL-01B) an attempt
+   * ended as inconclusive to follow -- linked, never superseded. Provide either
+   * this or `subjectId` (the latest completed assessment for the subject is resolved).
+   */
   readonly assessmentId?: string;
   readonly subjectId?: string;
   readonly reason: string;
@@ -162,6 +189,17 @@ export interface AssuranceService {
   processSignal(context: AssuranceAccessContext, input: BuildAssuranceSignalInput | Omit<BuildAssuranceSignalInput, 'signalId'>): Promise<AssuranceSignalProcessingResult>;
   getContinuousState(context: AssuranceAccessContext, subjectId: string, frameworkId?: string, frameworkVersion?: string): Promise<ContinuousAssuranceState>;
   requestReassessment(context: AssuranceAccessContext, input: RequestReassessmentInput): Promise<AssuranceAssessment>;
+  /**
+   * ASSURE-REL-01B: ends a non-terminal attempt as inconclusive -- status
+   * `failed` with an attributed, self-digested `termination` record. Requires
+   * an authenticated reviewer holding `assure.reviewer` in the assessment's
+   * organization. It concludes nothing: no control result changes, no
+   * evidence is removed, no finding or report is produced. A completed
+   * assessment cannot be terminated. Repeating the same termination returns it
+   * (`replayed`); a different one is refused. Continue with
+   * `requestReassessment` on the ended attempt.
+   */
+  terminateAssessment(context: AssuranceAccessContext, assessmentId: string, input: TerminateAssessmentInput): Promise<AssuranceAssessmentTerminationResult>;
   buildAssuranceReport(context: AssuranceAccessContext, assessmentId: string, view: string, generatedBy: string): Promise<AssuranceReport>;
   /**
    * ASSURE-REP-01: the commercial `rn.sv@0.1.0` report as a DRAFT or
@@ -905,6 +943,10 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
 
     async evaluateEligibility(context, assessmentId) {
       const assessment = await requireAssessment(context, assessmentId);
+      // ASSURE-REL-01B: a failed or ended attempt concluded nothing; its provisional eligibility is not reported as if it had.
+      if (assessment.status === 'failed') {
+        throw new AssuranceError('ASSURANCE_ASSESSMENT_INCOMPLETE', `Assessment '${assessmentId}' is failed${assessment.termination !== undefined ? ' (ended as inconclusive)' : ''}; it has no eligibility.`);
+      }
       if (assessment.controlEvaluations.length === 0) {
         throw new AssuranceError('ASSURANCE_ASSESSMENT_INCOMPLETE', `Assessment '${assessmentId}' has not been evaluated; eligibility derives from control results.`);
       }
@@ -1072,8 +1114,16 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
         assessmentId = summary.assessmentId;
       }
       const previous = await requireAssessment(context, assessmentId);
-      if (previous.status !== 'completed' && previous.status !== 'superseded') {
-        throw new AssuranceError('ASSURANCE_ASSESSMENT_INCOMPLETE', `Only a completed assessment can be reassessed; '${assessmentId}' is '${previous.status}'.`);
+      // ASSURE-REL-01B: an attempt ended as inconclusive is followed, never superseded.
+      const followsTermination = previous.status === 'failed' && previous.termination !== undefined;
+      if (!followsTermination && previous.status !== 'completed' && previous.status !== 'superseded') {
+        throw new AssuranceError(
+          'ASSURANCE_ASSESSMENT_INCOMPLETE',
+          `Only a completed assessment, or an attempt ended as inconclusive, can be reassessed; '${assessmentId}' is '${previous.status}'.`,
+        );
+      }
+      if (followsTermination && assessmentTerminationViolations(previous).length > 0) {
+        throw new AssuranceError('ASSURANCE_INTEGRITY_FAILED', `The termination record of '${assessmentId}' does not verify; it cannot be continued.`);
       }
       if (input.reason.trim().length === 0) {
         throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', 'A reassessment reason is required.');
@@ -1094,7 +1144,7 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
       const reassessment = withIntegrity({
         ...created,
         previousAssessmentId: previous.assessmentId,
-        supersedesAssessmentId: previous.assessmentId,
+        ...(followsTermination ? {} : { supersedesAssessmentId: previous.assessmentId }),
         reassessmentReason: input.reason,
       });
       await store.saveAssessment(context, reassessment);
@@ -1102,9 +1152,69 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
         assessmentId: reassessment.assessmentId,
         organizationId: previous.subject.organizationId,
         subjectId: previous.subject.subjectId,
-        detail: { previousAssessmentId: previous.assessmentId, reason: input.reason },
+        detail: { previousAssessmentId: previous.assessmentId, reason: input.reason, ...(followsTermination ? { followsTerminatedAttempt: true } : {}) },
       });
       return reassessment;
+    },
+
+    async terminateAssessment(context, assessmentId, input) {
+      // -- Authenticated reviewer identity (as recordManualReview): identity, tenant and role from the credential only.
+      const reviewer = context.reviewer;
+      if (!reviewerAuthenticator.isAuthenticated(reviewer)) {
+        throw unauthorizedReviewer('Ending an assessment requires an authenticated Assurance reviewer credential; a system context or declared identity is not accepted.');
+      }
+      if (!reviewer.roles.includes(ASSURANCE_TERMINATION_ROLE)) {
+        throw unauthorizedReviewer(`Ending an assessment requires the role '${ASSURANCE_TERMINATION_ROLE}'.`, { requiredRole: ASSURANCE_TERMINATION_ROLE });
+      }
+      if (context.organizationId !== undefined && context.organizationId !== reviewer.organizationId) {
+        throw unauthorizedReviewer('The access context names a different organization than the authenticated reviewer.');
+      }
+      if (context.actorId !== undefined && context.actorId !== reviewer.reviewerId) {
+        throw unauthorizedReviewer('The access context names a different actor than the authenticated reviewer.');
+      }
+      if (!ASSURANCE_TERMINATION_REASON_CODES.includes(input?.reasonCode)) {
+        throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `reasonCode must be one of ${ASSURANCE_TERMINATION_REASON_CODES.join(', ')}.`);
+      }
+      const rationale = typeof input.rationale === 'string' ? input.rationale.trim() : '';
+      if (rationale.length === 0 || rationale.length > ASSURANCE_TERMINATION_RATIONALE_MAX_LENGTH) {
+        throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `A termination rationale of 1 to ${ASSURANCE_TERMINATION_RATIONALE_MAX_LENGTH} characters is required.`);
+      }
+      const reviewerContext: AssuranceAccessContext = { system: false, organizationId: reviewer.organizationId, actorId: reviewer.reviewerId, roles: reviewer.roles, reviewer };
+      const request = { reasonCode: input.reasonCode, rationale, terminatedBy: reviewer.reviewerId };
+
+      // An attempt already ended: the same termination is a replay; anything else is refused.
+      const answerKept = (kept: AssuranceAssessment): AssuranceAssessmentTerminationResult => {
+        if (kept.termination !== undefined && isSameTermination(kept.termination, request)) {
+          logger?.info('assurance.assessment.terminated', { assessmentId, status: 'replayed', errorCode: kept.termination.reasonCode });
+          return { assessment: kept, outcome: 'replayed' };
+        }
+        throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Assessment '${assessmentId}' is '${kept.status}' and can no longer be ended${kept.termination !== undefined ? ' differently' : ''}.`, {
+          reason: kept.termination !== undefined ? 'assessment_already_terminated' : 'assessment_terminal',
+        });
+      };
+      const assessment = await requireAssessment(reviewerContext, assessmentId);
+      if (ASSURANCE_TERMINAL_STATUSES.includes(assessment.status)) return answerKept(assessment);
+      assertAssessmentTransition(assessment.status, 'failed');
+      if (input.reasonCode === 'unresolved_contradiction' && unresolvedContradictions(assessment).length === 0) {
+        throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `Assessment '${assessmentId}' holds no contradictory evidence; 'unresolved_contradiction' cannot be recorded for it.`);
+      }
+      const termination = buildAssessmentTermination({ assessment, reasonCode: input.reasonCode, rationale, terminatedBy: reviewer.reviewerId, terminatedAt: now() });
+      // Content and its digests are untouched: only the lifecycle status and the termination record change.
+      const terminated: AssuranceAssessment = { ...assessment, status: 'failed', failureReason: `Ended as inconclusive (${input.reasonCode}).`, termination };
+      try {
+        await store.saveAssessment(reviewerContext, terminated);
+      } catch (error) {
+        // Another writer ended or completed it first (the store took the write lock and saw it terminal): answer from what is stored.
+        if (isAssuranceError(error) && error.code === 'ASSURANCE_ASSESSMENT_IMMUTABLE') return answerKept(await requireAssessment(reviewerContext, assessmentId));
+        throw error;
+      }
+      publish('AssuranceAssessmentFailed', {
+        assessmentId,
+        organizationId: assessment.subject.organizationId,
+        detail: { termination: input.reasonCode, terminatedBy: reviewer.reviewerId, outcome: 'inconclusive' },
+      });
+      logger?.info('assurance.assessment.terminated', { assessmentId, status: 'terminated', errorCode: input.reasonCode });
+      return { assessment: terminated, outcome: 'terminated' };
     },
 
     async buildAssuranceReport(context, assessmentId, view, generatedBy) {

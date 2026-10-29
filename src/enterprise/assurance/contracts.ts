@@ -709,6 +709,30 @@ export interface AssuranceEligibilityCandidate {
 
 export type AssuranceAssessmentStatus = 'created' | 'collecting_evidence' | 'evaluating' | 'manual_review' | 'completed' | 'failed' | 'superseded';
 
+/** ASSURE-REL-01B: why an attempt was ended without a conclusion. `unresolved_contradiction` is accepted only when the stored evidence does contradict itself. */
+export type AssuranceTerminationReasonCode = 'unresolved_contradiction' | 'engagement_withdrawn';
+
+/** ASSURE-REL-01B: the record of an attempt ended as inconclusive. */
+export interface AssuranceAssessmentTermination {
+  readonly terminationVersion: string;
+  /** Always `inconclusive`: a termination concludes nothing about any control. */
+  readonly outcome: 'inconclusive';
+  readonly reasonCode: AssuranceTerminationReasonCode;
+  readonly rationale: string;
+  /** The authenticated reviewer who ended the attempt -- from the credential, never from the request. */
+  readonly terminatedBy: string;
+  readonly terminatorRole: string;
+  readonly authentication: 'assurance_reviewer_credential';
+  readonly terminatedAt: string;
+  /** The status the attempt was in when it was ended. */
+  readonly statusAtTermination: AssuranceAssessmentStatus;
+  /** The assessment digest at termination: the content this decision was taken on. */
+  readonly assessmentDigest: string;
+  /** The contradictions the stored evidence held at termination, derived from it -- never declared by the caller. Kept, not resolved. */
+  readonly unresolvedContradictions: readonly { readonly requirementId: string; readonly evidenceReferenceIds: readonly string[]; readonly reason: string }[];
+  readonly terminationDigest: string;
+}
+
 /** Statuses in which an assessment's content may no longer change. `superseded` is store-level lifecycle bookkeeping layered over a completed assessment -- content and digests stay frozen. */
 export const ASSURANCE_TERMINAL_STATUSES: readonly AssuranceAssessmentStatus[] = ['completed', 'failed', 'superseded'];
 
@@ -780,6 +804,13 @@ export interface AssuranceAssessment {
   readonly createdAt: string;
   readonly completedAt?: string;
   readonly failureReason?: string;
+  /**
+   * ASSURE-REL-01B: present when an authenticated reviewer ended this attempt
+   * as inconclusive (status `failed`). Self-digested and bound to the
+   * assessment digest; it records no result -- an inconclusive attempt states
+   * neither compliance nor failure.
+   */
+  readonly termination?: AssuranceAssessmentTermination;
   readonly reassessmentReason?: string;
   readonly previousAssessmentId?: string;
   readonly supersedesAssessmentId?: string;

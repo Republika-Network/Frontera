@@ -3,6 +3,7 @@ import { recomputeAssessmentIntegrity } from './assessment.js';
 import { computeDomainAssessments, computeOverallScore } from './scoring.js';
 import { evaluateEligibility } from './eligibility.js';
 import { boundEvidenceViolation, manualReviewEvidencePolicy } from './manual-review-evidence.js';
+import { assessmentTerminationViolations } from './assessment-termination.js';
 
 /**
  * Independent assessment verification (mission sections 64-65): recomputes
@@ -61,7 +62,10 @@ export function verifyAssuranceAssessment(input: VerifyAssuranceAssessmentInput)
   let domainsOk = digestCheck('domainAssessmentsDigest', 'domains');
   let scoreOk = digestCheck('scoreDigest', 'score');
   let eligibilityOk = digestCheck('eligibilityDigest', 'eligibility');
-  const integrityOk = digestCheck('assessmentDigest', 'integrity');
+  // ASSURE-REL-01B: a termination record must be intact and bound to this content; it is reported under `integrity`.
+  const terminationViolations = assessmentTerminationViolations(assessment);
+  for (const violation of terminationViolations) fail('integrity', `Termination record: ${violation}.`);
+  const integrityOk = digestCheck('assessmentDigest', 'integrity') && terminationViolations.length === 0;
 
   // -- Evidence tenant consistency: every reference must be bound to the
   // assessment subject's organization (mission section 64).
