@@ -4,6 +4,15 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2A durable sovereign status history (SQLite)
+- **Store**: `openSqliteStatusHighWaterMarkStore` in `src/enterprise/sovereign-status-history/` is a Node-side SQLite implementation of the receiver package's `StatusHighWaterMarkStore`, using the existing `better-sqlite3` dependency. The portable package gains no dependency and its gate is unchanged.
+- **Durability**: one file is one receiver history namespace, pinned when it is created. Every write is one `BEGIN IMMEDIATE` transaction under WAL and `synchronous = FULL`, so connections and processes sharing the file serialize on it, and a committed write survives a crash.
+- **Compare-and-set**: an insert happens only when no row exists, and an update only at the exact revision, which then rises by one. Concurrent writers on any number of connections or processes never both succeed.
+- **No downgrade, enforced twice** (by the adapter and by the table's triggers): the sequence never falls, a withdrawal or conflict latch is never cleared, a retired terms digest is never dropped, the time floor never goes back, and rows are never deleted.
+- **Fail closed**: a missing file is never created implicitly, and an existing one is never re-initialized. Opening is refused under another namespace or schema version, without exactly the expected triggers, or after a failed integrity check. A corrupt row, or a row the history recorded but lost, throws (`HISTORY_STORE_UNAVAILABLE` at the gate) and is never read as an empty history. A held lock fails after a bounded busy timeout.
+- **Limits**: whoever can replace, restore or delete the whole file can make the receiver forget; an external anchor is FV-P4C-2B. The store is not composed into the Host yet, so it is not in the portability store registry.
+- **Tests**: `src/enterprise/__tests__/fv-p4c2a-sqlite-status-history.test.ts` adds 24 tests: lifecycle, CAS, downgrade refusal, raw-writer triggers, corruption (rows and pages), row loss, a pinned whole-file-restore limit, rollback on injected failures, locks, read-only, concurrent connections, separate processes, and SIGKILL crash consistency. `tests/fv-p4c2a-sqlite-status-history.e2e.test.mjs` adds 9 tests. They run the real FV-P2 → FV-P3 → freshness gate across restarts, check equivalence with the in-memory store, fail a corrupt row closed through the gate, and statically compare the adapter's mirrored types with the receiver package's published declarations (contract drift). The fixture comes from `packages/sovereign-receiver-verification/scripts/generate-document-freshness-fixture.mjs` and is synthetic, with no private key.
+
 ### Added — FV-P4C-1 document-use freshness and anti-replay gate (not authorization)
 - **Entry points** in `@aoc-enterprise/sovereign-receiver-verification`, additive:
   - `checkDocumentUseFreshness` checks an FV-P3 decision against a signed status and the receiver's own trusted history;
