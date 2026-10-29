@@ -4,6 +4,30 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2B1 trusted bootstrap and evidence for the sovereign status history (foundation, not composed)
+- **Contracts** in `src/enterprise/sovereign-status-history/`:
+  - the closed, versioned request `frontera.sovereign-status-bootstrap/1`;
+  - the binding an authorizer decides on, and its SHA-256 digest;
+  - the evidence record `frontera.sovereign-status-bootstrap-evidence/1`, classified `host-recorded-unsigned`;
+  - closed reasons;
+  - the injected provider interfaces `StatusHistoryBootstrapAuthorizer` and `StatusSourceVerifier`, with a source policy over five source classes.
+- **Coordinator**: `coordinateStatusHistoryBootstrap` grants nothing itself. It checks, in order:
+  - the request: lifetime ≤ 900 s, namespace, host-verified subject, a request id used once;
+  - the status, through the injected FV-P4B `verifySovereignStatus`, which must be exactly the one requested;
+  - an authorizer decision that names this binding's digest;
+  - unanimous, recent, policy-accepted sources that know nothing newer.
+
+  It then runs the receiver's own `establishStatusHistory` and confirms the commit against the store's own state (`COMMIT_UNVERIFIED` otherwise). A latched conflict is refused before any authority is asked. There is no endpoint, CLI, reset, conflict clearing or bypass option, and a bootstrap authorizes no document operation.
+- **Store schema v2**: the bootstrap evidence ledger lives in the same SQLite file and is append-only through triggers. `compareAndSetWithEvidence` commits the history and its evidence in one `BEGIN IMMEDIATE` transaction, or neither.
+  - **Ordinary writes**: `compareAndSet` can no longer create a history or change its anchor.
+  - **Evidence on read**: a history whose latest evidence is missing or does not match its anchor is refused (R2).
+  - **v1 files**: refused, not migrated; v1 was never composed into the Host.
+- **Docs**: `docs/integration/FV_TRUSTED_BOOTSTRAP_RECOVERY.md` covers the trust model, operator duties, source currentness, the state machine, the R0–R3 recovery classes, the evidence contract, atomicity, threats, limits and the ASSURE handoff.
+- **Tests**:
+  - the store suite now has 32 tests (FV-P4C-2A seeds go through evidence; a bootstrap stays verifiable through later advances; a v1 file is left untouched);
+  - the FV-P4C-2A end-to-end tests anchor SQLite histories through the coordinator;
+  - `tests/fv-p4c2b1-trusted-bootstrap.e2e.test.mjs` adds 24 adversarial tests against the real receiver package and a real SQLite store, including stores and receivers that misreport a commit.
+
 ### Added — FV-P4C-2A durable sovereign status history (SQLite)
 - **Store**: `openSqliteStatusHighWaterMarkStore` in `src/enterprise/sovereign-status-history/` is a Node-side SQLite implementation of the receiver package's `StatusHighWaterMarkStore`, using the existing `better-sqlite3` dependency. The portable package gains no dependency and its gate is unchanged.
 - **Durability**: one file is one receiver history namespace, pinned when it is created. Every write is one `BEGIN IMMEDIATE` transaction under WAL and `synchronous = FULL`, so connections and processes sharing the file serialize on it, and a committed write survives a crash.
