@@ -69,3 +69,30 @@ export type {
   SovereignStatusVerified,
   SovereignStatusVerifier,
 } from './sovereign-status-types.js';
+// FV-P4C-1: receiver-side freshness and anti-replay gate over an FV-P3 decision
+// and a signed status, against this receiver's own trusted history. Never
+// escalates a decision; not authorization; the in-memory store is process-local.
+export { checkDocumentUseFreshness, establishStatusHistory } from './document-freshness.js';
+export { createInMemoryStatusHighWaterMarkStore } from './status-history-store.js';
+export {
+  DOCUMENT_USE_FRESHNESS_CEILINGS,
+  DOCUMENT_USE_FRESHNESS_GATE,
+  DOCUMENT_USE_FRESHNESS_VERDICTS,
+  STATUS_HISTORY_BOOTSTRAP_REASONS,
+} from './document-freshness-types.js';
+export type {
+  DocumentUseFreshnessGate,
+  DocumentUseFreshnessHistoryEvidence,
+  DocumentUseFreshnessPolicy,
+  DocumentUseFreshnessResult,
+  DocumentUseFreshnessStatusEvidence,
+  DocumentUseFreshnessTrustedContext,
+  DocumentUseFreshnessVerdict,
+  StatusHighWaterMark,
+  StatusHighWaterMarkEntry,
+  StatusHighWaterMarkStore,
+  StatusHistoryBootstrapContext,
+  StatusHistoryBootstrapReason,
+  StatusHistoryBootstrapResult,
+  StatusHistoryKey,
+} from './document-freshness-types.js';

@@ -4,6 +4,23 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-1 document-use freshness and anti-replay gate (not authorization)
+- **Entry points** in `@aoc-enterprise/sovereign-receiver-verification`, additive:
+  - `checkDocumentUseFreshness` checks an FV-P3 decision against a signed status and the receiver's own trusted history;
+  - `establishStatusHistory` is the out-of-band bootstrap;
+  - `createInMemoryStatusHighWaterMarkStore` is a process-local reference store;
+  - `DOCUMENT_USE_FRESHNESS_VERDICTS` (closed) and `DOCUMENT_USE_FRESHNESS_CEILINGS`.
+- **Non-escalation**: a decision stays what it was only when the verdict is `FRESH` and otherwise becomes `DENIED`. `WITHHELD` never becomes `ALLOWED`. No capability, no RSDK-02B verdict, and no execution.
+- **Provenance**: only decisions issued by FV-P3 in this process are accepted. FV-P3 now records them in a private `WeakMap`, and FV-P2's private registry also keeps the verified current manifest digest. Both results are unchanged.
+- **Status**: the gate verifies it itself with FV-P4B, bound to the eligibility's own asset, registrant and manifest.
+- **History** per `(asset, registrant)`:
+  - **Refused:** rollbacks; equivocation, forks, reactivated withdrawals and revived retired terms, all of which latch a conflict; sequence gaps, which mark continuity unproven; and clock rollback.
+  - **Writes:** the mark changes only through an atomic `compareAndSet`.
+  - **No history:** every action is refused (`HISTORY_UNINITIALIZED`). There is no implicit initialization.
+- **Operational freshness**: a per-action maximum age set by the host, between 1 second and the action's ceiling (24 h read, 15 min export and modify). It is independent of the seven-day signed window.
+- **Limits**: the gate detects only what this receiver saw; the in-memory store is process-local. A persistent, anchored store is FV-P4C-2. ASSURE handoff: `docs/integration/FV_DOCUMENT_FRESHNESS_HANDOFF.md`.
+- **Tests**: `document-freshness.test.ts` adds 48 tests: the replay and fork matrix, concurrency and compare-and-set races, the policy and freshness matrix, provenance forgery, bootstrap, and unchanged FV-P2/FV-P3 results. The public-surface test is updated.
+
 ### Added — FV-P4B signed sovereign status verification (verification only)
 - **Entry point**: `verifySovereignStatus` in `@aoc-enterprise/sovereign-receiver-verification`, additive. It verifies one `soberania.sovereign-status/1` artifact (Soberanía profile, PROPOSED) and returns `authentic_authorized` or `rejected` with one closed reason (`SOVEREIGN_STATUS_REJECTION_REASONS`).
   - **Form**: exact `schemaVersion` and `purpose` (payload-embedded domain separation, since Protocol's proof has no domain prefix), exact keys, safe-integer `sequence` with a declarative `previousStatusDigest`, `withdrawn` only without terms, and a single canonical text encoding.

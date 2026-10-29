@@ -56,10 +56,30 @@ interface Inputs {
   readonly evaluationTime: string;
 }
 
-type Known = { action: string | null; sovereignAssetId: string | null; policy: DocumentUsePolicyReference | null; evaluationTime: string | null };
+type Known = {
+  action: string | null;
+  sovereignAssetId: string | null;
+  policy: DocumentUsePolicyReference | null;
+  evaluationTime: string | null;
+  eligibility: DocumentUseEligible | null;
+};
+
+/**
+ * FV-P4C-1 provenance: every decision this module returns about a verified
+ * eligibility, held weakly, mapped to that eligibility. Decisions are deeply
+ * frozen, so a registered object is exactly what was evaluated. Copies,
+ * deserialized decisions and look-alikes are not registered, and the freshness
+ * gate refuses them. Process-local by design, like the eligibility registry.
+ */
+const ISSUED_DECISIONS = new WeakMap<object, DocumentUseEligible>();
+
+/** Internal to this package (not exported from the index): the eligibility a decision issued here was evaluated over. */
+export function issuedDocumentUseDecisionEligibility(value: unknown): DocumentUseEligible | undefined {
+  return typeof value === 'object' && value !== null ? ISSUED_DECISIONS.get(value) : undefined;
+}
 
 export function evaluateDocumentUsePolicy(eligibility: unknown, request: unknown, trustedContext: unknown): DocumentUsePolicyDecision {
-  const known: Known = { action: null, sovereignAssetId: null, policy: null, evaluationTime: null };
+  const known: Known = { action: null, sovereignAssetId: null, policy: null, evaluationTime: null, eligibility: null };
   try {
     return evaluate(eligibility, request, trustedContext, known);
   } catch {
@@ -72,6 +92,7 @@ function evaluate(rawEligibility: unknown, rawRequest: unknown, rawContext: unkn
   //    deeply frozen, so its asset, issuer and terms are exactly what was verified.
   if (!isIssuedDocumentUseEligibility(rawEligibility)) return decision('DENIED', 'ELIGIBILITY_UNVERIFIED', known, []);
   const eligibility = rawEligibility;
+  known.eligibility = eligibility;
   known.sovereignAssetId = eligibility.sovereignAssetId;
   known.policy = { claimId: eligibility.terms.claimId, claimDigest: eligibility.terms.claimDigest };
 
@@ -219,7 +240,7 @@ function decision(
   known: Known,
   matchedRuleIds: readonly string[],
 ): DocumentUsePolicyDecision {
-  return deepFreeze({
+  const result: DocumentUsePolicyDecision = deepFreeze({
     decision: value,
     reason,
     evaluator: DOCUMENT_USE_POLICY_EVALUATOR,
@@ -234,6 +255,8 @@ function decision(
     freshness: 'not_evaluated',
     execution: 'not_performed',
   });
+  if (known.eligibility !== null) ISSUED_DECISIONS.set(result, known.eligibility);
+  return result;
 }
 
 function deepFreeze<T>(value: T): T {
