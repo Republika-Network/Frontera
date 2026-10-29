@@ -44,3 +44,28 @@ export type {
   DocumentUsePolicyRequest,
   DocumentUsePolicyTrustedContext,
 } from './document-policy-types.js';
+// FV-P4B: strict verification of one signed soberania.sovereign-status/1
+// artifact. Authenticity, authority, binding and the status's own validity
+// window only: freshness, revocation currentness and authorization are not evaluated.
+export { verifySovereignStatus } from './sovereign-status.js';
+export {
+  SOVEREIGN_STATUS_MAX_VALIDITY_SECONDS,
+  SOVEREIGN_STATUS_PROFILE,
+  SOVEREIGN_STATUS_PURPOSE,
+  SOVEREIGN_STATUS_REJECTION_REASONS,
+  SOVEREIGN_STATUS_VERIFIER,
+} from './sovereign-status-types.js';
+export type {
+  SignedSovereignStatusV1,
+  SovereignAssetStatusValue,
+  SovereignStatusPayloadV1,
+  SovereignStatusProfile,
+  SovereignStatusPurpose,
+  SovereignStatusRejected,
+  SovereignStatusRejectionReason,
+  SovereignStatusTermsReference,
+  SovereignStatusTrustedContext,
+  SovereignStatusVerificationResult,
+  SovereignStatusVerified,
+  SovereignStatusVerifier,
+} from './sovereign-status-types.js';

@@ -152,7 +152,7 @@ test('an unexpected exception inside Protocol verification fails closed', async 
   }
 });
 
-test('the public surface is exactly the two verifiers, the policy evaluator, their reasons and their profiles', () => {
+test('the public surface is exactly the three verifiers, the policy evaluator, their reasons and their profiles', () => {
   const sdk = require('../src/index.js') as Record<string, unknown>;
   const exported = Object.keys(sdk).filter((name) => name !== '__esModule' && name !== 'default').sort();
   assert.deepEqual(exported, [
@@ -163,10 +163,16 @@ test('the public surface is exactly the two verifiers, the policy evaluator, the
     'DOCUMENT_USE_PROFILE',
     'DOCUMENT_USE_RECEIVER_PROFILE',
     'RECEIVER_VERIFICATION_REJECTION_REASONS',
+    'SOVEREIGN_STATUS_MAX_VALIDITY_SECONDS',
+    'SOVEREIGN_STATUS_PROFILE',
+    'SOVEREIGN_STATUS_PURPOSE',
+    'SOVEREIGN_STATUS_REJECTION_REASONS',
+    'SOVEREIGN_STATUS_VERIFIER',
     'STRICT_RECEIVER_PROFILE',
     'evaluateDocumentUsePolicy',
     'verifyDocumentUseEligibility',
     'verifyReceivedSovereignAsset',
+    'verifySovereignStatus',
   ]);
 });
 
