@@ -269,6 +269,8 @@ export function buildAttestation(
       collectedAt: '2026-06-14T00:00:00.000Z',
     },
     metadata: { metric, value },
+    // ASSURE-SEC-01C: manual evidence is offered only to the requirements it names; the test framework's attestation requirement.
+    requirementIds: ['req.attest'],
     ...overrides,
   };
 }
@@ -307,4 +309,25 @@ export function buildAssuranceHarness(
 /** Seeds the harness store with the framework definition (system scope) so store-level verification can resolve it. */
 export async function persistHarnessFramework(harness: AssuranceTestHarness, framework?: AssuranceFramework): Promise<void> {
   await harness.store.saveFramework(ASSURANCE_SYSTEM, framework ?? buildTestFramework());
+}
+
+/**
+ * ASSURE-SEC-01C: a reference as the resolver builds it from a Host source (a
+ * Governance Record the store verified) -- the only kind of evidence whose
+ * `verified` counts. Manual references never do, whatever they declare.
+ */
+export function buildHostVerifiedReference(id: string): AssuranceEvidenceReference {
+  return {
+    evidenceReferenceId: id,
+    evidenceType: 'governance_record',
+    externalId: `evaluation-${id}`,
+    organizationId: 'org-1',
+    subjectId: 'agent-under-test',
+    digest: `sha256:${'1'.repeat(64)}`,
+    occurredAt: '2026-06-10T00:00:00.000Z',
+    collectedAt: '2026-06-14T00:00:00.000Z',
+    verified: true,
+    verificationReference: `governance-verify:evaluation-${id}`,
+    provenance: { sourceSystem: 'aoc.enterprise.governance-store', sourceType: 'governance_record', collectedBy: 'aoc.assurance.evidence-resolver', collectedAt: '2026-06-14T00:00:00.000Z' },
+  };
 }

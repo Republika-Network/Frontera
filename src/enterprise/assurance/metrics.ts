@@ -1,4 +1,5 @@
 import type { AssuranceEvidenceReference, AssuranceEvidenceResolution } from './contracts.js';
+import { manualMetricNameViolation } from './manual-evidence-trust.js';
 
 /**
  * Deterministic metric derivation: the ONLY source of values for
@@ -71,14 +72,25 @@ export function deriveAssuranceMetrics(resolutions: readonly AssuranceEvidenceRe
     metrics['modules.unhealthy_count'] = moduleHealth.filter((reference) => metadataValue(reference, 'status') === 'unhealthy').length;
   }
 
-  // -- Manual attestation metrics: an attestation may assert one named metric.
-  const attestations = acceptedOfType(resolutions, 'control_attestation');
-  for (const attestation of attestations) {
+  // -- Manual attestation metrics (ASSURE-SEC-01C): an attestation may assert
+  // one metric, only under a canonical name outside the namespaces reserved
+  // for the Host-derived metrics above -- so it can never set or override one.
+  // Independent of order: one attestation counts once however many
+  // requirements accepted it, and attestations that disagree on a metric's
+  // value leave the metric absent (evaluated `unknown`), never last-writer-wins.
+  const asserted = new Map<string, Map<string, number | boolean>>();
+  for (const attestation of acceptedOfType(resolutions, 'control_attestation')) {
     const metricName = metadataValue(attestation, 'metric');
     const metricValue = metadataValue(attestation, 'value');
-    if (typeof metricName === 'string' && metricName.length > 0 && (typeof metricValue === 'boolean' || typeof metricValue === 'number')) {
-      metrics[metricName] = metricValue;
-    }
+    if (typeof metricName !== 'string' || manualMetricNameViolation(metricName) !== undefined) continue;
+    if (typeof metricValue !== 'boolean' && typeof metricValue !== 'number') continue;
+    const byReference = asserted.get(metricName) ?? new Map<string, number | boolean>();
+    byReference.set(attestation.evidenceReferenceId, metricValue);
+    asserted.set(metricName, byReference);
+  }
+  for (const [metricName, byReference] of asserted) {
+    const values = new Set(byReference.values());
+    if (values.size === 1) metrics[metricName] = [...values][0] as number | boolean;
   }
 
   return metrics;

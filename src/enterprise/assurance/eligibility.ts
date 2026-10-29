@@ -9,6 +9,7 @@ import type {
   AssuranceScope,
   AssuranceScore,
 } from './contracts.js';
+import { isHostVerified } from './manual-evidence-trust.js';
 
 /**
  * The Assurance eligibility evaluator (mission sections 33-35).
@@ -99,7 +100,8 @@ export function evaluateEligibility(input: EvaluateEligibilityInput): AssuranceE
   // -- Evidence quality thresholds.
   let evidenceRequirementsSatisfied = true;
   if (profile.minimumVerifiedEvidenceRate !== undefined) {
-    const verifiedRate = evidenceReferences.length === 0 ? 0 : evidenceReferences.filter((reference) => reference.verified).length / evidenceReferences.length;
+    // ASSURE-SEC-01C: only Host verification counts toward the verified rate, never a supplier's own claim.
+    const verifiedRate = evidenceReferences.length === 0 ? 0 : evidenceReferences.filter((reference) => isHostVerified(reference)).length / evidenceReferences.length;
     if (verifiedRate < profile.minimumVerifiedEvidenceRate) {
       evidenceRequirementsSatisfied = false;
       reasonCodes.push('ELIGIBILITY_EVIDENCE_RATE_BELOW_MINIMUM');

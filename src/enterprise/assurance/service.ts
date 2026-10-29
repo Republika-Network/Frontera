@@ -10,6 +10,7 @@ import { AssuranceError, isAssuranceError } from './errors.js';
 import { resolveFrameworkForAssessment, type AssuranceFrameworkRegistry } from './framework-registry.js';
 import { createAssuranceEvidenceResolver, type AssuranceEvidenceSources } from './evidence-resolver.js';
 import { checkManualReviewEvidence } from './manual-review-evidence.js';
+import { manualEvidenceBindingViolations } from './manual-evidence-trust.js';
 import { createAssuranceReviewerAuthenticator, type AssuranceReviewerCredential } from './reviewer-identity.js';
 import { createAssuranceControlEvaluator } from './control-evaluator.js';
 import { deriveAssuranceMetrics } from './metrics.js';
@@ -307,9 +308,23 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
     return sealed;
   }
 
+  /** ASSURE-SEC-01C: an ambiguous manual evidence set is refused before anything is collected or the assessment changes state. */
+  function assertManualEvidenceBindings(framework: AssuranceFramework, options?: CollectEvidenceOptions): void {
+    if (options?.manualEvidence === undefined) return;
+    const violations = manualEvidenceBindingViolations(
+      options.manualEvidence,
+      framework.evidenceRequirements.map((requirement) => requirement.requirementId),
+      computeDigest,
+    );
+    if (violations.length > 0) {
+      throw new AssuranceError('ASSURANCE_EVIDENCE_INVALID', 'The manually supplied evidence set has ambiguous or unknown requirement bindings.', { violations });
+    }
+  }
+
   async function collectEvidenceInternal(context: AssuranceAccessContext, assessmentId: string, options?: CollectEvidenceOptions): Promise<AssuranceAssessment> {
     const assessment = await requireAssessment(context, assessmentId);
     const framework = frameworkFor(assessment);
+    assertManualEvidenceBindings(framework, options);
     assertAssessmentTransition(assessment.status, 'collecting_evidence');
     publish('AssuranceEvidenceCollectionStarted', { assessmentId, organizationId: assessment.subject.organizationId });
 
@@ -462,6 +477,7 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
     async evaluateAssessment(context, assessmentId, options) {
       let assessment = await requireAssessment(context, assessmentId);
       const framework = frameworkFor(assessment);
+      if (assessment.status === 'created') assertManualEvidenceBindings(framework, options);
 
       try {
         if (assessment.status === 'created') {

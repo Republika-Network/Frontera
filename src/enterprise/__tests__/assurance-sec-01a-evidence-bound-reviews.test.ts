@@ -143,11 +143,12 @@ describe('SEC-01A service: definitive outcomes require bound, accepted evidence 
     const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1 });
     const unbound = artifact('ev-unbound');
     const assessment = await evaluated(harness, [...BOUND_EVIDENCE, unbound]);
-    // The resolver offers manual evidence to every requirement, so ev-SV-01 IS accepted in SV-08's resolution -- yet it was not supplied for SV-08.
+    // Since ASSURE-SEC-01C the resolver offers ev-SV-01 only to SV-01's requirement, and rejects the unbound artifact everywhere (EVIDENCE_NOT_BOUND).
     const sv08 = assessment.evidenceResolutions.find((resolution) => resolution.requirementId === requirementOf('SV-08'));
-    assert.ok(sv08?.acceptedEvidence.some((reference) => reference.evidenceReferenceId === 'ev-SV-01'));
+    assert.equal(sv08?.acceptedEvidence.some((reference) => reference.evidenceReferenceId === 'ev-SV-01'), false);
+    assert.ok(sv08?.rejectedEvidence.some((rejected) => rejected.evidenceReference.evidenceReferenceId === 'ev-unbound' && rejected.reasonCodes.includes('EVIDENCE_NOT_BOUND')));
     await expectRefusedAndNothingPersisted(harness, assessment.assessmentId, review(assessment.assessmentId, 'SV-08', 'pass', ['ev-SV-01']), 'MANUAL_REVIEW_EVIDENCE_NOT_BOUND');
-    await expectRefusedAndNothingPersisted(harness, assessment.assessmentId, review(assessment.assessmentId, 'SV-08', 'pass', ['ev-unbound']), 'MANUAL_REVIEW_EVIDENCE_NOT_BOUND');
+    await expectRefusedAndNothingPersisted(harness, assessment.assessmentId, review(assessment.assessmentId, 'SV-08', 'pass', ['ev-unbound']), 'MANUAL_REVIEW_EVIDENCE_REJECTED');
     // One bound reference does not launder an unbound one cited alongside it.
     await expectRefusedAndNothingPersisted(harness, assessment.assessmentId, review(assessment.assessmentId, 'SV-08', 'pass', ['ev-SV-08', 'ev-SV-01']), 'MANUAL_REVIEW_EVIDENCE_NOT_BOUND');
   });

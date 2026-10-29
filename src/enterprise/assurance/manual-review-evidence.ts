@@ -5,7 +5,7 @@ import type {
   AssuranceManualReviewCriteria,
   AssuranceManualReviewOutcome,
 } from './contracts.js';
-import { MANUAL_EVIDENCE_TYPES } from './evidence-resolver.js';
+import { MANUAL_EVIDENCE_TYPES } from './manual-evidence-trust.js';
 
 /**
  * Evidence-bound manual conclusions (ASSURE-SEC-01A). The one deterministic
