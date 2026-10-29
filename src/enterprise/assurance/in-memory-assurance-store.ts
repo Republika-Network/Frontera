@@ -1,6 +1,7 @@
 import { AssuranceError } from './errors.js';
 import { verifyAssuranceAssessment } from './verification.js';
 import { applyFindingTransition, foldFindingStatus } from './findings.js';
+import { assertCompletionCommit } from './finding-history.js';
 import {
   canAccessAssuranceOrganization,
   requireAccessToAssuranceOrganization,
@@ -38,6 +39,8 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
   const assessments = new Map<string, AssuranceAssessment>();
   const findings = new Map<string, AssuranceFinding>();
   const findingEvents = new Map<string, AssuranceFindingEvent[]>();
+  /** Every stored finding event id -- unique across the store, as the SQLite primary key makes it. */
+  const findingEventIds = new Set<string>();
   const manualReviews = new Map<string, AssuranceManualReviewRecord[]>();
   const signals: AssuranceSignal[] = [];
   let closed = false;
@@ -156,6 +159,54 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
       assessments.set(assessmentId, { ...assessment, status: 'superseded', supersededByAssessmentId });
     },
 
+    async completeAssessment(context, commit) {
+      assertOpen();
+      const { assessment, findingEvents: openingEvents } = commit;
+      requireAccessToAssuranceOrganization(context, assessment.subject.organizationId);
+      // ASSURE-SEC-01E: every check runs before the first map update, and no
+      // `await` separates them -- the completion lands whole or not at all.
+      assertCompletionCommit(commit);
+      const existing = assessments.get(assessment.assessmentId);
+      if (existing === undefined) {
+        throw new AssuranceError('ASSURANCE_ASSESSMENT_NOT_FOUND', `No Assurance assessment for assessmentId '${assessment.assessmentId}' within this scope.`);
+      }
+      if (existing.subject.organizationId !== assessment.subject.organizationId) {
+        throw new AssuranceError('ASSURANCE_ACCESS_SCOPE_VIOLATION', `Assessment '${assessment.assessmentId}' belongs to a different organization.`);
+      }
+      if (ASSURANCE_TERMINAL_STATUSES.includes(existing.status)) {
+        throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Assessment '${assessment.assessmentId}' is '${existing.status}' and immutable; changed evidence or framework versions require a new assessment.`);
+      }
+      for (const event of openingEvents) {
+        if (findingEventIds.has(event.findingEventId)) {
+          throw new AssuranceError('ASSURANCE_INVALID_FINDING_TRANSITION', `Finding event id '${event.findingEventId}' already exists.`);
+        }
+        if ((findingEvents.get(event.findingId) ?? []).length > 0) {
+          throw new AssuranceError('ASSURANCE_INVALID_FINDING_TRANSITION', `Finding '${event.findingId}' already has a history; its opening event cannot be appended again.`);
+        }
+      }
+      let superseded: AssuranceAssessment | undefined;
+      if (assessment.supersedesAssessmentId !== undefined) {
+        const previous = requireVisibleAssessment(context, assessment.supersedesAssessmentId);
+        if (previous.subject.organizationId !== assessment.subject.organizationId) {
+          throw new AssuranceError('ASSURANCE_ACCESS_SCOPE_VIOLATION', `Assessment '${assessment.supersedesAssessmentId}' belongs to a different organization.`);
+        }
+        if (previous.status === 'completed') superseded = { ...previous, status: 'superseded', supersededByAssessmentId: assessment.assessmentId };
+        else if (previous.status !== 'superseded') {
+          throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Only a completed assessment can be superseded; '${previous.assessmentId}' is '${previous.status}'.`);
+        }
+      }
+
+      assessments.set(assessment.assessmentId, assessment);
+      for (const finding of assessment.findings) {
+        if (!findings.has(finding.findingId)) findings.set(finding.findingId, finding);
+      }
+      for (const event of openingEvents) {
+        findingEvents.set(event.findingId, [event]);
+        findingEventIds.add(event.findingEventId);
+      }
+      if (superseded !== undefined) assessments.set(superseded.assessmentId, superseded);
+    },
+
     async appendFindingEvent(context, event) {
       assertOpen();
       requireAccessToAssuranceOrganization(context, event.organizationId);
@@ -173,7 +224,11 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
       }
       // Validates the transition (throws ASSURANCE_INVALID_FINDING_TRANSITION).
       applyFindingTransition(foldFindingStatus(events), event.eventType);
+      if (findingEventIds.has(event.findingEventId)) {
+        throw new AssuranceError('ASSURANCE_INVALID_FINDING_TRANSITION', `Finding event id '${event.findingEventId}' already exists.`);
+      }
       findingEvents.set(event.findingId, [...events, event]);
+      findingEventIds.add(event.findingEventId);
     },
 
     async listFindingEvents(context, findingId) {

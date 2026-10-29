@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { AssuranceError } from './errors.js';
 import { verifyAssuranceAssessment } from './verification.js';
 import { applyFindingTransition, foldFindingStatus } from './findings.js';
+import { assertCompletionCommit } from './finding-history.js';
 import {
   canAccessAssuranceOrganization,
   requireAccessToAssuranceOrganization,
@@ -266,6 +267,7 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
   const insertFinding = db.prepare(`INSERT INTO assurance_findings (finding_id, assessment_id, organization_id, control_id, domain_id, severity, finding_json, created_at)
     VALUES (@findingId, @assessmentId, @organizationId, @controlId, @domainId, @severity, @findingJson, @createdAt)`);
   const selectFinding = db.prepare(`SELECT * FROM assurance_findings WHERE finding_id = ?`);
+  const selectFindingEventById = db.prepare(`SELECT finding_event_id FROM assurance_finding_events WHERE finding_event_id = ?`);
   const selectFindingsByAssessment = db.prepare(`SELECT * FROM assurance_findings WHERE assessment_id = ? ORDER BY created_at ASC, finding_id ASC`);
   const insertFindingEvent = db.prepare(`INSERT INTO assurance_finding_events
     (finding_event_id, finding_id, assessment_id, organization_id, sequence, event_type, actor_id, rationale, payload_json, occurred_at, event_digest)
@@ -340,6 +342,100 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
     return rowToAssessment(row);
   }
 
+  /** The assessment row and, at a terminal status, its findings and queryable projections. Runs inside the caller's transaction. */
+  function writeAssessment(assessment: AssuranceAssessment): void {
+    const existing = loadAssessmentRow(assessment.assessmentId);
+    if (existing !== undefined) {
+      if (existing.organization_id !== assessment.subject.organizationId) {
+        throw new AssuranceError('ASSURANCE_ACCESS_SCOPE_VIOLATION', `Assessment '${assessment.assessmentId}' belongs to a different organization.`);
+      }
+      if ((ASSURANCE_TERMINAL_STATUSES as readonly string[]).includes(existing.status)) {
+        throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Assessment '${assessment.assessmentId}' is '${existing.status}' and immutable; changed evidence or framework versions require a new assessment.`);
+      }
+    }
+    upsertAssessment.run({
+      assessmentId: assessment.assessmentId,
+      organizationId: assessment.subject.organizationId,
+      subjectId: assessment.subject.subjectId,
+      subjectType: assessment.subject.subjectType,
+      frameworkId: assessment.frameworkId,
+      frameworkVersion: assessment.frameworkVersion,
+      status: assessment.status,
+      normalizedScore: assessment.score.normalizedScore,
+      createdAt: assessment.createdAt,
+      completedAt: assessment.completedAt ?? null,
+      assessmentJson: JSON.stringify(assessment),
+    });
+    if ((ASSURANCE_TERMINAL_STATUSES as readonly string[]).includes(assessment.status)) {
+      // Findings rows persist only at the terminal save (re-evaluation
+      // before completion replaces the working findings set; only the
+      // final set gets an append-only lifecycle).
+      for (const finding of assessment.findings) {
+        const existingFinding = selectFinding.get(finding.findingId) as { finding_id: string } | undefined;
+        if (existingFinding === undefined) {
+          insertFinding.run({
+            findingId: finding.findingId,
+            assessmentId: finding.assessmentId,
+            organizationId: assessment.subject.organizationId,
+            controlId: finding.controlId,
+            domainId: finding.domainId,
+            severity: finding.severity,
+            findingJson: JSON.stringify(finding),
+            createdAt: finding.createdAt,
+          });
+        }
+      }
+      // Queryable projections, written exactly once at the terminal save.
+      for (const reference of assessment.evidenceReferences) {
+        insertEvidenceReference.run({
+          evidenceReferenceId: reference.evidenceReferenceId,
+          assessmentId: assessment.assessmentId,
+          organizationId: reference.organizationId,
+          evidenceType: reference.evidenceType,
+          externalId: reference.externalId,
+          verified: reference.verified ? 1 : 0,
+          referenceJson: JSON.stringify(reference),
+        });
+      }
+      for (const evaluation of assessment.controlEvaluations) {
+        insertControlEvaluation.run({
+          controlEvaluationId: evaluation.controlEvaluationId,
+          assessmentId: assessment.assessmentId,
+          controlId: evaluation.controlId,
+          domainId: evaluation.domainId,
+          status: evaluation.status,
+          evaluationJson: JSON.stringify(evaluation),
+        });
+      }
+      for (const domain of assessment.domainAssessments) {
+        insertDomainAssessment.run({
+          domainAssessmentId: domain.domainAssessmentId,
+          assessmentId: assessment.assessmentId,
+          domainId: domain.domainId,
+          status: domain.status,
+          normalizedScore: domain.normalizedScore,
+          domainJson: JSON.stringify(domain),
+        });
+      }
+      insertScore.run({
+        assessmentId: assessment.assessmentId,
+        normalizedScore: assessment.score.normalizedScore,
+        methodologyId: assessment.score.methodologyId,
+        methodologyVersion: assessment.score.methodologyVersion,
+        scoreJson: JSON.stringify(assessment.score),
+      });
+      for (const eligibility of assessment.eligibility) {
+        insertEligibility.run({
+          assessmentId: assessment.assessmentId,
+          profileId: eligibility.profileId,
+          eligible: eligibility.eligible ? 1 : 0,
+          provisional: eligibility.provisional ? 1 : 0,
+          resultJson: JSON.stringify(eligibility),
+        });
+      }
+    }
+  }
+
   return {
     providerKind: 'sqlite',
 
@@ -382,100 +478,69 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
     async saveAssessment(context, assessment) {
       assertOpen();
       requireAccessToAssuranceOrganization(context, assessment.subject.organizationId);
+      db.transaction(() => writeAssessment(assessment))();
+    },
 
-      const runSave = db.transaction(() => {
+    async completeAssessment(context, commit) {
+      assertOpen();
+      const { assessment, findingEvents } = commit;
+      requireAccessToAssuranceOrganization(context, assessment.subject.organizationId);
+      assertCompletionCommit(commit);
+      // ASSURE-SEC-01E: one IMMEDIATE transaction -- the write lock is taken
+      // before the status is read, so two connections cannot both complete;
+      // any failure, including at COMMIT, rolls the whole unit back.
+      const runComplete = db.transaction(() => {
         const existing = loadAssessmentRow(assessment.assessmentId);
-        if (existing !== undefined) {
-          if (existing.organization_id !== assessment.subject.organizationId) {
-            throw new AssuranceError('ASSURANCE_ACCESS_SCOPE_VIOLATION', `Assessment '${assessment.assessmentId}' belongs to a different organization.`);
+        if (existing === undefined || !canAccessAssuranceOrganization(context, existing.organization_id)) {
+          throw new AssuranceError('ASSURANCE_ASSESSMENT_NOT_FOUND', `No Assurance assessment for assessmentId '${assessment.assessmentId}' within this scope.`);
+        }
+        let supersede = false;
+        if (assessment.supersedesAssessmentId !== undefined) {
+          const previous = loadAssessmentRow(assessment.supersedesAssessmentId);
+          if (previous === undefined || previous.organization_id !== assessment.subject.organizationId) {
+            throw new AssuranceError('ASSURANCE_ASSESSMENT_NOT_FOUND', `No Assurance assessment for assessmentId '${assessment.supersedesAssessmentId}' within this scope.`);
           }
-          if ((ASSURANCE_TERMINAL_STATUSES as readonly string[]).includes(existing.status)) {
-            throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Assessment '${assessment.assessmentId}' is '${existing.status}' and immutable; changed evidence or framework versions require a new assessment.`);
+          if (previous.status === 'completed') supersede = true;
+          else if (previous.status !== 'superseded') {
+            throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Only a completed assessment can be superseded; '${assessment.supersedesAssessmentId}' is '${previous.status}'.`);
           }
         }
-        upsertAssessment.run({
-          assessmentId: assessment.assessmentId,
-          organizationId: assessment.subject.organizationId,
-          subjectId: assessment.subject.subjectId,
-          subjectType: assessment.subject.subjectType,
-          frameworkId: assessment.frameworkId,
-          frameworkVersion: assessment.frameworkVersion,
-          status: assessment.status,
-          normalizedScore: assessment.score.normalizedScore,
-          createdAt: assessment.createdAt,
-          completedAt: assessment.completedAt ?? null,
-          assessmentJson: JSON.stringify(assessment),
-        });
-        if ((ASSURANCE_TERMINAL_STATUSES as readonly string[]).includes(assessment.status)) {
-          // Findings rows persist only at the terminal save (re-evaluation
-          // before completion replaces the working findings set; only the
-          // final set gets an append-only lifecycle).
-          for (const finding of assessment.findings) {
-            const existingFinding = selectFinding.get(finding.findingId) as { finding_id: string } | undefined;
-            if (existingFinding === undefined) {
-              insertFinding.run({
-                findingId: finding.findingId,
-                assessmentId: finding.assessmentId,
-                organizationId: assessment.subject.organizationId,
-                controlId: finding.controlId,
-                domainId: finding.domainId,
-                severity: finding.severity,
-                findingJson: JSON.stringify(finding),
-                createdAt: finding.createdAt,
-              });
-            }
+        writeAssessment(assessment);
+        for (const event of findingEvents) {
+          if (loadFindingEvents(event.findingId).length > 0) {
+            throw new AssuranceError('ASSURANCE_INVALID_FINDING_TRANSITION', `Finding '${event.findingId}' already has a history; its opening event cannot be appended again.`);
           }
-          // Queryable projections, written exactly once at the terminal save.
-          for (const reference of assessment.evidenceReferences) {
-            insertEvidenceReference.run({
-              evidenceReferenceId: reference.evidenceReferenceId,
-              assessmentId: assessment.assessmentId,
-              organizationId: reference.organizationId,
-              evidenceType: reference.evidenceType,
-              externalId: reference.externalId,
-              verified: reference.verified ? 1 : 0,
-              referenceJson: JSON.stringify(reference),
-            });
+          if (selectFindingEventById.get(event.findingEventId) !== undefined) {
+            throw new AssuranceError('ASSURANCE_INVALID_FINDING_TRANSITION', `Finding event id '${event.findingEventId}' already exists.`);
           }
-          for (const evaluation of assessment.controlEvaluations) {
-            insertControlEvaluation.run({
-              controlEvaluationId: evaluation.controlEvaluationId,
-              assessmentId: assessment.assessmentId,
-              controlId: evaluation.controlId,
-              domainId: evaluation.domainId,
-              status: evaluation.status,
-              evaluationJson: JSON.stringify(evaluation),
-            });
-          }
-          for (const domain of assessment.domainAssessments) {
-            insertDomainAssessment.run({
-              domainAssessmentId: domain.domainAssessmentId,
-              assessmentId: assessment.assessmentId,
-              domainId: domain.domainId,
-              status: domain.status,
-              normalizedScore: domain.normalizedScore,
-              domainJson: JSON.stringify(domain),
-            });
-          }
-          insertScore.run({
-            assessmentId: assessment.assessmentId,
-            normalizedScore: assessment.score.normalizedScore,
-            methodologyId: assessment.score.methodologyId,
-            methodologyVersion: assessment.score.methodologyVersion,
-            scoreJson: JSON.stringify(assessment.score),
+          insertFindingEvent.run({
+            findingEventId: event.findingEventId,
+            findingId: event.findingId,
+            assessmentId: event.assessmentId,
+            organizationId: event.organizationId,
+            sequence: event.sequence,
+            eventType: event.eventType,
+            actorId: event.actorId,
+            rationale: event.rationale ?? null,
+            payloadJson: JSON.stringify(event.payload),
+            occurredAt: event.occurredAt,
+            eventDigest: event.eventDigest,
           });
-          for (const eligibility of assessment.eligibility) {
-            insertEligibility.run({
-              assessmentId: assessment.assessmentId,
-              profileId: eligibility.profileId,
-              eligible: eligibility.eligible ? 1 : 0,
-              provisional: eligibility.provisional ? 1 : 0,
-              resultJson: JSON.stringify(eligibility),
-            });
-          }
+        }
+        if (supersede) {
+          db.prepare(`UPDATE assurance_assessments SET status = 'superseded', superseded_by = ? WHERE assessment_id = ? AND status = 'completed'`).run(assessment.assessmentId, assessment.supersedesAssessmentId);
         }
       });
-      runSave();
+      try {
+        runComplete.immediate();
+      } catch (error) {
+        if (error instanceof AssuranceError) throw error;
+        // The driver's message may name paths or SQL; it never leaves the store.
+        throw new AssuranceError('ASSURANCE_STORE_UNAVAILABLE', `Assessment '${assessment.assessmentId}' could not be completed: the Assurance Store did not persist the completion. Nothing was recorded; the completion can be retried.`, {
+          assessmentId: assessment.assessmentId,
+          retryable: true,
+        });
+      }
     },
 
     async getAssessment(context, assessmentId) {

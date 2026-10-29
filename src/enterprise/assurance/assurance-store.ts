@@ -13,6 +13,7 @@ import type {
   AssuranceSignalQuery,
   AssuranceStoreHealth,
 } from './contracts.js';
+import type { AssuranceCompletionCommit } from './finding-history.js';
 
 /**
  * The Assurance Store (mission sections 48-52): an independent,
@@ -25,6 +26,9 @@ import type {
  *    content write);
  *  - the only post-completion change is the store-level supersession marker
  *    (`markSuperseded`), which never touches content or digests;
+ *  - completion is one unit (ASSURE-SEC-01E): `completeAssessment` persists the
+ *    terminal assessment, the opening event of every finding and the
+ *    supersession of the assessment it replaces together, or nothing;
  *  - findings evolve exclusively through appended finding events;
  *  - manual reviews and signals only append.
  */
@@ -42,6 +46,18 @@ export interface AssuranceStore {
   queryAssessments(context: AssuranceAccessContext, query: AssuranceAssessmentQuery): Promise<AssuranceAssessmentQueryResult>;
   /** Store-level supersession bookkeeping over a completed assessment -- content and digests stay frozen (mission section 40). */
   markSuperseded(context: AssuranceAccessContext, assessmentId: string, supersededByAssessmentId: string): Promise<void>;
+  /**
+   * ASSURE-SEC-01E: completes an assessment as one unit -- the `completed`
+   * assessment, its findings, one `AssuranceFindingCreated` event per finding,
+   * and, for a reassessment, the supersession of the assessment it replaces
+   * (left as it is when that one is already superseded). Either everything is
+   * persisted or nothing is: a failure leaves the assessment in its previous,
+   * completable state, so the completion can be retried. A second completion
+   * is refused with `ASSURANCE_ASSESSMENT_IMMUTABLE`; an inconsistent event set
+   * with `ASSURANCE_INVALID_FINDING_TRANSITION`; a persistence failure with
+   * `ASSURANCE_STORE_UNAVAILABLE`, carrying no driver detail.
+   */
+  completeAssessment(context: AssuranceAccessContext, commit: AssuranceCompletionCommit): Promise<void>;
 
   appendFindingEvent(context: AssuranceAccessContext, event: AssuranceFindingEvent): Promise<void>;
   listFindingEvents(context: AssuranceAccessContext, findingId: string): Promise<readonly AssuranceFindingEvent[]>;
