@@ -80,6 +80,10 @@ For v1, the smallest credible arrangement:
 
 Separation of duties is the authorizer's to enforce. The coordinator cannot tell two principals apart.
 
+**FV-P4C-2B2:** `createHumanDecisionBootstrapAuthorizer` implements this arrangement over AUTH-03 passkey
+decisions (requester ≠ approver, both bound to the binding digest). It is tested against the real
+identity service and is not composed: see `FV_HOST_AUTHORITY_INTEGRATION.md` for the blockers.
+
 ## 3. Source currentness policy
 
 A bootstrap trusts one signed status. That status may already be obsolete, so the host must also have a

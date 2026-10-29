@@ -45,3 +45,19 @@ export type {
 } from './bootstrap-contract.js';
 export { STATUS_HISTORY_BOOTSTRAP_COORDINATOR, coordinateStatusHistoryBootstrap } from './bootstrap-coordinator.js';
 export type { StatusHistoryBootstrapContext, StatusHistoryBootstrapResult, StatusHistoryReceiverPort } from './bootstrap-coordinator.js';
+// FV-P4C-2B2: the AUTH-03 passkey-decision authorizer core (not composed; see FV_HOST_AUTHORITY_INTEGRATION.md).
+export {
+  BOOTSTRAP_HUMAN_DECISION_DENIALS,
+  BOOTSTRAP_HUMAN_DECISION_FORMAT,
+  BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX,
+  bootstrapHumanDecisionInputs,
+  createHumanDecisionBootstrapAuthorizer,
+} from './human-decision-authorizer.js';
+export type {
+  BootstrapHumanDecisionContract,
+  BootstrapHumanDecisionDenial,
+  BootstrapHumanDecisionPort,
+  BootstrapHumanPermissions,
+  HumanDecisionBootstrapAuthorizer,
+  HumanDecisionBootstrapAuthorizerOptions,
+} from './human-decision-authorizer.js';

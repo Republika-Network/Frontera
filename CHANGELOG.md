@@ -4,6 +4,22 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2B2 AUTH-03 bootstrap authorizer core (not composed; blockers documented)
+- **Authorizer**: `createHumanDecisionBootstrapAuthorizer` in `src/enterprise/sovereign-status-history/` implements the FV-P4C-2B1 `StatusHistoryBootstrapAuthorizer` over two AUTH-03 passkey decisions.
+  - **Binding**: both decisions must name the bootstrap binding digest as their subject (`sha256:<digest>`), with a request id derived from it that is never a CORE-05 request. The digest is the 2B1 one; there is no second algorithm.
+  - **Requester**: its decision must belong to the request's `operatorRef`.
+  - **Approver**: a different principal, and each must hold the Host permission the injected policy names.
+  - **Peek before consume**: decisions are only peeked until every check passes, so foreign decisions are never consumed. Each is then consumed by AUTH-03 itself (passkey, user verification, active credential and principal, ≤ 120 s, single use), and the consumed contract must equal the peeked one.
+  - **Not atomic across the two decisions**: if the second decision is refused, the first stays consumed in AUTH-03's chain, the bootstrap is denied, and `consumedDecisions()` reports it.
+  - **Isolation**: the module reads AUTH-03 through a structural port and never imports the identity service, so the AUTH-03 composition pins are unchanged.
+- **Not composed**: there is no Host composition, store registration, backup or restore change, route or CLI.
+  - **Blockers needing founder decisions** (`docs/integration/FV_HOST_AUTHORITY_INTEGRATION.md`): an AUTH-03 outcome for non-CORE-05 decisions (today they would be reconciled as abandoned), a distinct decision domain, the AUTH-03 composition pins, a permission vocabulary, the requester verdict, and the absence of any trusted status source.
+  - **Designed, not implemented**: composition, registration, backup and restore quarantine.
+- **Tests**:
+  - `fv-p4c2b2-human-decision-authorizer.test.ts`: 14 tests against the real AUTH-03 service, with software passkeys, including partial consumption.
+  - `fv-p4c2b2-structure.test.ts`: 3 tests showing no Host source reaches the module and the module reaches nothing operational.
+  - `tests/fv-p4c2b2-host-authority.e2e.test.mjs`: 3 tests running the acceptance scenario. Real authority, the coordinator, the receiver package and SQLite go through restarts, rollback, a conflict and a refused re-anchor. The source is synthetic.
+
 ### Added — FV-P4C-2B1 trusted bootstrap and evidence for the sovereign status history (foundation, not composed)
 - **Contracts** in `src/enterprise/sovereign-status-history/`:
   - the closed, versioned request `frontera.sovereign-status-bootstrap/1`;
