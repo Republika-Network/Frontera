@@ -17,6 +17,7 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - **Refused:** rollbacks; equivocation, forks, reactivated withdrawals and revived retired terms, all of which latch a conflict; sequence gaps, which mark continuity unproven; and clock rollback.
   - **Writes:** the mark changes only through an atomic `compareAndSet`.
   - **No history:** every action is refused (`HISTORY_UNINITIALIZED`). There is no implicit initialization.
+  - **Conflicts:** a latched conflict is never cleared. Checks, bootstrap and re-anchor all refuse a conflicted history (`CONFLICT_DETECTED`), and evidence-based recovery is future work.
 - **Operational freshness**: a per-action maximum age set by the host, between 1 second and the action's ceiling (24 h read, 15 min export and modify). It is independent of the seven-day signed window.
 - **Limits**: the gate detects only what this receiver saw; the in-memory store is process-local. A persistent, anchored store is FV-P4C-2. ASSURE handoff: `docs/integration/FV_DOCUMENT_FRESHNESS_HANDOFF.md`.
 - **Tests**: `document-freshness.test.ts` adds 48 tests: the replay and fork matrix, concurrency and compare-and-set races, the policy and freshness matrix, provenance forgery, bootstrap, and unchanged FV-P2/FV-P3 results. The public-surface test is updated.

@@ -713,14 +713,184 @@ test('re-anchoring never rolls back, reopens a withdrawal or revives retired ter
   assert.equal((await w.bootstrap(next(w, withdrawn, 4, { currentTerms: { claimId: 'claim:terms-3', claimDigest: 'c'.repeat(64) } }), { reanchor: true })).reason, 'REANCHOR_REACTIVATES_WITHDRAWN');
 });
 
-test('re-anchoring after a conflict clears the latch only through the trusted operation', async () => {
+// ---------------------------------------------------------------------------
+// M3: no bootstrap or re-anchor ever clears a latched conflict
+
+/** An anchored history at sequence 2 with a latched equivocation at sequence 2. */
+async function conflicted() {
   const { w, s1 } = await anchored();
   const s2 = next(w, s1, 2);
-  await w.check(READ, s2);
-  await w.check(READ, next(w, s1, 2, { validUntil: '2026-10-29T00:00:00.5Z' }));
-  expect(await w.check(READ, s2), 'CONFLICT_DETECTED', 'DENIED');
-  assert.equal((await w.bootstrap(s2, { reanchor: true })).reason, 'REESTABLISHED');
+  const s2b = next(w, s1, 2, { validUntil: '2026-10-29T00:00:00.5Z' });
   expect(await w.check(READ, s2), 'FRESH', 'ALLOWED');
+  expect(await w.check(READ, s2b), 'CONFLICT_DETECTED', 'DENIED');
+  const latched = (await mark(w))!;
+  assert.equal(latched.mark.conflict, true);
+  return { w, s1, s2, s2b, latched };
+}
+
+async function assertStillLatched(w: World, latched: StatusHighWaterMarkEntry, probe: Signed): Promise<void> {
+  assert.deepEqual(await mark(w), latched, 'the mark, its revision and the latch are untouched');
+  for (const action of [READ, EXPORT.termRef, MODIFY.termRef]) expect(await w.check(action, probe), 'CONFLICT_DETECTED', 'DENIED', action);
+}
+
+test('M3 1/4/6. re-anchoring at the conflicted sequence, with either status, is refused', async () => {
+  const { w, s2, s2b, latched } = await conflicted();
+  for (const status of [s2, s2b]) {
+    const result = await w.bootstrap(status, { reanchor: true });
+    assert.equal(result.outcome, 'refused');
+    assert.equal(result.reason, 'CONFLICT_DETECTED');
+    assert.equal(result.mark, null);
+  }
+  await assertStillLatched(w, latched, s2);
+});
+
+test('M3 2/3. a higher sequence, next or far ahead, does not clear the conflict', async () => {
+  const { w, s2, latched } = await conflicted();
+  const s3 = next(w, s2, 3);
+  const far = w.status({ sequence: 102, previousStatusDigest: OTHER_DIGEST, issuedAt: '2026-10-28T11:59:00.000Z' });
+  for (const status of [s3, far]) assert.equal((await w.bootstrap(status, { reanchor: true })).reason, 'CONFLICT_DETECTED');
+  await assertStillLatched(w, latched, s3);
+});
+
+test('M3 5/6. neither a withdrawn nor an active status clears the conflict', async () => {
+  const { w, s2, latched } = await conflicted();
+  const withdrawn = next(w, s2, 3, { assetStatus: 'withdrawn', currentTerms: null });
+  const active = next(w, s2, 3, { currentTerms: { claimId: 'claim:terms-new', claimDigest: 'd'.repeat(64) } });
+  for (const status of [withdrawn, active]) assert.equal((await w.bootstrap(status, { reanchor: true })).reason, 'CONFLICT_DETECTED');
+  await assertStillLatched(w, latched, s2);
+});
+
+test('M3 4. ordinary bootstrap of a conflicted history is refused as a conflict too', async () => {
+  const { w, s2, latched } = await conflicted();
+  assert.equal((await w.bootstrap(s2)).reason, 'CONFLICT_DETECTED');
+  await assertStillLatched(w, latched, s2);
+});
+
+test('M3 7/11/12. repeated re-anchor attempts change nothing', async () => {
+  const { w, s2, latched } = await conflicted();
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const status = attempt % 2 === 0 ? s2 : next(w, s2, 3 + attempt);
+    assert.equal((await w.bootstrap(status, { reanchor: true })).reason, 'CONFLICT_DETECTED');
+  }
+  await assertStillLatched(w, latched, s2);
+});
+
+test('M3. a status from another registrant cannot replace the conflicted history', async () => {
+  const { w, s2, latched } = await conflicted();
+  const resolver = trustingResolver({ [ISSUER]: issuerKeys, [ATTACKER]: attackerKeys });
+  const foreign = w.status({ issuer: ATTACKER, sequence: 50, previousStatusDigest: OTHER_DIGEST }, attackerKeys);
+  // A history for another principal is a different key; the registrant's stays latched.
+  await w.bootstrap(foreign, { reanchor: true, expectedRegistrant: ATTACKER, verificationKeyResolver: resolver });
+  // The registrant's own key signing for the attacker's name is not the registrant either.
+  const renamed = w.status({ issuer: ATTACKER, sequence: 3, previousStatusDigest: s2.digest });
+  assert.equal((await w.bootstrap(renamed, { reanchor: true, expectedRegistrant: ATTACKER, verificationKeyResolver: resolver })).reason, 'STATUS_REJECTED');
+  await assertStillLatched(w, latched, s2);
+});
+
+test('M3 9. a conflict latched between the re-anchor read and its write wins: the re-anchor is refused', async () => {
+  const { w: base, s1 } = await anchored();
+  const s2 = next(base, s1, 2);
+  const s2b = next(base, s1, 2, { validUntil: '2026-10-29T00:00:00.5Z' });
+  expect(await base.check(READ, s2), 'FRESH', 'ALLOWED');
+  let injected = false;
+  const racing: StatusHighWaterMarkStore = {
+    read: (key) => base.store.read(key),
+    async compareAndSet(key, revision, value) {
+      if (!injected) {
+        injected = true;
+        // A concurrent check latches the equivocation through the real gate.
+        expect(await checkDocumentUseFreshness(base.decide(READ), s2b.text, base.context()), 'CONFLICT_DETECTED', 'DENIED');
+      }
+      return base.store.compareAndSet(key, revision, value);
+    },
+  };
+  const result = await base.bootstrap(next(base, s2, 3), { reanchor: true, historyStore: racing });
+  assert.equal(result.reason, 'CONFLICT_DETECTED');
+  assert.equal((await mark(base))!.mark.conflict, true);
+  expect(await base.check(READ, s2), 'CONFLICT_DETECTED', 'DENIED');
+});
+
+test('M3 10. a re-anchor computed from a stale revision never commits over a newer latch', async () => {
+  const { w: base, s1 } = await anchored();
+  const s2 = next(base, s1, 2);
+  expect(await base.check(READ, s2), 'FRESH', 'ALLOWED');
+  const key = { sovereignAssetId: base.doc.sovereignAssetId, issuer: ISSUER };
+  const stale = (await base.store.read(key))!;
+  let reads = 0;
+  // The re-anchor's first read returns the pre-conflict revision; the latch lands before its write.
+  const staleFirst: StatusHighWaterMarkStore = {
+    async read(k) {
+      reads += 1;
+      if (reads === 1) {
+        await base.store.compareAndSet(k, stale.revision, { ...stale.mark, conflict: true });
+        return stale;
+      }
+      return base.store.read(k);
+    },
+    compareAndSet: (k, revision, value) => base.store.compareAndSet(k, revision, value),
+  };
+  assert.equal((await base.bootstrap(next(base, s2, 3), { reanchor: true, historyStore: staleFirst })).reason, 'CONFLICT_DETECTED');
+  assert.ok(reads >= 2, 'the lost write was retried against the new state');
+  assert.equal((await mark(base))!.mark.conflict, true);
+});
+
+test('M3 8. the reverse order: a re-anchor that commits first is never undone into acceptance of the equivocation', async () => {
+  const { w: base, s1 } = await anchored();
+  const s3 = next(base, next(base, s1, 2), 3);
+  // Make continuity unproven so the re-anchor has a legitimate purpose.
+  expect(await base.check(READ, s3), 'CONTINUITY_UNPROVEN', 'DENIED');
+  let injected = false;
+  const racing: StatusHighWaterMarkStore = {
+    read: (key) => base.store.read(key),
+    async compareAndSet(key, revision, value) {
+      if (!injected) {
+        injected = true;
+        // The re-anchor commits between this check's read and its write.
+        assert.equal((await base.bootstrap(s3, { reanchor: true })).reason, 'REESTABLISHED');
+      }
+      return base.store.compareAndSet(key, revision, value);
+    },
+  };
+  const s4b = base.status({ sequence: 4, previousStatusDigest: OTHER_DIGEST, issuedAt: '2026-10-28T11:58:00.000Z' });
+  const result = await checkDocumentUseFreshness(base.decide(READ), s4b.text, base.context({ historyStore: racing }));
+  expect(result, 'CONFLICT_DETECTED', 'DENIED');
+  const final = (await mark(base))!.mark;
+  assert.equal(final.conflict, true, 'the fork is latched on top of the re-anchored head');
+  assert.equal((await base.bootstrap(s3, { reanchor: true })).reason, 'CONFLICT_DETECTED');
+  expect(await base.check(READ, s3), 'CONFLICT_DETECTED', 'DENIED');
+});
+
+test('M3 8. concurrent latch and re-anchor: once a conflict is latched it is never cleared', async () => {
+  for (let round = 0; round < 10; round += 1) {
+    const { w, s1 } = await anchored();
+    const s2 = next(w, s1, 2);
+    const s2b = next(w, s1, 2, { validUntil: '2026-10-29T00:00:00.5Z' });
+    expect(await w.check(READ, s2), 'FRESH', 'ALLOWED');
+    const [latch, re] = await Promise.all([w.check(READ, s2b), w.bootstrap(next(w, s2, 3), { reanchor: true })]);
+    const final = (await mark(w))!.mark;
+    if (latch.freshnessVerdict === 'CONFLICT_DETECTED' && latch.history.transition === 'conflict_recorded') assert.equal(final.conflict, true, `round ${round}`);
+    if (final.conflict) {
+      expect(await w.check(READ, s2), 'CONFLICT_DETECTED', 'DENIED');
+      assert.equal((await w.bootstrap(next(w, s2, 3), { reanchor: true })).reason, 'CONFLICT_DETECTED');
+    } else {
+      assert.equal(re.reason, 'REESTABLISHED');
+    }
+  }
+});
+
+test('M3 13–16. the safe re-anchor functions and ordinary updates are unchanged', async () => {
+  // Restoring continuity after a gap still works.
+  const { w, s1 } = await anchored();
+  const s3 = next(w, next(w, s1, 2), 3);
+  expect(await w.check(READ, s3), 'CONTINUITY_UNPROVEN', 'DENIED');
+  assert.equal((await w.bootstrap(s3, { reanchor: true })).reason, 'REESTABLISHED');
+  expect(await w.check(READ, s3), 'FRESH', 'ALLOWED');
+  // Monotonic linked updates still advance.
+  expect(await w.check(READ, next(w, s3, 4)), 'FRESH', 'ALLOWED');
+  assert.equal((await mark(w))!.mark.sequence, 4);
+  // First-time bootstrap still works.
+  const fresh = await world();
+  assert.equal((await fresh.bootstrap(fresh.status())).reason, 'ESTABLISHED');
 });
 
 test('bootstrap refuses invalid statuses and invalid contexts', async () => {

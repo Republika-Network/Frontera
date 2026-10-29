@@ -329,9 +329,14 @@ Checks, in order, and the first that fails decides:
      `CLOCK_ROLLBACK_DETECTED`.
    - **Writes:** the mark changes only through the store's atomic `compareAndSet`, against the
      revision it was computed from. A lost race is recomputed from the winner's state.
-   - **Clearing latches:** a latched conflict or a gap is cleared only by re-anchoring with
+   - **Gaps:** an unproven continuity is restored only by re-anchoring with
      `establishStatusHistory(..., { reanchor: true })`. A re-anchor never lowers the sequence, reopens a
      withdrawal or revives retired terms.
+   - **Conflicts:** a latched conflict is **not** cleared by anything here. Ordinary checks, bootstrap
+     and re-anchor all refuse a conflicted history (`CONFLICT_DETECTED`), whatever status is presented
+     and however often. A trusted operator alone is not sufficient evidence to clear an equivocation.
+     Evidence-based conflict recovery is future work. Until then the history stays fail-closed, as far as
+     this gate is concerned.
 5. **Meaning.** The presented status is now the latest this receiver knows:
    - `withdrawn` → `WITHDRAWN`;
    - no current terms → `REVOKED`;

@@ -44,15 +44,19 @@ A freshness result is not an authorization and not an executed operation. Every 
   action's maximum age. It does not mean that no newer status exists anywhere.
 - **`HISTORY_UNINITIALIZED`.** The receiver had no trusted anchor. No replay protection applied, and the
   operation was refused.
-- **`CONFLICT_DETECTED` and `CONTINUITY_UNPROVEN`** are sticky until the host re-anchors the history out
-  of band. A record should say which one occurred, and evidence of the re-anchor should be kept
-  separately.
+- **`CONTINUITY_UNPROVEN`** is sticky until the host re-anchors the history out of band. Evidence of
+  the re-anchor should be kept separately.
+- **`CONFLICT_DETECTED`** is terminal within this gate's recovery capabilities. Ordinary checks,
+  bootstrap and re-anchor all refuse a conflicted history, and nothing in FV-P4C-1 clears the latch. A
+  trusted operator alone is not sufficient evidence to clear an equivocation. Evidence-based recovery,
+  with its own authorization boundary and audit evidence, is future work. The conflict is not claimed
+  to be permanent beyond this gate.
 
 ## Bootstrap evidence
 
 `establishStatusHistory` is the trusted, out-of-band anchoring step. Its trust assumption is that the
 host obtained the status through a channel it trusts to be current. That assumption is not verifiable
-here. A later record of a bootstrap should capture:
+here. It never re-anchors a history with a latched conflict (`CONFLICT_DETECTED`). A later record of a bootstrap should capture:
 - who ran it and through which channel the status was obtained;
 - the anchored sequence and digest;
 - whether it was a re-anchor, and of what prior mark.
@@ -78,4 +82,6 @@ stay confidential. The result object carries none of these.
 
 1. The signed freshness record: format, signer, and binding to the operation and to the receiver.
 2. Bootstrap and re-anchor evidence, and who may perform them.
-3. How a freshness result joins the FV-P3 decision record and a later authorization record.
+3. The design of any evidence-based conflict recovery: what proves which status is legitimate, who may
+   authorize it, and what audit record it leaves.
+4. How a freshness result joins the FV-P3 decision record and a later authorization record.

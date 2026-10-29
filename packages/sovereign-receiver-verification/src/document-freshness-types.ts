@@ -176,6 +176,7 @@ export const STATUS_HISTORY_BOOTSTRAP_REASONS = Object.freeze([
   'CONTEXT_INVALID',
   'STATUS_REJECTED',
   'ALREADY_ESTABLISHED',
+  'CONFLICT_DETECTED',
   'REANCHOR_ROLLBACK',
   'REANCHOR_REACTIVATES_WITHDRAWN',
   'REANCHOR_REINTRODUCES_RETIRED_TERMS',
@@ -200,9 +201,10 @@ export interface StatusHistoryBootstrapContext {
   readonly expectedManifestDigest: string;
   readonly evaluationTime: string;
   /**
-   * Re-anchor an existing history (for example after a conflict was resolved
-   * out of band). Never lowers the sequence, never reopens a withdrawal and
-   * never makes retired terms current.
+   * Re-anchor an existing history (for example to restore continuity after a
+   * sequence gap). Never lowers the sequence, never reopens a withdrawal, never
+   * makes retired terms current, and never clears a latched conflict: a
+   * history with a conflict is refused (`CONFLICT_DETECTED`).
    */
   readonly reanchor?: true;
 }

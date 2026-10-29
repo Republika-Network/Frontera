@@ -254,7 +254,8 @@ function nextMark(mark: StatusHighWaterMark, status: SovereignStatusVerified, te
     withdrawn: mark.withdrawn || status.assetStatus === 'withdrawn',
     retiredTermsDigests: [...retired].sort(),
     continuity: gap ? 'unproven' : mark.continuity,
-    conflict: false,
+    // Never cleared by advancing. The gate refuses a latched history before it gets here.
+    conflict: mark.conflict,
     anchoredAt: mark.anchoredAt,
   };
 }
@@ -264,9 +265,16 @@ function nextMark(mark: StatusHighWaterMark, status: SovereignStatusVerified, te
  * a request, and never run implicitly by the gate. The host supplies a status
  * it obtained through a channel it trusts to be current; the status is still
  * fully verified. Without `reanchor` an existing history is never touched.
- * With it, a history is re-anchored (for example after a conflict was resolved
- * out of band) but never moved backwards: the sequence cannot decrease, a
+ * With it, a history is re-anchored (for example to restore continuity after a
+ * sequence gap) but never moved backwards: the sequence cannot decrease, a
  * withdrawal is never reopened and retired terms never become current.
+ *
+ * A history with a latched conflict is never re-anchored: the registrant
+ * signed incompatible statuses, and the host's trust in one of them is not
+ * evidence enough to clear that. Conflict recovery is not implemented here;
+ * a latched history stays refused. The check is repeated on every attempt
+ * against the revision about to be replaced, so a conflict latched
+ * concurrently makes the re-anchor's compare-and-set fail and the retry refuse.
  */
 export async function establishStatusHistory(signedStatusText: unknown, bootstrapContext: unknown): Promise<StatusHistoryBootstrapResult> {
   try {
@@ -324,6 +332,7 @@ async function bootstrap(signedStatusText: unknown, rawContext: unknown): Promis
       };
     } else {
       const { mark } = read;
+      if (mark.conflict) return bootstrapResult('CONFLICT_DETECTED');
       if (reanchor !== true) return bootstrapResult('ALREADY_ESTABLISHED');
       if (verified.sequence < mark.sequence) return bootstrapResult('REANCHOR_ROLLBACK');
       if (mark.withdrawn && verified.assetStatus !== 'withdrawn') return bootstrapResult('REANCHOR_REACTIVATES_WITHDRAWN');
