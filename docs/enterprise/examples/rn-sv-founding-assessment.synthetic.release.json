@@ -1,0 +1,18 @@
+{
+  "releaseVersion": "rn.sv.commercial-release.v1",
+  "reportId": "rn-sv-report:assurance-assessment-1:v1.0",
+  "assessmentId": "assurance-assessment-1",
+  "contentDigest": "sha256:00e43f33c28c92e044bd9bebd500be72d1c7bd2dc6941383406d04c0fbca25eb",
+  "markdownDigest": "sha256:ca94949699b7f40155b345843aadd2eaf8e0563bbf2cab5519b9668bceeba15d",
+  "manifestDigest": "sha256:f4da981cc3f19c6456f1cedf94cd90d447a7f5bc8a42ffae834780ab875009eb",
+  "approvedBy": "release-approver-1",
+  "approverRole": "assure.report-release",
+  "approvalAuthentication": "assurance_reviewer_credential",
+  "approvedAt": "2026-06-01T00:00:00.043Z",
+  "acknowledgements": {
+    "limitationsReviewed": true,
+    "commercialUseRestrictionAcknowledged": true
+  },
+  "statement": "An authenticated human approver released the report identified by the digests above, having reviewed its scope, limitations and the framework’s commercial-use restriction. This is a hash-bound approval record, not a digital signature.",
+  "releaseDigest": "sha256:cb7cbcf74d90f99b67ae6c08f73c87ce65bc0df382d4eb734a2682cd9b639625"
+}

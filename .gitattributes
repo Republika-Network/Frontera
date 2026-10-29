@@ -5,3 +5,6 @@ Dockerfile text eol=lf
 .dockerignore text eol=lf
 deploy/** text eol=lf
 scripts/deploy/*.mjs text eol=lf
+# ASSURE-REP-01: the synthetic commercial report example is covered by byte-exact
+# digests (LF line endings); a CRLF checkout would no longer verify.
+docs/enterprise/examples/** text eol=lf
