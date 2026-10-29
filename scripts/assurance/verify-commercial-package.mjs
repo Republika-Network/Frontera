@@ -7,16 +7,21 @@
 // with node:crypto, reads only the package directory and holds no credential.
 //
 // Options, each reported as its own dimension:
-//   --trusted-db <file>   assessment consistency against a read-only snapshot
-//                         of the issuer's Assurance Store (needs better-sqlite3)
+//   --store-copy <file>   compare with a read-only copy of the issuer's Assurance
+//                         Store: assessment consistency, and the release kept in
+//                         custody (ASSURE-REL-01A). Needs better-sqlite3.
+//                         `--trusted-db` is accepted as an older name.
 //   --renderer <file>     full re-render of report.json compared with report.md;
 //                         this one DOES load the generator's renderer and says so
 //
 // It distinguishes artifact integrity, report consistency (JSON <-> Markdown,
-// identifiers), approval consistency and assessment consistency. External
-// authenticity is always NOT DEMONSTRATED: the package carries hashes, not a
-// signature, and anyone who edits a file and recomputes every digest produces a
-// package that verifies (see docs/enterprise/ASSURE_PILOT_01_COMMERCIAL_DRY_RUN.md, F01).
+// identifiers), approval consistency, assessment consistency and release
+// custody. A store file handed to this script is comparison material, not an
+// authenticated authority: whoever forged a package could hand over a forged
+// copy too. Authoritative verification is `AssuranceService.verifyCommercialRelease`
+// against the Host's own store. External authenticity is always NOT
+// DEMONSTRATED: the package carries hashes, not a signature (see
+// docs/security/ASSURE-REL-01A-DURABLE-RELEASE-AUTHENTICITY.md).
 //
 // Prints JSON. Exit 0: every performed check passed; 1: a check failed;
 // 2: a required file is missing or the arguments are unusable.
@@ -28,7 +33,7 @@ import { pathToFileURL } from 'node:url';
 
 const argv = process.argv.slice(2);
 if (argv.length === 0 || argv[0].startsWith('--')) {
-  console.error('usage: verify-commercial-package.mjs <package dir> [--trusted-db <file>] [--renderer <commercial-report-markdown.js>]');
+  console.error('usage: verify-commercial-package.mjs <package dir> [--store-copy <file>] [--renderer <commercial-report-markdown.js>]');
   process.exit(2);
 }
 const dir = resolve(argv[0]);
@@ -81,6 +86,7 @@ const result = {
   reportConsistency: {},
   approvalConsistency: {},
   assessmentConsistency: {},
+  releaseCustody: {},
   externalAuthenticity: {},
 };
 const record = (section, name, ok, detail) => {
@@ -167,14 +173,42 @@ if (content && manifest && release) {
   record('approvalConsistency', 'commercial-use restriction recorded in the report', content.integrity?.commercialUse?.frameworkStatus === 'restricted', content.integrity?.commercialUse?.frameworkStatus);
 }
 
-// --- assessment consistency against the issuer's trusted store snapshot -------
-const trustedDb = option('trusted-db');
-if (trustedDb !== undefined && content && manifest) {
+// --- comparison with a copy of the issuer's store ----------------------------
+const storeCopy = option('store-copy') ?? option('trusted-db');
+if (storeCopy !== undefined && content && manifest) {
   const Database = createRequire(import.meta.url)('better-sqlite3');
-  const db = new Database(resolve(trustedDb), { readonly: true, fileMustExist: true });
+  const db = new Database(resolve(storeCopy), { readonly: true, fileMustExist: true });
   const row = db.prepare('SELECT status, framework_id, framework_version, normalized_score, assessment_json FROM assurance_assessments WHERE assessment_id = ?').get(manifest.assessmentId);
+  const custodyTable = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assurance_commercial_releases'`).get() !== undefined;
+  const custodyRow = custodyTable ? db.prepare('SELECT report_id, approved_by, release_digest, record_json, record_digest FROM assurance_commercial_releases WHERE report_id = ?').get(manifest.reportId) : undefined;
   db.close();
-  if (record('assessmentConsistency', 'assessment exists in the trusted source', row !== undefined)) {
+
+  // ASSURE-REL-01A: the release the issuer kept for this report version.
+  result.storeCopy = 'UNAUTHENTICATED_COPY: a store file handed to this verifier is compared, never trusted as the authority';
+  if (!custodyTable) {
+    record('releaseCustody', 'release in custody', false, 'NO_CUSTODY_TABLE: this store predates release custody; the release is not corroborated');
+  } else if (custodyRow === undefined) {
+    record('releaseCustody', 'release in custody', false, 'NOT_IN_CUSTODY: no release is kept for this report version; the release is not corroborated');
+  } else {
+    record('releaseCustody', 'release in custody', true);
+    let kept;
+    try {
+      kept = JSON.parse(custodyRow.record_json);
+    } catch {
+      kept = undefined;
+    }
+    const keptIntact = kept !== undefined && digestOf(without(kept, 'recordDigest')) === custodyRow.record_digest && kept.recordDigest === custodyRow.record_digest && kept.release?.releaseDigest === custodyRow.release_digest && kept.release?.approvedBy === custodyRow.approved_by;
+    record('releaseCustody', 'custody record intact', keptIntact);
+    if (kept !== undefined) {
+      const differing = (prefix, delivered, stored) =>
+        [...new Set([...Object.keys(delivered ?? {}), ...Object.keys(stored ?? {})])].sort().filter((key) => canonical(delivered?.[key] ?? null) !== canonical(stored?.[key] ?? null)).map((key) => `${prefix}.${key}`);
+      const mismatched = [...differing('release', release, kept.release), ...differing('manifest', manifest, kept.manifest)];
+      record('releaseCustody', 'delivered release record and manifest equal custody', mismatched.length === 0, mismatched);
+      record('releaseCustody', 'approver as recorded in custody', release.approvedBy === kept.release?.approvedBy, { delivered: release.approvedBy, custody: kept.release?.approvedBy });
+    }
+  }
+
+  if (record('assessmentConsistency', 'assessment exists in the store copy', row !== undefined)) {
     const assessment = JSON.parse(row.assessment_json);
     record('assessmentConsistency', 'status completed', row.status === 'completed' && assessment.status === 'completed', row.status);
     record('assessmentConsistency', 'assessmentDigest matches the stored assessment', assessment.integrity?.assessmentDigest === manifest.assessmentDigest);
@@ -187,14 +221,15 @@ if (trustedDb !== undefined && content && manifest) {
     record('assessmentConsistency', 'findings (control, severity) equal the stored findings', stored === reported, { stored, reported });
   }
 } else {
-  result.assessmentConsistency = { status: 'NOT_CHECKED: no trusted source supplied' };
+  result.assessmentConsistency = { status: 'NOT_CHECKED: no store copy supplied' };
+  result.releaseCustody = { status: 'NOT_CHECKED: no store copy supplied; the approver cannot be corroborated offline' };
 }
 
 result.externalAuthenticity = {
   status: 'NOT_DEMONSTRATED',
-  reason: 'The package carries hashes only: no digital signature, no external timestamp, no anchor, and the issuer does not persist release records. Anyone who edits a file and recomputes every digest produces a package that verifies. Authenticity requires comparing the digests with the issuer over an independent channel.',
+  reason: 'The package carries hashes only: no digital signature, no external timestamp, no anchor. Anyone who edits a file and recomputes every digest produces a package that verifies offline. The issuer keeps each release in custody (ASSURE-REL-01A): authenticity is established only by the issuer checking the package against its own store, or by comparing it with a store copy obtained over an independent, trusted channel.',
 };
-const sections = ['files', 'artifactIntegrity', 'reportConsistency', 'approvalConsistency', ...(trustedDb !== undefined ? ['assessmentConsistency'] : [])];
+const sections = ['files', 'artifactIntegrity', 'reportConsistency', 'approvalConsistency', ...(storeCopy !== undefined ? ['assessmentConsistency', 'releaseCustody'] : [])];
 const failedSections = sections.filter((section) => !sectionPassed(section));
 result.verdict = failedSections.length === 0 ? `PASS (${sections.join(', ')}); external authenticity NOT DEMONSTRATED` : `FAIL: ${failedSections.join(', ')}`;
 console.log(JSON.stringify(result, null, 2));

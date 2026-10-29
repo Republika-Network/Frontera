@@ -14,6 +14,7 @@ import type {
   AssuranceStoreHealth,
 } from './contracts.js';
 import type { AssuranceCompletionCommit } from './finding-history.js';
+import type { CommercialReleaseCustodyCommit, CommercialReleaseCustodyRecord } from './commercial-release-custody.js';
 
 /**
  * The Assurance Store (mission sections 48-52): an independent,
@@ -74,6 +75,25 @@ export interface AssuranceStore {
   listSignals(context: AssuranceAccessContext, query: AssuranceSignalQuery): Promise<readonly AssuranceSignal[]>;
 
   verifyAssessment(context: AssuranceAccessContext, assessmentId: string): Promise<AssuranceAssessmentVerificationResult>;
+
+  /**
+   * ASSURE-REL-01A: records a commercial report release in custody, once per
+   * `reportId`, append-only. In one write transaction it checks that the
+   * assessment exists in the record's organization and is `completed`, then
+   * either inserts the record (`committed`) or, when a release for that
+   * `reportId` is already kept, writes nothing and returns it (`existing`) --
+   * never overwriting it. An incoherent record is refused with
+   * `ASSURANCE_VALIDATION_ERROR`; a persistence failure with
+   * `ASSURANCE_STORE_UNAVAILABLE`, carrying no driver detail.
+   *
+   * Optional so that existing implementations still compile; the service
+   * refuses to release when a store does not implement custody.
+   */
+  commitCommercialRelease?(context: AssuranceAccessContext, record: CommercialReleaseCustodyRecord): Promise<CommercialReleaseCustodyCommit>;
+  /** ASSURE-REL-01A: the release kept for `reportId`, or `null` (also when it belongs to another organization). A corrupted record throws `ASSURANCE_INTEGRITY_FAILED`. */
+  getCommercialRelease?(context: AssuranceAccessContext, reportId: string): Promise<CommercialReleaseCustodyRecord | null>;
+  /** ASSURE-REL-01A: every release kept for an assessment within the caller's scope, oldest first. */
+  listCommercialReleases?(context: AssuranceAccessContext, assessmentId: string): Promise<readonly CommercialReleaseCustodyRecord[]>;
 
   health(): Promise<AssuranceStoreHealth>;
   close(): Promise<void>;

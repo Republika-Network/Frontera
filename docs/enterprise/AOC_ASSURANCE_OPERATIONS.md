@@ -50,7 +50,8 @@ breakdowns, `assurance_findings_closed_total`,
 
 Closed field set only (`EnterpriseLogContext`): assessment/framework/
 subject/organization/control/domain/finding ids, statuses, severities,
-normalized scores, durations, error codes, evaluator version. Never logged:
+normalized scores, durations, error codes, evaluator version, and the
+`reportId` of a commercial release (ASSURE-REL-01A). Never logged:
 full Evidence Bundles, full Governance Records, sensitive Passport details,
 raw external artifact payloads, credentials, secrets, arbitrary context.
 
@@ -77,10 +78,21 @@ assessment+profile) — all FK'd to `assurance_assessments` and written once
 at the terminal save as queryable projections; `assurance_findings` (FK to
 assessments), `assurance_finding_events` (FK to findings; UNIQUE
 finding+sequence), `assurance_manual_reviews` (FK to assessments),
-`assurance_signals` (indexed by org+subject). WAL journal, `synchronous =
+`assurance_signals` (indexed by org+subject), and `assurance_commercial_releases`
+(ASSURE-REL-01A: release custody; PK report_id; FK to assessments; append-only
+triggers; added at open time without changing the schema identifier). WAL journal, `synchronous =
 FULL`, foreign keys ON, busy timeout, prepared statements, transactions
 around every multi-row write. No general UPDATE/DELETE surface exists; the
 only UPDATEs are non-terminal snapshot upserts and the supersession marker.
+
+**Opening (ASSURE-REL-01A-R1).** The file is read before anything writes it.
+It is refused, unchanged, if it is unreadable, holds objects without a version
+ledger, has an unreadable ledger, records another schema version, or has
+release-custody objects of another structure or only partly created. Only a
+compatible or empty file is switched to WAL. It is then initialized (v1 DDL,
+custody DDL and version row) in one IMMEDIATE transaction, kept whole or not
+at all. Commercial releases require this store: the in-memory provider cannot
+release.
 
 ## Access control assumptions
 

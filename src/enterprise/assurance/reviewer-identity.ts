@@ -33,6 +33,13 @@ export interface AssuranceReviewerAuthenticator {
   authenticate(bearerToken: string): AssuranceReviewerPrincipal | undefined;
   /** Whether `principal` was issued by this authenticator. Structural look-alikes are not. */
   isAuthenticated(principal: unknown): principal is AssuranceReviewerPrincipal;
+  /**
+   * ASSURE-REL-01A: whether a credential for `reviewerId` in `organizationId`
+   * is configured now and holds `role`. Reports today's configuration only --
+   * it authenticates nobody, and a later revocation never rewrites a recorded
+   * approval.
+   */
+  isCurrentlyAuthorized(reviewerId: string, organizationId: string, role: string): boolean;
 }
 
 export function createAssuranceReviewerAuthenticator(credentials: readonly AssuranceReviewerCredential[]): AssuranceReviewerAuthenticator {
@@ -53,6 +60,9 @@ export function createAssuranceReviewerAuthenticator(credentials: readonly Assur
     },
     isAuthenticated(principal): principal is AssuranceReviewerPrincipal {
       return typeof principal === 'object' && principal !== null && issued.has(principal);
+    },
+    isCurrentlyAuthorized(reviewerId, organizationId, role) {
+      return configured.some((credential) => credential.reviewerId === reviewerId && credential.organizationId === organizationId && credential.roles.includes(role));
     },
   };
 }

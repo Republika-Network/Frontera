@@ -185,6 +185,13 @@ write-once queryable projections written at the terminal save
 | `assurance_finding_events` | `finding_event_id` | `UNIQUE(finding_id, sequence)` | `finding_id` → `assurance_findings(finding_id)` | — |
 | `assurance_manual_reviews` | `review_id` | — | `assessment_id` → assessments | assessment |
 | `assurance_signals` | `signal_id` | — | — | (org, subject) |
+| `assurance_commercial_releases` (ASSURE-REL-01A) | `report_id` | (primary key — one release per report version) | `assessment_id` → assessments | assessment |
+
+`assurance_commercial_releases` is created at open time on an existing v1
+database, without changing the schema identifier or any existing row, and
+carries a per-row `custody_version`. `BEFORE UPDATE` and `BEFORE DELETE`
+triggers make it append-only. See
+`docs/security/ASSURE-REL-01A-DURABLE-RELEASE-AUTHENTICITY.md` §13.
 
 Mutations are tightly bounded: the assessment row may be upserted only
 until it reaches a terminal status (a terminal assessment throws

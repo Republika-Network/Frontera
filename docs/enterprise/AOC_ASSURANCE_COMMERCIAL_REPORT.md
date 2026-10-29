@@ -64,8 +64,21 @@ A system context, a declared identity or an `actorId` cannot release.
 Generating a draft writes nothing. A release is not emitted automatically
 after `completeAssessment`.
 
-The release record is returned and **not persisted**. No schema or migration
-was added. Keep it with the delivered files (§7).
+**Custody (ASSURE-REL-01A).** The release record is kept in the Assurance
+Store before it is returned. A report version is released once:
+
+- the same approver repeating the request gets the kept record back
+  (`custody.outcome: 'replayed'`);
+- another approver, or other content under a released version, is refused
+  (`ASSURANCE_ASSESSMENT_IMMUTABLE`, `commercial_release_conflict`);
+- only durable custody can release: the SQLite Assurance Store
+  (ASSURE-REL-01A-R1). The in-memory store, and any store that merely claims to
+  be SQLite, is refused with `ASSURANCE_STORE_UNAVAILABLE` before an approval is
+  built. Drafting and verification still work on it.
+
+`verifyCommercialRelease` checks a delivered package against that record. See
+`docs/security/ASSURE-REL-01A-DURABLE-RELEASE-AUTHENTICITY.md`. The delivered
+record's format is unchanged. Still deliver it with the files (§7).
 
 ## 4. Disclosure model: deny by default
 
@@ -146,7 +159,10 @@ and a new framework version.
 | `releaseDigest` | the release record: the three digests above, the approver, role, time and acknowledgements |
 
 `verifyCommercialReport({ content, markdown, manifest, release })`
-recomputes all of them and names the part that changed.
+recomputes all of them and names the part that changed. That is integrity
+only. `AssuranceService.verifyCommercialRelease` additionally compares the
+release record and manifest with the Host's custody, which is how a forged
+approver is detected (ASSURE-REL-01A).
 
 These are integrity digests, **not a digital signature**, and they provide no
 non-repudiation. They do not show that the underlying evidence is true. The
@@ -178,7 +194,10 @@ with `REP01_WRITE_EXAMPLE=1` set while running that test file.
 ## 10. Before delivery
 
 - Readiness is READY_FOR_RELEASE, and the release record exists.
-- `verifyCommercialReport` returns `valid: true` for the four delivered files.
+- `verifyCommercialReport` returns `valid: true` for the four delivered files,
+  and `verifyCommercialRelease` returns `releaseAuthenticated: true`.
+- The Host releasing it runs `persistence.provider = sqlite`; no other provider
+  can release.
 - Re-read the scope, exclusions and limitations against the engagement contract.
 - Check that no customer-confidential term appears in the declared text.
 - Deliver the files unchanged, so that no editor re-encodes the Markdown.
@@ -194,10 +213,13 @@ A delivered report is never edited.
 
 ## 12. Residual risks
 
-- **Release records are not persisted by the Host.** Their custody is
-  procedural.
+- **Release custody is the issuer's own record (ASSURE-REL-01A).** It detects
+  a forged approver when a package is checked against it. It is not
+  non-repudiation: someone who can write the store directly and recompute
+  every digest can rewrite it.
 - **No digital signature or external timestamp.** The digests detect change
-  but do not prove who issued the report.
+  but do not prove who issued the report. Offline, a package whose approver
+  was changed and whose digests were recomputed still verifies.
 - **Declared text** is cleared by allowlist placement plus conservative
   classification. A term that is confidential to the customer but looks
   harmless can still pass and must be checked by the approver.
