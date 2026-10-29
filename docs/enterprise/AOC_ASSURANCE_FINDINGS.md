@@ -56,8 +56,13 @@ an earlier finding: closure is an explicit, attributable event.
 ## Storage
 
 Finding rows persist at the assessment's terminal save (the working findings
-set may be replaced by re-evaluation before completion); their
-`AssuranceFindingCreated` events are appended at completion. Post-completion,
+set may be replaced by re-evaluation before completion). Since ASSURE-SEC-01E,
+completion is one store unit (`AssuranceStore.completeAssessment`): the
+completed assessment, its findings, one `AssuranceFindingCreated` event per
+finding and the supersession of a replaced assessment persist together, or
+nothing does. A failed completion is reported (`ASSURANCE_STORE_UNAVAILABLE`,
+retryable) and leaves the assessment completable. A second completion is
+refused (`ASSURANCE_ASSESSMENT_IMMUTABLE`). Post-completion,
 signal-driven findings (`control_evidence_missing`) append via
 `saveFinding` + a Created event — the completed assessment's frozen content
 is never touched (its digests cover the evaluation-time findings).

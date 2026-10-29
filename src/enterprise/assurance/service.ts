@@ -573,11 +573,10 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
       }
 
       const completedAt = now();
-      const completed = await saveWithIntegrity(context, { ...assessment, status: 'completed', completedAt });
-
-      // Findings become append-only lifecycle histories at completion.
-      for (const finding of completed.findings) {
-        const event = buildFindingEvent({
+      const completed = withIntegrity({ ...assessment, status: 'completed', completedAt });
+      // Findings become append-only lifecycle histories at completion: each opens with one event.
+      const findingEvents = completed.findings.map((finding) =>
+        buildFindingEvent({
           findingEventId: nextId('assurance-finding-event'),
           findingId: finding.findingId,
           assessmentId,
@@ -586,14 +585,30 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
           sequence: 1,
           actorId: completed.provenance.requestedBy,
           occurredAt: completedAt,
-        });
-        await store.appendFindingEvent(context, event).catch(() => {});
+        }),
+      );
+
+      // Whether this completion supersedes the prior assessment, or that one was already superseded (observability only).
+      const supersedesCompleted =
+        completed.supersedesAssessmentId !== undefined && (await store.getAssessment(context, completed.supersedesAssessmentId))?.status === 'completed';
+
+      // ASSURE-SEC-01E: the completion, every opening event and the supersession
+      // of a replaced assessment persist as one unit, or not at all. A failure
+      // is reported, never swallowed, and leaves the assessment completable.
+      try {
+        await store.completeAssessment(context, { assessment: completed, findingEvents });
+      } catch (error) {
+        const failure =
+          error instanceof AssuranceError
+            ? error
+            : new AssuranceError('ASSURANCE_STORE_UNAVAILABLE', `Assessment '${assessmentId}' could not be completed: the Assurance Store reported a failure while persisting the completion.`, { assessmentId });
+        logger?.warn('assurance.assessment.completion_failed', { assessmentId, errorCode: failure.code });
+        throw failure;
       }
 
       // Reassessment supersession (mission section 40): the prior assessment
-      // is marked superseded only now that its replacement is complete.
-      if (completed.supersedesAssessmentId !== undefined) {
-        await store.markSuperseded(context, completed.supersedesAssessmentId, assessmentId);
+      // was marked superseded in the same unit, now that its replacement is complete.
+      if (completed.supersedesAssessmentId !== undefined && supersedesCompleted) {
         publish('AssuranceAssessmentSuperseded', {
           assessmentId: completed.supersedesAssessmentId,
           organizationId: completed.subject.organizationId,
