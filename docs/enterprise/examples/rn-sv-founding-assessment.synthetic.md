@@ -1,6 +1,6 @@
 # Republika Sovereignty Assessment — Founding Assessment
 
-> **READY FOR RELEASE** — not yet released. This document may be delivered only together with a release record whose digests match its manifest.
+> **READY FOR RELEASE.** Every release check passed. Readiness is not release: this document does not state whether it was released. A release is established only by an accompanying release record whose digests match this report’s manifest, confirmed by the issuer’s release custody. Without one, this report is not released.
 
 | Field | Value |
 | --- | --- |
@@ -526,7 +526,7 @@ Not included\. This report describes one point\-in\-time assessment; continuous 
 | Assessment digest | sha256:7346ed20936b70d1f6516772308c4907617661a0ef9cb6f8b7e63a2cc3899127 |
 | Framework | rn\.sv@0\.1\.0 |
 | Framework digest | sha256:e71fafe1a10af95514823e35d43138b1b93cdb72e37765200447a37748c13a58 |
-| Generator | aoc\.assurance\.commercial\-report\.v1 |
+| Generator | aoc\.assurance\.commercial\-report\.v2 |
 | Issued on | 2026\-06\-01 |
 | Evidence cutoff | 2026\-05\-31T00:00:00\.000Z |
 | Authenticated reviewers | reviewer\-1 |
@@ -534,7 +534,7 @@ Not included\. This report describes one point\-in\-time assessment; continuous 
 
 The framework definition records commercial use as restricted pending controlled review\. Release of this report requires an authenticated human approver to acknowledge that restriction and act as that review; the release record states whether this happened\.
 
-Not released by this document\. Release is a separate record that binds an authenticated human approval to this report’s digests\.
+This document does not record its own release\. A release is a separate record, kept by the issuer, that binds an authenticated human approval to this report’s digests\. Without a matching release record confirmed by the issuer, this report is not released\.
 
 The digests in the manifest show integrity only\. They are not a digital signature, do not provide non\-repudiation, and do not authenticate the evidence\.
 

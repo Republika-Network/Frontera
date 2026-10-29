@@ -22,3 +22,10 @@ also verifies these four files once they are copied under their delivery names
 (`report.md`, `report.json`, `integrity-manifest.json`, `release-record.json`).
 What such a verification does and does not show is set out in
 `docs/enterprise/ASSURE_PILOT_01_COMMERCIAL_DRY_RUN.md`.
+
+The example is produced by generator `aoc.assurance.commercial-report.v2`, so
+its report states no release status of its own (ASSURE-REL-01C).
+`historical/rn-sv-founding-assessment.synthetic.v1.*` holds the same example
+as generator v1 produced it, byte for byte, including its "not yet released"
+wording. It is kept unedited to prove that v1 packages still verify and
+re-render identically. It is equally synthetic.

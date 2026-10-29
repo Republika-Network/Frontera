@@ -11,7 +11,7 @@ import { AssuranceError } from '../assurance/errors.js';
 import { computeDigest } from '../governance-store/digest.js';
 import { findingHistoryViolations } from '../assurance/finding-history.js';
 import { escapeMarkdownText } from '../assurance/commercial-report-markdown.js';
-import { COMMERCIAL_REPORT_RELEASE_ROLE, type CommercialReportDraft, type CommercialReportManifest, type CommercialReportRelease } from '../assurance/commercial-report.js';
+import { COMMERCIAL_REPORT_RELEASE_ROLE, verifyCommercialReport, type CommercialReportDraft, type CommercialReportManifest, type CommercialReportRelease } from '../assurance/commercial-report.js';
 import type { CommercialReleasePackage } from '../assurance/commercial-release-custody.js';
 import { RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_V0_1, RN_SV_FRAMEWORK_VERSION } from '../assurance/frameworks/rn-sv-framework.js';
 import { AOC_SAF_FRAMEWORK_ID, AOC_SAF_FRAMEWORK_VERSION } from '../assurance/saf-framework.js';
@@ -66,7 +66,8 @@ import {
  * remain and now show both halves -- the forged package still passes offline
  * integrity, and custody rejects it. F02 was inverted by ASSURE-REL-01B: the
  * deadlocked attempt still cannot be concluded, and it can now be ended as
- * inconclusive and followed by a linked new attempt. See
+ * inconclusive and followed by a linked new attempt. F03 was inverted by
+ * ASSURE-REL-01C: a released report no longer says it is not released. See
  * docs/enterprise/ASSURE_PILOT_01_COMMERCIAL_DRY_RUN.md.
  */
 
@@ -307,7 +308,7 @@ describe('ASSURE-PILOT-01 -- end-to-end commercial dry run over SQLite', () => {
     assert.equal(draft.content.results.normalizedScore, completed.score.normalizedScore);
     assert.equal(draft.content.findings.length, completed.findings.length);
     assert.equal(draft.manifest.assessmentDigest, completed.integrity.assessmentDigest);
-    assert.match(draft.content.integrity.release, /^Not released/);
+    assert.match(draft.content.integrity.release, /^This document does not record its own release\./);
     assert.ok(!world.events.some((event) => /Release/i.test(event.type)), 'completion emits no release');
   });
 
@@ -575,13 +576,37 @@ describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS and their resolutions (each pins 
     assert.equal((await world.service.getAssessment(PILOT_ORG_CONTEXT, id))?.status, 'failed', 'the ended attempt is untouched');
   });
 
-  it('F03 KNOWN LIMITATION -- the released Markdown says it is not released, while its release record says it is', () => {
+  it('F03 RESOLVED (ASSURE-REL-01C) -- the released report no longer says it is not released; it states no release status of its own, and its release record and the Host custody establish the release', async () => {
     const markdown = readFileSync(join(packageDir, 'report.md'), 'utf8');
-    assert.match(markdown, /\*\*READY FOR RELEASE\*\* — not yet released/);
-    assert.ok(markdown.includes(`Not released by this document${escapeMarkdownText('.')}`));
+    // 1. A draft is unmistakably a draft.
+    const { exclusions: _omitted, ...withoutExclusions } = PILOT_ENGAGEMENT;
+    const notReady = await world.service.buildCommercialReportDraft(PILOT_ORG_CONTEXT, assessment.assessmentId, { engagement: withoutExclusions, issue: PILOT_ISSUE });
+    assert.equal(notReady.content.readiness.status, 'DRAFT');
+    assert.match(notReady.markdown, /^# .*\n\n> \*\*DRAFT — NOT FOR DELIVERY\.\*\*/);
+    // 2. Ready is not released: the delivered text claims neither release nor its absence.
+    assert.match(markdown, /> \*\*READY FOR RELEASE\.\*\* Every release check passed\. Readiness is not release/);
+    assert.equal(/not yet released|Not released by this document/.test(markdown), false, 'the F03 contradiction is gone');
+    assert.equal(/\breleased on\b|has been released|\bRELEASED\b/.test(markdown), false, 'and the document does not claim a release either');
+    // 3/4/5. The release record releases exactly these bytes, which did not change at release time.
+    assert.equal(markdown, draft.markdown, 'the approved bytes are the delivered bytes');
     const record = readJson(packageDir, 'release-record.json');
     assert.equal(record['approvedBy'], PILOT_CREDENTIALS.approver.reviewerId);
-    assert.equal(record['markdownDigest'], sha256(readFileSync(join(packageDir, 'report.md'))), 'the record releases exactly that Markdown');
+    assert.equal(record['markdownDigest'], sha256(readFileSync(join(packageDir, 'report.md'))));
+    assert.equal(verifyCommercialReport(readPackage(packageDir)).valid, true);
+    // 6. The Host custody confirms the release.
+    assert.equal((await world.service.verifyCommercialRelease(PILOT_ORG_CONTEXT, readPackage(packageDir))).releaseAuthenticated, true);
+    // 7. Offline verification claims no authenticity.
+    const offline = verify(packageDir);
+    assert.equal(offline.exit, 0, offline.verdict);
+    assert.equal(offline.externalAuthenticity, 'NOT_DEMONSTRATED');
+    // 8. A release banner added after approval is caught, offline and against custody.
+    const bannered = tampered(packageDir, (dir) => editText(dir, 'report.md', (text) => text.replace('> **READY FOR RELEASE.**', '> **RELEASED.**')));
+    assert.ok(verify(bannered).failed.includes('artifactIntegrity: report.md markdownDigest (exact bytes)'));
+    const resealed = tampered(packageDir, (dir) => {
+      editText(dir, 'report.md', (text) => text.replace('> **READY FOR RELEASE.**', '> **RELEASED.**'));
+      reseal(dir);
+    });
+    assert.equal((await world.service.verifyCommercialRelease(PILOT_ORG_CONTEXT, readPackage(resealed))).authority, 'RELEASE_MISMATCH');
   });
 
   it('F04 KNOWN LIMITATION -- no operational interface: no route, SDK, app or script outside the Assurance module invokes the commercial report', () => {

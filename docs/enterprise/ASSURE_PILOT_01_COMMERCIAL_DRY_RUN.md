@@ -207,6 +207,17 @@ it. This is by design: the Markdown cannot contain the record that binds its
 own digest. A customer who receives only the Markdown is nonetheless told that
 it is unreleased.
 
+**Resolved for new reports by ASSURE-REL-01C**
+(`docs/security/ASSURE-REL-01C-RELEASED-REPORT-CONSISTENCY.md`). Generator v2
+writes no release status into the report. Its READY banner and release
+statement say only what stays true after a release: release is established by
+a matching release record confirmed by the issuer's custody, and without one
+the report is not released. The approved bytes are never edited, and no banner
+is added after approval (a post-approval banner is detected).
+
+v1 reports keep their wording, and still verify and re-render byte for byte.
+The F03 test was inverted, not deleted.
+
 ### F04 — No operational interface
 
 `buildCommercialReportDraft` and `releaseCommercialReport` have no HTTP route,
@@ -238,7 +249,7 @@ exists.
 | Human approval | READY (technical) |
 | Release-record custody | CONDITIONAL (ASSURE-REL-01A: durable, authenticated, unique custody; issuer-controlled, no signature, offline authenticity not demonstrated) |
 | Reproducibility | CONDITIONAL |
-| Customer delivery | CONDITIONAL (no signature; CRLF fragility; F03) |
+| Customer delivery | CONDITIONAL (no signature; CRLF fragility; F03 resolved for v2 reports by ASSURE-REL-01C, while v1 reports keep their wording) |
 | Commercial-use policy | **BLOCKED** (`commercialUse: restricted`; needs a governance decision and a new framework version) |
 | Host operation | **BLOCKED** (F04) |
 | Customer data handling | **BLOCKED** (no retention, deletion or location policy) |
@@ -258,8 +269,8 @@ exists.
    explicit termination of the attempt and a linked new attempt. A review
    still never concludes a contradicted control.
 5. Refuse manual reviews on terminal assessments.
-6. Reword the released Markdown's banner so that it is valid only together
-   with a matching release record (F03).
+6. ~~Reword the released Markdown's banner (F03).~~ Done in ASSURE-REL-01C
+   (generator v2).
 7. Validate in the Host configuration that reviewer IDs are not emails.
 8. Take the governance decision on `commercialUse: restricted`.
 
