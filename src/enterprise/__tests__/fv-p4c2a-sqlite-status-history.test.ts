@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -8,12 +8,13 @@ import { describe, it } from 'node:test';
 import Database from 'better-sqlite3';
 
 import {
+  STATUS_HISTORY_BOOTSTRAP_EVIDENCE_SCHEMA,
   SOVEREIGN_STATUS_HISTORY_MAX_RETIRED_TERMS,
   SOVEREIGN_STATUS_HISTORY_SCHEMA_VERSION,
   SovereignStatusHistoryStoreError,
   openSqliteStatusHighWaterMarkStore,
 } from '../sovereign-status-history/index.js';
-import type { SovereignStatusHighWaterMark, SqliteStatusHighWaterMarkStore } from '../sovereign-status-history/index.js';
+import type { SovereignStatusHighWaterMark, SovereignStatusHistoryKey, SqliteStatusHighWaterMarkStore, StatusHistoryBootstrapEvidenceDraft } from '../sovereign-status-history/index.js';
 
 // FV-P4C-2A — the durable status high-water-mark store, exercised directly with
 // synthetic marks. The end-to-end chain through the real freshness gate is
@@ -39,6 +40,36 @@ function mark(overrides: Partial<SovereignStatusHighWaterMark> = {}): SovereignS
     anchoredAt: '2026-10-28T12:00:00Z',
     ...overrides,
   };
+}
+
+let requestCounter = 0;
+
+/** A synthetic bootstrap evidence draft for `next`, as the FV-P4C-2B1 coordinator would record it. */
+function draftFor(store: SqliteStatusHighWaterMarkStore, key: SovereignStatusHistoryKey, next: SovereignStatusHighWaterMark, operation: 'establish' | 'reanchor' = 'establish'): StatusHistoryBootstrapEvidenceDraft {
+  requestCounter += 1;
+  return {
+    schemaVersion: STATUS_HISTORY_BOOTSTRAP_EVIDENCE_SCHEMA,
+    operationId: 'op:test',
+    requestId: `req:test-${requestCounter}`,
+    namespace: store.namespace,
+    sovereignAssetId: key.sovereignAssetId,
+    issuer: key.issuer,
+    operation,
+    purpose: operation === 'establish' ? 'initial-trust-anchor' : 'continuity-restoration',
+    bindingDigest: D('e'),
+    operatorRef: 'operator:test',
+    authorityRef: 'authority:test',
+    sources: [{ sourceClass: 'issuer-status-channel', sourceRef: 'source:test', observedAt: next.anchoredAt }],
+    status: { sequence: next.sequence, statusDigest: next.statusDigest },
+    evaluationTime: next.anchoredAt,
+    result: 'committed',
+    classification: 'host-recorded-unsigned',
+  };
+}
+
+/** Creates a history the only way the store allows: with bootstrap evidence. */
+async function seed(store: SqliteStatusHighWaterMarkStore, key: SovereignStatusHistoryKey, next: SovereignStatusHighWaterMark): Promise<boolean> {
+  return (await store.compareAndSetWithEvidence(key, null, next, draftFor(store, key, next))) !== false;
 }
 
 async function withDirectory<T>(work: (dir: string) => Promise<T>): Promise<T> {
@@ -85,7 +116,7 @@ describe('FV-P4C-2A durable status history — lifecycle', () => {
   it('3–6. a trusted first write is read back, survives close and reopen, and a new instance sees it', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
-      assert.equal(await store.compareAndSet(KEY, null, mark()), true);
+      assert.equal(await seed(store, KEY, mark()), true);
       const first = await store.read(KEY);
       assert.deepEqual(first, { revision: 1, mark: mark() });
       assert.equal(Object.isFrozen(first), true);
@@ -135,7 +166,7 @@ describe('FV-P4C-2A durable status history — lifecycle', () => {
   it('a file whose pages fail the integrity check is refused', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
-      for (let i = 0; i < 200; i += 1) await store.compareAndSet({ sovereignAssetId: `sa:asset-${i}`, issuer: KEY.issuer }, null, mark({ sovereignAssetId: `sa:asset-${i}` }));
+      for (let i = 0; i < 200; i += 1) await seed(store, { sovereignAssetId: `sa:asset-${i}`, issuer: KEY.issuer }, mark({ sovereignAssetId: `sa:asset-${i}` }));
       store.close();
       const db = raw(path);
       db.pragma('wal_checkpoint(TRUNCATE)');
@@ -157,7 +188,7 @@ describe('FV-P4C-2A durable status history — lifecycle', () => {
       store.close();
       const db = raw(path);
       db.exec('DROP TRIGGER sovereign_status_history_meta_fixed');
-      db.prepare("UPDATE sovereign_status_history_meta SET schema_version = 'frontera.sovereign-status-history.v2'").run();
+      db.prepare("UPDATE sovereign_status_history_meta SET schema_version = 'frontera.sovereign-status-history.v1'").run();
       db.exec(`CREATE TRIGGER sovereign_status_history_meta_fixed BEFORE UPDATE ON sovereign_status_history_meta WHEN 1 BEGIN SELECT RAISE(ABORT, 'x'); END;`);
       db.close();
       await rejectsWith(openSqliteStatusHighWaterMarkStore(path, { namespace: NAMESPACE }), 'OPEN_REFUSED');
@@ -186,7 +217,7 @@ describe('FV-P4C-2A durable status history — lifecycle', () => {
       store.close();
       store.close();
       await rejectsWith(store.read(KEY), 'CLOSED');
-      await rejectsWith(store.compareAndSet(KEY, null, mark()), 'CLOSED');
+      await rejectsWith(seed(store, KEY, mark()), 'CLOSED');
     });
   });
 });
@@ -196,8 +227,11 @@ describe('FV-P4C-2A durable status history — compare-and-set', () => {
     await withDirectory(async (dir) => {
       const { store } = await created(dir);
       assert.equal(await store.compareAndSet(KEY, 1, mark()), false, 'no row: an expected revision cannot match');
-      assert.equal(await store.compareAndSet(KEY, null, mark()), true);
-      assert.equal(await store.compareAndSet(KEY, null, mark({ statusDigest: D('9') })), false, 'an existing history is never overwritten by an insert');
+      assert.equal(await seed(store, KEY, mark()), true);
+      assert.equal(await seed(store, KEY, mark({ statusDigest: D('9') })), false, 'an existing history is never overwritten by an insert');
+      await rejectsWith(store.compareAndSet(KEY, null, mark({ sovereignAssetId: 'sa:other' }) as never), 'INVALID_WRITE');
+      await rejectsWith(store.compareAndSet({ sovereignAssetId: 'sa:other', issuer: KEY.issuer }, null, mark({ sovereignAssetId: 'sa:other' })), 'INVALID_WRITE');
+      await rejectsWith(store.compareAndSet(KEY, 1, mark({ anchoredAt: '2026-10-28T12:30:00Z' })), 'INVALID_WRITE');
       const next = mark({ sequence: 2, statusDigest: D('2') });
       assert.equal(await store.compareAndSet(KEY, 2, next), false, 'a revision that does not exist yet');
       assert.equal(await store.compareAndSet(KEY, 1, next), true);
@@ -211,7 +245,7 @@ describe('FV-P4C-2A durable status history — compare-and-set', () => {
     await withDirectory(async (dir) => {
       const { store } = await created(dir);
       const head = mark({ sequence: 5, statusDigest: D('5'), withdrawn: true, currentTermsDigest: null, conflict: true, retiredTermsDigests: [D('a'), D('b')], timeFloor: '2026-10-28T11:55:00Z', issuedAt: '2026-10-28T11:55:00Z' });
-      await store.compareAndSet(KEY, null, head);
+      await seed(store, KEY, head);
       const downgrades: Array<[string, Partial<SovereignStatusHighWaterMark>]> = [
         ['lower sequence', { sequence: 4 }],
         ['reopen withdrawal', { withdrawn: false }],
@@ -243,13 +277,13 @@ describe('FV-P4C-2A durable status history — compare-and-set', () => {
         { ...mark(), sovereignAssetId: 'sa:another' },
         null,
       ];
-      for (const [index, next] of cases.entries()) await rejectsWith(store.compareAndSet(KEY, null, next as SovereignStatusHighWaterMark), 'INVALID_WRITE').catch((e) => assert.fail(`case ${index}: ${String(e)}`));
-      await rejectsWith(store.compareAndSet({ sovereignAssetId: '', issuer: KEY.issuer }, null, mark()), 'INVALID_WRITE');
+      for (const [index, next] of cases.entries()) await rejectsWith(store.compareAndSetWithEvidence(KEY, null, next as SovereignStatusHighWaterMark, draftFor(store, KEY, mark())), 'INVALID_WRITE').catch((e) => assert.fail(`case ${index}: ${String(e)}`));
+      await rejectsWith(seed(store, { sovereignAssetId: '', issuer: KEY.issuer }, mark()), 'INVALID_WRITE');
       await rejectsWith(store.compareAndSet(KEY, 0, mark()), 'INVALID_WRITE');
       assert.equal(await store.read(KEY), undefined);
       // The maximum is accepted, not truncated.
       const max = Array.from({ length: SOVEREIGN_STATUS_HISTORY_MAX_RETIRED_TERMS }, (_, i) => i.toString(16).padStart(64, '0'));
-      assert.equal(await store.compareAndSet(KEY, null, mark({ retiredTermsDigests: max })), true);
+      assert.equal(await seed(store, KEY, mark({ retiredTermsDigests: max })), true);
       assert.equal((await store.read(KEY))!.mark.retiredTermsDigests.length, SOVEREIGN_STATUS_HISTORY_MAX_RETIRED_TERMS);
       store.close();
     });
@@ -259,8 +293,8 @@ describe('FV-P4C-2A durable status history — compare-and-set', () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
       const other = { sovereignAssetId: KEY.sovereignAssetId, issuer: 'did:example:other' };
-      await store.compareAndSet(KEY, null, mark());
-      await store.compareAndSet(other, null, mark({ issuer: other.issuer, conflict: true }));
+      await seed(store, KEY, mark());
+      await seed(store, other, mark({ issuer: other.issuer, conflict: true }));
       assert.equal((await store.read(KEY))!.mark.conflict, false);
       assert.equal((await store.read(other))!.mark.conflict, true);
       store.close();
@@ -275,7 +309,7 @@ describe('FV-P4C-2A durable status history — compare-and-set', () => {
     await withDirectory(async (dir) => {
       const a = await openSqliteStatusHighWaterMarkStore(join(dir, 'a.sqlite'), { namespace: 'tenant:a', create: true });
       const b = await openSqliteStatusHighWaterMarkStore(join(dir, 'b.sqlite'), { namespace: 'tenant:b', create: true });
-      await a.compareAndSet(KEY, null, mark({ conflict: true }));
+      await seed(a, KEY, mark({ conflict: true }));
       assert.equal(await b.read(KEY), undefined);
       a.close();
       b.close();
@@ -288,7 +322,7 @@ describe('FV-P4C-2A durable status history — a raw writer and corruption', () 
   it('the triggers refuse deletion and backward updates even from a raw connection', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
-      await store.compareAndSet(KEY, null, mark({ conflict: true, withdrawn: true, retiredTermsDigests: [D('b')] }));
+      await seed(store, KEY, mark({ conflict: true, withdrawn: true, retiredTermsDigests: [D('b')] }));
       store.close();
       const db = raw(path);
       const attempts = [
@@ -325,7 +359,7 @@ describe('FV-P4C-2A durable status history — a raw writer and corruption', () 
     for (const corruption of corruptions) {
       await withDirectory(async (dir) => {
         const { path, store } = await created(dir);
-        await store.compareAndSet(KEY, null, mark({ retiredTermsDigests: [D('b')] }));
+        await seed(store, KEY, mark({ retiredTermsDigests: [D('b')] }));
         const db = raw(path);
         db.pragma('ignore_check_constraints = ON');
         db.exec('DROP TRIGGER sovereign_status_history_forward_only');
@@ -341,13 +375,13 @@ describe('FV-P4C-2A durable status history — a raw writer and corruption', () 
   it('a deleted row in a history that recorded it is refused, not read as uninitialized', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
-      await store.compareAndSet(KEY, null, mark({ conflict: true }));
+      await seed(store, KEY, mark({ conflict: true }));
       const db = raw(path);
       db.exec('DROP TRIGGER sovereign_status_history_never_deleted');
       db.exec('DELETE FROM sovereign_status_history');
       db.close();
       await rejectsWith(store.read(KEY), 'INTEGRITY');
-      await rejectsWith(store.compareAndSet(KEY, null, mark()), 'INTEGRITY');
+      await rejectsWith(seed(store, KEY, mark()), 'INTEGRITY');
       store.close();
     });
   });
@@ -355,7 +389,7 @@ describe('FV-P4C-2A durable status history — a raw writer and corruption', () 
   it('LIMIT: a whole-file restore of an older copy is not detectable here', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
-      await store.compareAndSet(KEY, null, mark());
+      await seed(store, KEY, mark());
       store.close();
       const copy = join(dir, 'snapshot.sqlite');
       const db = raw(path);
@@ -371,6 +405,156 @@ describe('FV-P4C-2A durable status history — a raw writer and corruption', () 
   });
 });
 
+describe('FV-P4C-2B1 bootstrap evidence ledger', () => {
+  it('a history and its evidence commit together, and the store fills in the transition it replaced', async () => {
+    await withDirectory(async (dir) => {
+      const { store } = await created(dir);
+      const first = await store.compareAndSetWithEvidence(KEY, null, mark(), draftFor(store, KEY, mark()));
+      assert.notEqual(first, false);
+      if (first === false) return;
+      assert.equal(first.reason, 'ESTABLISHED');
+      assert.equal(first.previous, null);
+      assert.deepEqual(first.next, { revision: 1, sequence: 1, statusDigest: D('1') });
+      const reanchored = mark({ sequence: 4, statusDigest: D('4'), anchoredAt: '2026-10-28T12:30:00Z', continuity: 'verified' });
+      const second = await store.compareAndSetWithEvidence(KEY, 1, reanchored, draftFor(store, KEY, reanchored, 'reanchor'));
+      assert.notEqual(second, false);
+      if (second === false) return;
+      assert.equal(second.reason, 'REESTABLISHED');
+      assert.deepEqual(second.previous, { revision: 1, sequence: 1, statusDigest: D('1') });
+      assert.deepEqual((await store.readBootstrapEvidence(KEY)).map((e) => e.requestId), [first.requestId, second.requestId]);
+      assert.equal(await store.hasBootstrapRequest(first.requestId), true);
+      assert.equal(await store.hasBootstrapRequest('req:never'), false);
+      store.close();
+    });
+  });
+
+  it('a request id is recorded once; a mismatched or mis-scoped draft writes nothing', async () => {
+    await withDirectory(async (dir) => {
+      const { store } = await created(dir);
+      const draft = draftFor(store, KEY, mark());
+      assert.notEqual(await store.compareAndSetWithEvidence(KEY, null, mark(), draft), false);
+      const other = { sovereignAssetId: 'sa:other', issuer: KEY.issuer };
+      await rejectsWith(store.compareAndSetWithEvidence(other, null, mark({ sovereignAssetId: 'sa:other' }), { ...draft, sovereignAssetId: 'sa:other' }), 'INVALID_WRITE');
+      const fresh = (overrides: Record<string, unknown>) => ({ ...draftFor(store, other, mark({ sovereignAssetId: 'sa:other' })), ...overrides }) as StatusHistoryBootstrapEvidenceDraft;
+      for (const [label, bad] of [
+        ['wrong namespace', fresh({ namespace: 'receiver:other' })],
+        ['wrong asset', fresh({ sovereignAssetId: KEY.sovereignAssetId })],
+        ['wrong operation', fresh({ operation: 'reanchor', purpose: 'continuity-restoration' })],
+        ['wrong status', fresh({ status: { sequence: 2, statusDigest: D('2') } })],
+        ['wrong instant', fresh({ evaluationTime: '2026-10-28T12:00:00.000000001Z' })],
+        ['secret source', fresh({ sources: [{ sourceClass: 'issuer-status-channel', sourceRef: 'https://x.example/doc#key=abc', observedAt: '2026-10-28T12:00:00Z' }] })],
+        ['extra field', fresh({ approved: true })],
+        ['unknown schema', fresh({ schemaVersion: 'frontera.sovereign-status-bootstrap-evidence/2' })],
+      ] as const) {
+        await assert.rejects(store.compareAndSetWithEvidence(other, null, mark({ sovereignAssetId: 'sa:other' }), bad), SovereignStatusHistoryStoreError, label);
+      }
+      assert.equal(await store.read(other), undefined, 'nothing was written');
+      assert.equal((await store.readBootstrapEvidence(other)).length, 0);
+      store.close();
+    });
+  });
+
+  it('a conflicted history is never re-anchored by the store, whatever the evidence', async () => {
+    await withDirectory(async (dir) => {
+      const { store } = await created(dir);
+      await seed(store, KEY, mark());
+      await store.compareAndSet(KEY, 1, mark({ conflict: true }));
+      const reanchored = mark({ conflict: false, sequence: 2, statusDigest: D('2'), anchoredAt: '2026-10-28T12:30:00Z' });
+      await rejectsWith(store.compareAndSetWithEvidence(KEY, 2, reanchored, draftFor(store, KEY, reanchored, 'reanchor')), 'DOWNGRADE');
+      const kept = mark({ conflict: true, sequence: 2, statusDigest: D('2'), anchoredAt: '2026-10-28T12:30:00Z' });
+      await rejectsWith(store.compareAndSetWithEvidence(KEY, 2, kept, draftFor(store, KEY, kept, 'reanchor')), 'DOWNGRADE');
+      assert.equal((await store.read(KEY))!.mark.conflict, true);
+      store.close();
+    });
+  });
+
+  it('R2: a history whose evidence is missing, tampered or does not match its anchor is refused', async () => {
+    const tamper = [
+      'DELETE FROM sovereign_status_bootstrap_evidence',
+      `UPDATE sovereign_status_bootstrap_evidence SET record = json_set(record, '$.authorityRef', 'authority:forged')`,
+      `UPDATE sovereign_status_bootstrap_evidence SET anchored_at = '2026-10-28T13:00:00Z', record = json_set(record, '$.evaluationTime', '2026-10-28T13:00:00Z')`,
+      `UPDATE sovereign_status_bootstrap_evidence SET record = json_set(record, '$.namespace', 'receiver:other')`,
+    ];
+    for (const sql of tamper) {
+      await withDirectory(async (dir) => {
+        const { path, store } = await created(dir);
+        await seed(store, KEY, mark());
+        const db = raw(path);
+        db.exec('DROP TRIGGER sovereign_status_bootstrap_evidence_never_deleted');
+        db.exec('DROP TRIGGER sovereign_status_bootstrap_evidence_never_updated');
+        db.exec(sql);
+        db.close();
+        if (sql.includes('authorityRef')) {
+          // A well-formed but forged authority reference is not detectable by the store: evidence is unsigned.
+          assert.equal((await store.readBootstrapEvidence(KEY))[0]!.authorityRef, 'authority:forged');
+        } else {
+          await rejectsWith(store.read(KEY), 'INTEGRITY').catch((e) => assert.fail(`${sql}: ${String(e)}`));
+          await rejectsWith(store.compareAndSet(KEY, 1, mark({ sequence: 2, statusDigest: D('2') })), 'INTEGRITY');
+        }
+        store.close();
+      });
+    }
+  });
+
+  it('the evidence ledger refuses deletion and rewriting from a raw connection', async () => {
+    await withDirectory(async (dir) => {
+      const { path, store } = await created(dir);
+      await seed(store, KEY, mark());
+      store.close();
+      const db = raw(path);
+      assert.throws(() => db.prepare('DELETE FROM sovereign_status_bootstrap_evidence').run(), /permanent/);
+      assert.throws(() => db.prepare(`UPDATE sovereign_status_bootstrap_evidence SET request_id = 'req:other'`).run(), /permanent/);
+      db.close();
+    });
+  });
+
+  it('a bootstrap followed by ordinary advances stays readable and verifiable after a reopen', async () => {
+    await withDirectory(async (dir) => {
+      const { path, store } = await created(dir);
+      await seed(store, KEY, mark({ sequence: 5, statusDigest: D('5') }));
+      await store.compareAndSet(KEY, 1, mark({ sequence: 6, statusDigest: D('6') }));
+      await store.compareAndSet(KEY, 2, mark({ sequence: 7, statusDigest: D('7') }));
+      store.close();
+      const reopened = await openSqliteStatusHighWaterMarkStore(path, { namespace: NAMESPACE });
+      assert.deepEqual(await reopened.read(KEY), { revision: 3, mark: mark({ sequence: 7, statusDigest: D('7') }) });
+      const [evidence] = await reopened.readBootstrapEvidence(KEY);
+      assert.deepEqual(evidence!.next, { revision: 1, sequence: 5, statusDigest: D('5') }, 'the record keeps the transition it described');
+      assert.equal(await reopened.compareAndSet(KEY, 3, mark({ sequence: 8, statusDigest: D('8') })), true);
+      reopened.close();
+    });
+  });
+
+  it('a v1 history file is refused and never rewritten or replaced', async () => {
+    await withDirectory(async (dir) => {
+      const { path, store } = await created(dir);
+      store.close();
+      const db = raw(path);
+      db.exec('DROP TRIGGER sovereign_status_history_meta_fixed');
+      db.prepare("UPDATE sovereign_status_history_meta SET schema_version = 'frontera.sovereign-status-history.v1'").run();
+      db.close();
+      const before = readFileSync(path);
+      await rejectsWith(openSqliteStatusHighWaterMarkStore(path, { namespace: NAMESPACE }), 'OPEN_REFUSED');
+      await rejectsWith(openSqliteStatusHighWaterMarkStore(path, { namespace: NAMESPACE, create: true }), 'OPEN_REFUSED');
+      assert.deepEqual(readFileSync(path), before, 'the refused file is left exactly as it was');
+    });
+  });
+
+  it('a lost race writes neither the mark nor the evidence', async () => {
+    await withDirectory(async (dir) => {
+      const { path, store } = await created(dir);
+      const other = await openSqliteStatusHighWaterMarkStore(path, { namespace: NAMESPACE });
+      const results = await Promise.all([
+        store.compareAndSetWithEvidence(KEY, null, mark(), draftFor(store, KEY, mark())),
+        other.compareAndSetWithEvidence(KEY, null, mark({ statusDigest: D('7') }), draftFor(other, KEY, mark({ statusDigest: D('7') }))),
+      ]);
+      assert.equal(results.filter((r) => r !== false).length, 1);
+      assert.equal((await store.readBootstrapEvidence(KEY)).length, 1);
+      other.close();
+      store.close();
+    });
+  });
+});
+
 describe('FV-P4C-2A durable status history — failures, locks and read-only', () => {
   it('26/27/34. a failure inside the transaction rolls everything back', async () => {
     await withDirectory(async (dir) => {
@@ -378,10 +562,10 @@ describe('FV-P4C-2A durable status history — failures, locks and read-only', (
       const db = raw(path);
       // Fail the bookkeeping half of an insert: the row must not survive without it.
       db.exec(`CREATE TRIGGER inject_meta BEFORE UPDATE ON sovereign_status_history_meta BEGIN SELECT RAISE(ABORT, 'injected disk failure'); END;`);
-      await rejectsWith(store.compareAndSet(KEY, null, mark()), 'DATABASE');
-      assert.deepEqual(db.prepare('SELECT (SELECT COUNT(*) FROM sovereign_status_history) AS n, created_rows FROM sovereign_status_history_meta').get(), { n: 0, created_rows: 0 });
+      await rejectsWith(seed(store, KEY, mark()), 'DATABASE');
+      assert.deepEqual(db.prepare('SELECT (SELECT COUNT(*) FROM sovereign_status_history) AS n, (SELECT COUNT(*) FROM sovereign_status_bootstrap_evidence) AS e, created_rows FROM sovereign_status_history_meta').get(), { n: 0, e: 0, created_rows: 0 });
       db.exec('DROP TRIGGER inject_meta');
-      assert.equal(await store.compareAndSet(KEY, null, mark()), true);
+      assert.equal(await seed(store, KEY, mark()), true);
       // Fail an update mid-transaction: the stored mark is unchanged.
       db.exec(`CREATE TRIGGER inject_update BEFORE UPDATE ON sovereign_status_history BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;`);
       await rejectsWith(store.compareAndSet(KEY, 1, mark({ sequence: 2, statusDigest: D('2') })), 'DATABASE');
@@ -396,7 +580,7 @@ describe('FV-P4C-2A durable status history — failures, locks and read-only', (
   it('32. a write lock held elsewhere makes a write fail after the bounded timeout, never succeed silently', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir, { busyTimeoutMs: 100 });
-      await store.compareAndSet(KEY, null, mark());
+      await seed(store, KEY, mark());
       const holder = raw(path);
       holder.exec('BEGIN IMMEDIATE');
       const started = process.hrtime.bigint();
@@ -413,7 +597,7 @@ describe('FV-P4C-2A durable status history — failures, locks and read-only', (
   it('33. a read-only store reads and refuses every write; a read-only file fails closed', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
-      await store.compareAndSet(KEY, null, mark());
+      await seed(store, KEY, mark());
       store.close();
       const reader = await openSqliteStatusHighWaterMarkStore(path, { namespace: NAMESPACE, readOnly: true });
       assert.equal((await reader.read(KEY))!.revision, 1);
@@ -444,7 +628,7 @@ describe('FV-P4C-2A durable status history — concurrency', () => {
   it('22/23. concurrent writers on one store: exactly one wins each revision', async () => {
     await withDirectory(async (dir) => {
       const { store } = await created(dir);
-      await store.compareAndSet(KEY, null, mark());
+      await seed(store, KEY, mark());
       const results = await Promise.all(Array.from({ length: 50 }, (_, i) => store.compareAndSet(KEY, 1, mark({ sequence: 2, statusDigest: (i + 16).toString(16).padStart(64, '0') }))));
       assert.equal(results.filter(Boolean).length, 1);
       const identical = mark({ sequence: 3, statusDigest: D('3') });
@@ -458,7 +642,7 @@ describe('FV-P4C-2A durable status history — concurrency', () => {
   it('24. independent connections to the same file serialize on it', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
-      await store.compareAndSet(KEY, null, mark());
+      await seed(store, KEY, mark());
       const others = await Promise.all(Array.from({ length: 4 }, () => openSqliteStatusHighWaterMarkStore(path, { namespace: NAMESPACE })));
       const all = [store, ...others];
       for (let revision = 1; revision <= 10; revision += 1) {
@@ -473,7 +657,7 @@ describe('FV-P4C-2A durable status history — concurrency', () => {
   it('25. separate processes on the same file: exactly one wins each revision, nothing is lost', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
-      await store.compareAndSet(KEY, null, mark());
+      await seed(store, KEY, mark());
       store.close();
       const script = join(dir, 'writer.cjs');
       writeFileSync(script, WRITER_SCRIPT);
@@ -493,7 +677,7 @@ describe('FV-P4C-2A durable status history — crash consistency', () => {
   it('a writer killed at arbitrary points leaves a valid, forward-only history', async () => {
     await withDirectory(async (dir) => {
       const { path, store } = await created(dir);
-      await store.compareAndSet(KEY, null, mark());
+      await seed(store, KEY, mark());
       store.close();
       const script = join(dir, 'writer.cjs');
       writeFileSync(script, WRITER_SCRIPT);

@@ -19,6 +19,7 @@ import {
 } from '@aoc-enterprise/sovereign-receiver-verification';
 
 import { openSqliteStatusHighWaterMarkStore } from '../dist/src/enterprise/sovereign-status-history/index.js';
+import { trustedBootstrap } from './fv-status-bootstrap-support.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -63,16 +64,26 @@ async function check(eligibility, store, status, evaluationTime) {
   return result;
 }
 
-function bootstrap(store, status, evaluationTime, extra = {}) {
-  return establishStatusHistory(status.text, {
-    verificationKeyResolver: resolver,
-    historyStore: store,
-    expectedSovereignAssetId: FIXTURE.sovereignAssetId,
-    expectedRegistrant: FIXTURE.registrant.issuer,
-    expectedManifestDigest: FIXTURE.manifestDigest,
-    evaluationTime,
-    ...extra,
-  });
+/**
+ * Anchors a history and returns the receiver's reason. The in-memory reference store is anchored directly with
+ * `establishStatusHistory`; the SQLite store (schema v2) accepts a history only with bootstrap evidence, so it is
+ * anchored through the FV-P4C-2B1 coordinator with synthetic authority and source providers.
+ */
+async function bootstrap(store, status, evaluationTime, extra = {}) {
+  if (typeof store.compareAndSetWithEvidence !== 'function') {
+    const result = await establishStatusHistory(status.text, {
+      verificationKeyResolver: resolver,
+      historyStore: store,
+      expectedSovereignAssetId: FIXTURE.sovereignAssetId,
+      expectedRegistrant: FIXTURE.registrant.issuer,
+      expectedManifestDigest: FIXTURE.manifestDigest,
+      evaluationTime,
+      ...extra,
+    });
+    return result.reason;
+  }
+  const result = await trustedBootstrap(store, status, evaluationTime, { operation: extra.reanchor ? 'reanchor' : 'establish' });
+  return result.reason === 'HISTORY_REFUSED' ? result.detail : result.reason;
 }
 
 async function withDatabase(work) {
@@ -98,7 +109,7 @@ describe('FV-P4C-2A — durable history through the real freshness gate', () => 
       assert.equal((await check(eligibility, store, S.active1, '2026-10-28T12:00:00Z')).freshnessVerdict, 'HISTORY_UNINITIALIZED');
 
       // 4–7. Trusted bootstrap at sequence 1, then FRESH.
-      assert.equal((await bootstrap(store, S.active1, '2026-10-28T12:00:00Z')).reason, 'ESTABLISHED');
+      assert.equal((await bootstrap(store, S.active1, '2026-10-28T12:00:00Z')), 'ESTABLISHED');
       const fresh = await check(eligibility, store, S.active1, '2026-10-28T12:00:00Z');
       assert.equal(fresh.freshnessVerdict, 'FRESH');
       assert.equal(fresh.policyDecisionAfterFreshness, 'ALLOWED');
@@ -122,7 +133,7 @@ describe('FV-P4C-2A — durable history through the real freshness gate', () => 
       assert.equal((await check(eligibility, store, S.active1, '2026-10-28T11:54:00Z')).freshnessVerdict, 'CLOCK_ROLLBACK_DETECTED');
 
       // 14–15. A re-anchor cannot reopen the withdrawal.
-      assert.equal((await bootstrap(store, S.reopening3, '2026-10-28T12:03:00Z', { reanchor: true })).reason, 'REANCHOR_REACTIVATES_WITHDRAWN');
+      assert.equal((await bootstrap(store, S.reopening3, '2026-10-28T12:03:00Z', { reanchor: true })), 'REANCHOR_REACTIVATES_WITHDRAWN');
       assert.equal((await check(eligibility, store, S.reopening3, '2026-10-28T12:03:00Z')).freshnessVerdict, 'CONFLICT_DETECTED');
 
       // The conflict latch survives restarts, new instances and every re-anchor attempt.
@@ -130,8 +141,8 @@ describe('FV-P4C-2A — durable history through the real freshness gate', () => 
       store = await reopen(path);
       const second = await reopen(path);
       for (const candidate of [S.withdrawn2, S.reopening3, S.equivocating2]) {
-        assert.equal((await bootstrap(store, candidate, '2026-10-28T12:04:00Z', { reanchor: true })).reason, 'CONFLICT_DETECTED');
-        assert.equal((await bootstrap(second, candidate, '2026-10-28T12:04:00Z')).reason, 'CONFLICT_DETECTED');
+        assert.equal((await bootstrap(store, candidate, '2026-10-28T12:04:00Z', { reanchor: true })), 'CONFLICT_DETECTED');
+        assert.equal((await bootstrap(second, candidate, '2026-10-28T12:04:00Z')), 'CONFLICT_DETECTED');
         assert.equal((await check(eligibility, second, candidate, '2026-10-28T12:04:00Z')).freshnessVerdict, 'CONFLICT_DETECTED');
       }
       const entry = await store.read({ sovereignAssetId: FIXTURE.sovereignAssetId, issuer: FIXTURE.registrant.issuer });
@@ -206,7 +217,7 @@ describe('FV-P4C-2A — durable history through the real freshness gate', () => 
       }
     });
     assert.deepEqual(durable, memory);
-    assert.deepEqual(memory.map((r) => r.freshnessVerdict ?? r.reason), [
+    assert.deepEqual(memory.map((r) => (typeof r === 'string' ? r : r.freshnessVerdict)), [
       'ESTABLISHED', 'FRESH', 'WITHDRAWN', 'WITHDRAWN', 'ROLLBACK_DETECTED', 'CLOCK_ROLLBACK_DETECTED',
       'REANCHOR_REACTIVATES_WITHDRAWN', 'CONFLICT_DETECTED', 'CONFLICT_DETECTED', 'CONFLICT_DETECTED',
     ]);

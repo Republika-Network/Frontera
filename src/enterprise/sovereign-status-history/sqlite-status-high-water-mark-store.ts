@@ -1,6 +1,9 @@
 import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { STATUS_HISTORY_BOOTSTRAP_EVIDENCE_SCHEMA, parseStatusHistoryBootstrapEvidence, serializeStatusHistoryBootstrapEvidence } from './bootstrap-contract.js';
+import type { StatusHistoryBootstrapEvidence, StatusHistoryBootstrapEvidenceDraft } from './bootstrap-contract.js';
+
 /**
  * FV-P4C-2A — a durable `StatusHighWaterMarkStore` on SQLite, for the
  * document-use freshness gate of `@aoc-enterprise/sovereign-receiver-verification`.
@@ -32,6 +35,12 @@ import { dirname, resolve } from 'node:path';
  *
  *   The adapter refuses such a write, and the table's triggers refuse it again
  *   at the SQL level. Rows are never deleted.
+ * - **No history without evidence (FV-P4C-2B1).** A history can be created or
+ *   re-anchored only through `compareAndSetWithEvidence`, which writes the
+ *   bootstrap evidence record in the same transaction as the mark. An ordinary
+ *   `compareAndSet` can only advance an existing history under its current
+ *   anchor. A history whose latest evidence is missing or does not match its
+ *   anchor is corrupt (R2), and reading it throws.
  * - **Fail closed.** A row that does not validate, a schema that is not this
  *   one, missing triggers, a failed integrity check, or a missing row in a
  *   history that recorded one all throw, and the gate reports
@@ -51,7 +60,13 @@ import { dirname, resolve } from 'node:path';
  * authorization.
  */
 
-export const SOVEREIGN_STATUS_HISTORY_SCHEMA_VERSION = 'frontera.sovereign-status-history.v1';
+/**
+ * v2 (FV-P4C-2B1) adds the bootstrap evidence ledger. A v1 file is refused, not
+ * migrated: v1 was never composed into the Host, and silently adding an
+ * evidence requirement to a history that has none would misstate how it was
+ * anchored.
+ */
+export const SOVEREIGN_STATUS_HISTORY_SCHEMA_VERSION = 'frontera.sovereign-status-history.v2';
 
 /** At most this many retired terms digests per history; a longer history is refused, never truncated. */
 export const SOVEREIGN_STATUS_HISTORY_MAX_RETIRED_TERMS = 1_024;
@@ -99,10 +114,27 @@ export interface SqliteStatusHighWaterMarkStoreOptions {
   readonly readOnly?: boolean;
 }
 
-/** The `StatusHighWaterMarkStore` contract, plus an explicit lifecycle. */
+/** The `StatusHighWaterMarkStore` contract, plus an explicit lifecycle and the bootstrap evidence ledger. */
 export interface SqliteStatusHighWaterMarkStore {
   read(key: SovereignStatusHistoryKey): Promise<SovereignStatusHighWaterMarkEntry | undefined>;
+  /** Advances an existing history under its current anchor. Never creates or re-anchors one. */
   compareAndSet(key: SovereignStatusHistoryKey, expectedRevision: number | null, next: SovereignStatusHighWaterMark): Promise<boolean>;
+  /**
+   * Creates (`expectedRevision: null`) or re-anchors a history and records its
+   * bootstrap evidence in the same transaction: both are written, or neither.
+   * The store fills in the evidence's `previous`, `next` and `reason` from the
+   * state it replaces. A request id is recorded at most once.
+   */
+  compareAndSetWithEvidence(
+    key: SovereignStatusHistoryKey,
+    expectedRevision: number | null,
+    next: SovereignStatusHighWaterMark,
+    evidence: StatusHistoryBootstrapEvidenceDraft,
+  ): Promise<StatusHistoryBootstrapEvidence | false>;
+  /** Whether a bootstrap request id was already recorded in this store. */
+  hasBootstrapRequest(requestId: string): Promise<boolean>;
+  /** Every bootstrap evidence record of one history, oldest first. */
+  readBootstrapEvidence(key: SovereignStatusHistoryKey): Promise<readonly StatusHistoryBootstrapEvidence[]>;
   /** The pinned namespace. */
   readonly namespace: string;
   close(): void;
@@ -142,6 +174,19 @@ CREATE TABLE sovereign_status_history (
   anchored_at TEXT NOT NULL,
   PRIMARY KEY (sovereign_asset_id, issuer)
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE sovereign_status_bootstrap_evidence (
+  request_id TEXT PRIMARY KEY CHECK (length(request_id) BETWEEN 1 AND 512),
+  sovereign_asset_id TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  next_revision INTEGER NOT NULL CHECK (next_revision >= 1),
+  anchored_at TEXT NOT NULL,
+  record TEXT NOT NULL CHECK (json_valid(record))
+) STRICT;
+CREATE UNIQUE INDEX sovereign_status_bootstrap_evidence_history ON sovereign_status_bootstrap_evidence (sovereign_asset_id, issuer, next_revision);
+CREATE TRIGGER sovereign_status_bootstrap_evidence_never_deleted BEFORE DELETE ON sovereign_status_bootstrap_evidence
+BEGIN SELECT RAISE(ABORT, 'bootstrap evidence is permanent'); END;
+CREATE TRIGGER sovereign_status_bootstrap_evidence_never_updated BEFORE UPDATE ON sovereign_status_bootstrap_evidence
+BEGIN SELECT RAISE(ABORT, 'bootstrap evidence is permanent'); END;
 CREATE TRIGGER sovereign_status_history_meta_fixed BEFORE UPDATE ON sovereign_status_history_meta
 WHEN NEW.id IS NOT OLD.id OR NEW.schema_version IS NOT OLD.schema_version OR NEW.namespace IS NOT OLD.namespace OR NEW.created_rows <> OLD.created_rows + 1
 BEGIN SELECT RAISE(ABORT, 'the history identity is fixed and its row count only grows by one'); END;
@@ -166,12 +211,14 @@ BEGIN SELECT RAISE(ABORT, 'a trusted status history only moves forward'); END;
 `;
 
 const TRIGGERS: readonly string[] = [
+  'sovereign_status_bootstrap_evidence_never_deleted',
+  'sovereign_status_bootstrap_evidence_never_updated',
   'sovereign_status_history_meta_fixed',
   'sovereign_status_history_meta_never_deleted',
   'sovereign_status_history_never_deleted',
   'sovereign_status_history_forward_only',
 ];
-const TABLES: readonly string[] = ['sovereign_status_history', 'sovereign_status_history_meta'];
+const TABLES: readonly string[] = ['sovereign_status_bootstrap_evidence', 'sovereign_status_history', 'sovereign_status_history_meta'];
 
 const COLUMNS =
   'sovereign_asset_id, issuer, revision, sequence, status_digest, issued_at, current_terms_digest, time_floor, withdrawn, retired_terms_digests, continuity, conflict, anchored_at';
@@ -264,10 +311,48 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
          WHERE sovereign_asset_id = ? AND issuer = ? AND revision = ?`,
       );
 
+  const selectLatestEvidence = db
+    .prepare('SELECT request_id, next_revision, anchored_at, record FROM sovereign_status_bootstrap_evidence WHERE sovereign_asset_id = ? AND issuer = ? ORDER BY next_revision DESC LIMIT 1')
+    .safeIntegers(true);
+  const selectEvidence = db
+    .prepare('SELECT request_id, next_revision, anchored_at, record FROM sovereign_status_bootstrap_evidence WHERE sovereign_asset_id = ? AND issuer = ? ORDER BY next_revision ASC')
+    .safeIntegers(true);
+  const selectRequest = db.prepare('SELECT 1 FROM sovereign_status_bootstrap_evidence WHERE request_id = ?');
+  const insertEvidence = readOnly
+    ? undefined
+    : db.prepare('INSERT INTO sovereign_status_bootstrap_evidence (request_id, sovereign_asset_id, issuer, next_revision, anchored_at, record) VALUES (?, ?, ?, ?, ?, ?)');
+
+  const decodeEvidence = (row: Record<string, unknown>, key: SovereignStatusHistoryKey): StatusHistoryBootstrapEvidence => {
+    const corrupt = (): never => {
+      throw new SovereignStatusHistoryStoreError('INTEGRITY', 'A bootstrap evidence record does not validate; refusing the history.');
+    };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row['record'] as string);
+    } catch {
+      return corrupt();
+    }
+    const evidence = parseStatusHistoryBootstrapEvidence(parsed);
+    if (evidence === undefined) return corrupt();
+    if (evidence.requestId !== row['request_id'] || BigInt(evidence.next.revision) !== row['next_revision'] || evidence.evaluationTime !== row['anchored_at']) corrupt();
+    if (evidence.namespace !== namespace || evidence.sovereignAssetId !== key.sovereignAssetId || evidence.issuer !== key.issuer) corrupt();
+    return evidence;
+  };
+
   /** Reads one key; a row that does not validate, or a row the history recorded but no longer holds, throws. */
   const readEntry = (key: SovereignStatusHistoryKey): SovereignStatusHighWaterMarkEntry | undefined => {
     const row = selectRow.get(key.sovereignAssetId, key.issuer) as Record<string, unknown> | undefined;
-    if (row !== undefined) return decodeRow(row, key);
+    if (row !== undefined) {
+      const entry = decodeRow(row, key);
+      // Every history was anchored with evidence, and its latest evidence is its current anchor (R2 otherwise).
+      const latest = selectLatestEvidence.get(key.sovereignAssetId, key.issuer) as Record<string, unknown> | undefined;
+      if (latest === undefined) throw new SovereignStatusHistoryStoreError('INTEGRITY', 'A status history has no bootstrap evidence; refusing it.');
+      const evidence = decodeEvidence(latest, key);
+      if (evidence.evaluationTime !== entry.mark.anchoredAt || evidence.next.revision > entry.revision) {
+        throw new SovereignStatusHistoryStoreError('INTEGRITY', 'A status history does not match its latest bootstrap evidence; refusing it.');
+      }
+      return entry;
+    }
     const counts = selectCounts.get() as { rows_now: unknown; created_rows: unknown } | undefined;
     if (counts === undefined || counts.rows_now !== counts.created_rows) {
       throw new SovereignStatusHistoryStoreError('INTEGRITY', 'The sovereign status history lost a row it recorded; refusing to treat it as uninitialized.');
@@ -275,25 +360,78 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
     return undefined;
   };
 
-  const casTransaction = db.transaction((key: SovereignStatusHistoryKey, expectedRevision: number | null, next: SovereignStatusHighWaterMark): boolean => {
-    const current = readEntry(key);
-    if (expectedRevision === null) {
-      if (current !== undefined) return false;
+  const writeMark = (key: SovereignStatusHistoryKey, current: SovereignStatusHighWaterMarkEntry | undefined, next: SovereignStatusHighWaterMark): void => {
+    if (current === undefined) {
       insertRow!.run(...encodeMark(next));
       countRow!.run();
-      return true;
+      return;
     }
-    if (current === undefined || current.revision !== expectedRevision) return false;
     assertForward(current.mark, next);
     const [, , ...fields] = encodeMark(next);
-    const changes = updateRow!.run(...fields, key.sovereignAssetId, key.issuer, expectedRevision).changes;
+    const changes = updateRow!.run(...fields, key.sovereignAssetId, key.issuer, current.revision).changes;
     if (changes !== 1) throw new SovereignStatusHistoryStoreError('DATABASE', 'The sovereign status history update did not apply exactly once.');
+  };
+
+  /** An ordinary advance: an existing history, its exact revision, its current anchor. */
+  const casTransaction = db.transaction((key: SovereignStatusHistoryKey, expectedRevision: number, next: SovereignStatusHighWaterMark): boolean => {
+    const current = readEntry(key);
+    if (current === undefined || current.revision !== expectedRevision) return false;
+    if (next.anchoredAt !== current.mark.anchoredAt) {
+      throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'A history is re-anchored only with bootstrap evidence.');
+    }
+    writeMark(key, current, next);
     return true;
   });
+
+  /** A bootstrap: the mark and its evidence, in one transaction, or neither. */
+  const evidenceTransaction = db.transaction(
+    (key: SovereignStatusHistoryKey, expectedRevision: number | null, next: SovereignStatusHighWaterMark, draft: StatusHistoryBootstrapEvidenceDraft): StatusHistoryBootstrapEvidence | false => {
+      const current = readEntry(key);
+      if ((current?.revision ?? null) !== expectedRevision) return false;
+      if (current !== undefined && current.mark.conflict) {
+        throw new SovereignStatusHistoryStoreError('DOWNGRADE', 'Refused: a history with a latched conflict is never re-anchored.');
+      }
+      if (selectRequest.get(draft.requestId) !== undefined) {
+        throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'That bootstrap request was already recorded.');
+      }
+      const record = parseStatusHistoryBootstrapEvidence({
+        ...draft,
+        previous: current === undefined ? null : { revision: current.revision, sequence: current.mark.sequence, statusDigest: current.mark.statusDigest },
+        next: { revision: (current?.revision ?? 0) + 1, sequence: next.sequence, statusDigest: next.statusDigest },
+        reason: current === undefined ? 'ESTABLISHED' : 'REESTABLISHED',
+      });
+      if (
+        record === undefined
+        || record.namespace !== namespace
+        || record.sovereignAssetId !== key.sovereignAssetId
+        || record.issuer !== key.issuer
+        || record.operation !== (current === undefined ? 'establish' : 'reanchor')
+        || next.anchoredAt !== record.evaluationTime
+      ) {
+        throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The bootstrap evidence does not describe this transition.');
+      }
+      writeMark(key, current, next);
+      insertEvidence!.run(record.requestId, key.sovereignAssetId, key.issuer, record.next.revision, record.evaluationTime, serializeStatusHistoryBootstrapEvidence(record));
+      return deepFreeze(record);
+    },
+  );
 
   let closed = false;
   const ensureOpen = (): void => {
     if (closed) throw new SovereignStatusHistoryStoreError('CLOSED', 'The sovereign status history is closed.');
+  };
+  const prepareWrite = (rawKey: SovereignStatusHistoryKey, expectedRevision: number | null, rawNext: SovereignStatusHighWaterMark) => {
+    ensureOpen();
+    if (readOnly) throw new SovereignStatusHistoryStoreError('READ_ONLY', 'The sovereign status history is open read-only.');
+    const key = validateKey(rawKey);
+    if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) {
+      throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The expected revision is not a revision.');
+    }
+    const next = validateMark(rawNext, 'INVALID_WRITE');
+    if (next.sovereignAssetId !== key.sovereignAssetId || next.issuer !== key.issuer) {
+      throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The mark does not belong to that history.');
+    }
+    return { key, next };
   };
   const guarded = <T>(work: () => T): T => {
     try {
@@ -313,18 +451,28 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
       return guarded(() => readEntry(key));
     },
     async compareAndSet(rawKey: SovereignStatusHistoryKey, expectedRevision: number | null, rawNext: SovereignStatusHighWaterMark) {
-      ensureOpen();
-      if (readOnly) throw new SovereignStatusHistoryStoreError('READ_ONLY', 'The sovereign status history is open read-only.');
-      const key = validateKey(rawKey);
-      if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) {
-        throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The expected revision is not a revision.');
-      }
-      const next = validateMark(rawNext, 'INVALID_WRITE');
-      if (next.sovereignAssetId !== key.sovereignAssetId || next.issuer !== key.issuer) {
-        throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The mark does not belong to that history.');
-      }
+      const { key, next } = prepareWrite(rawKey, expectedRevision, rawNext);
+      // S1: no history comes into existence without bootstrap evidence.
+      if (expectedRevision === null) throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'A history is established only with bootstrap evidence.');
       // One IMMEDIATE transaction: the write lock is taken before the revision is read.
       return guarded(() => casTransaction.immediate(key, expectedRevision, next));
+    },
+    async compareAndSetWithEvidence(rawKey: SovereignStatusHistoryKey, expectedRevision: number | null, rawNext: SovereignStatusHighWaterMark, draft: StatusHistoryBootstrapEvidenceDraft) {
+      const { key, next } = prepareWrite(rawKey, expectedRevision, rawNext);
+      if (typeof draft !== 'object' || draft === null || (draft as { schemaVersion?: unknown }).schemaVersion !== STATUS_HISTORY_BOOTSTRAP_EVIDENCE_SCHEMA) {
+        throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The bootstrap evidence is not well formed.');
+      }
+      return guarded(() => evidenceTransaction.immediate(key, expectedRevision, next, draft));
+    },
+    async hasBootstrapRequest(requestId: string) {
+      ensureOpen();
+      if (typeof requestId !== 'string' || requestId === '') throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The request id is not well formed.');
+      return guarded(() => selectRequest.get(requestId) !== undefined);
+    },
+    async readBootstrapEvidence(rawKey: SovereignStatusHistoryKey) {
+      ensureOpen();
+      const key = validateKey(rawKey);
+      return guarded(() => deepFreeze((selectEvidence.all(key.sovereignAssetId, key.issuer) as Array<Record<string, unknown>>).map((row) => decodeEvidence(row, key))));
     },
     close() {
       if (!closed) {

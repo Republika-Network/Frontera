@@ -69,13 +69,18 @@ results are unchanged. These are further fields a later record could carry:
 
 | Field | Meaning | Publishable? |
 |---|---|---|
-| store kind | `sqlite` or `in-memory`, and the store schema version `frontera.sovereign-status-history.v1` | yes |
+| store kind | `sqlite` or `in-memory`, and the store schema version `frontera.sovereign-status-history.v2` | yes |
 | history namespace | the namespace the store file is pinned to | only if non-sensitive; never the file path |
 | revision before / after | the store revision the gate read, and the one it wrote | yes |
 | compare-and-set outcome | committed, lost a race (recomputed), or failed (`HISTORY_STORE_UNAVAILABLE`) | yes |
 | continuity across restart | the history read after a reopen equals the one written before it | yes |
 | conflict latch, withdrawal, retired terms, time floor | as stored, after the check | yes |
 | integrity result | opened with the expected schema, triggers and integrity check; row validated | yes |
+
+**Bootstrap evidence (FV-P4C-2B1).** From schema v2 on, a history exists only with a bootstrap evidence
+record (`frontera.sovereign-status-bootstrap-evidence/1`), committed in the same transaction. A history
+whose latest evidence is missing or inconsistent is refused (R2). Contract, authority model and limits:
+`FV_TRUSTED_BOOTSTRAP_RECOVERY.md`.
 
 **Storage trust assumptions.** The file is as trustworthy as the host that keeps it.
 - **Refused by the store:** deleting a row, rewriting backwards and corruption, at the SQL level and in
