@@ -268,3 +268,87 @@ its `validUntil`. Every result reports `freshness` and `revocationCurrentness` a
 permit. Replay detection against a high-water mark is FV-P4C. Rejections carry exactly one reason from
 `SOVEREIGN_STATUS_REJECTION_REASONS`. The verifier reads no clock, environment, network or storage, and
 never throws.
+
+## Document-use freshness and anti-replay (FV-P4C-1)
+
+`checkDocumentUseFreshness` decides whether an FV-P3 decision may stand, given a signed status and this
+receiver's own trusted history of that asset's statuses. It never raises a decision: `ALLOWED` stays
+`ALLOWED` and `WITHHELD` stays `WITHHELD` only when the verdict is `FRESH`, and everything else becomes
+`DENIED`. It is not authorization: every result reports `authorization: 'not_evaluated'` and
+`execution: 'not_performed'`, and `WITHHELD` is never executable.
+
+```ts
+import {
+  checkDocumentUseFreshness,
+  createInMemoryStatusHighWaterMarkStore,
+  establishStatusHistory,
+} from '@aoc-enterprise/sovereign-receiver-verification';
+
+const historyStore = createInMemoryStatusHighWaterMarkStore();   // process-local reference store
+
+// Out of band, once, by the host: anchor the history with a status obtained through a channel it
+// trusts to be current. Never reached from a request.
+await establishStatusHistory(trustedStatusText, {
+  verificationKeyResolver, historyStore, expectedSovereignAssetId, expectedRegistrant, expectedManifestDigest, evaluationTime,
+});
+
+const decision = evaluateDocumentUsePolicy(eligibility, { action }, policyContext);   // FV-P3, this process
+const freshness = await checkDocumentUseFreshness(decision, signedStatusText, {
+  verificationKeyResolver,
+  evaluationTime,             // must equal the decision's evaluationTime
+  operationId,                // the host's identifier for the operation, echoed for evidence
+  maxStatusAgeSeconds,        // per action, 1 s up to DOCUMENT_USE_FRESHNESS_CEILINGS
+  historyStore,
+});
+```
+
+Checks, in order, and the first that fails decides:
+
+1. **Provenance.** The decision must have been issued by `evaluateDocumentUsePolicy` in this process
+   over an eligibility issued by FV-P2. Both are held in private `WeakMap`s. Copies, deserialized
+   decisions and look-alikes are `POLICY_PROVENANCE_INVALID`.
+2. **Context.** It is read once, as plain own data. The instant must equal the decision's. Each action's
+   maximum age is an integer from 1 second to its ceiling: 24 h for read, 15 min for export and for
+   modify. A host may be stricter, never looser, and nothing is defaulted.
+3. **Status.** The gate verifies the artifact itself with `verifySovereignStatus`. The asset, registrant
+   and manifest come from the eligibility, never from the status or the caller, so a result object
+   claiming `authentic_authorized` is just malformed input.
+4. **History.** The `(asset, registrant)` history must already be established; otherwise the verdict is
+   `HISTORY_UNINITIALIZED`, for every action. Against the stored high-water mark:
+
+   | Presented status | Effect on the mark | Verdict |
+   |---|---|---|
+   | lower sequence | none | `ROLLBACK_DETECTED` |
+   | same sequence, same digest | none | continues |
+   | same sequence, other digest | conflict latched | `CONFLICT_DETECTED` |
+   | next sequence that does not link to the head, reactivates a withdrawal, makes retired terms current, or is issued earlier than the head | conflict latched | `CONFLICT_DETECTED` |
+   | next sequence, linked | advances | continues |
+   | sequence beyond the next (gap) | advances, continuity unproven (sticky) | `CONTINUITY_UNPROVEN` |
+
+   - **Clock rollback:** a trusted instant earlier than any accepted `issuedAt` is
+     `CLOCK_ROLLBACK_DETECTED`.
+   - **Writes:** the mark changes only through the store's atomic `compareAndSet`, against the
+     revision it was computed from. A lost race is recomputed from the winner's state.
+   - **Gaps:** an unproven continuity is restored only by re-anchoring with
+     `establishStatusHistory(..., { reanchor: true })`. A re-anchor never lowers the sequence, reopens a
+     withdrawal or revives retired terms.
+   - **Conflicts:** a latched conflict is **not** cleared by anything here. Ordinary checks, bootstrap
+     and re-anchor all refuse a conflicted history (`CONFLICT_DETECTED`), whatever status is presented
+     and however often. A trusted operator alone is not sufficient evidence to clear an equivocation.
+     Evidence-based conflict recovery is future work. Until then the history stays fail-closed, as far as
+     this gate is concerned.
+5. **Meaning.** The presented status is now the latest this receiver knows:
+   - `withdrawn` → `WITHDRAWN`;
+   - no current terms → `REVOKED`;
+   - other terms than the evaluated ones → `SUPERSEDED`;
+   - older than the action's maximum age → `STALE` (an age exactly equal to the limit is still fresh);
+   - otherwise → `FRESH`.
+
+**Freshness is measured at the decision's instant.** The gate accepts no second instant: age, window and clock checks all use the FV-P3 decision's `evaluationTime`. It does not show that a status is fresh at the time of some later operation, so a decision must be evaluated anew for each operation (FV-P5 will bind that to the operation and a trusted clock). A sequence gap stays refused until a trusted re-anchor, which can cost availability; there is no bypass.
+
+**What it cannot know.** The mark records only what this receiver accepted. A replay of a status older
+than one it saw is detected. A revocation that never reached it is not, and nothing here learns of
+statuses from other receivers. The in-memory store protects one process while it lives: a restart, a
+second instance or a worker starts uninitialized and refuses. It is not persistent rollback protection,
+and a rollback of the whole store cannot be detected. Persistent, anchored storage is FV-P4C-2. Evidence
+fields for ASSURE: `docs/integration/FV_DOCUMENT_FRESHNESS_HANDOFF.md`.

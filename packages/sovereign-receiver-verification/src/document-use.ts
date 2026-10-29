@@ -149,6 +149,9 @@ async function verifyEligibility(bundleText: unknown, rawOptions: unknown): Prom
 
   if (reasons.length > 0) return ineligible('eligibility', reasons);
   if (evidence === undefined) return ineligible('eligibility', ['INTERNAL_VERIFICATION_ERROR']);
+  // RSDK-01 refuses duplicate manifest versions, so exactly one evidence entry is current.
+  const currentManifest = verified.manifests.find((manifest) => manifest.manifestVersion === verified.currentManifestVersion);
+  if (currentManifest === undefined) return ineligible('eligibility', ['INTERNAL_VERIFICATION_ERROR']);
 
   const eligible: DocumentUseEligible = deepFreeze({
     outcome: 'eligible_for_evaluation',
@@ -167,7 +170,7 @@ async function verifyEligibility(bundleText: unknown, rawOptions: unknown): Prom
     terms: evidence,
     reasons: [],
   });
-  ISSUED_ELIGIBILITY.add(eligible);
+  ISSUED_ELIGIBILITY.set(eligible, Object.freeze({ currentManifestDigest: currentManifest.manifestDigest }));
   return eligible;
 }
 
@@ -177,12 +180,25 @@ async function verifyEligibility(bundleText: unknown, rawOptions: unknown): Prom
  * verified. A structurally identical object built by anyone else, a copy, a
  * deserialized result or one from another copy of this package is not
  * registered, and the policy evaluator refuses it. Process-local by design.
+ *
+ * FV-P4C-1: the entry also keeps, privately, the digest of the current
+ * manifest RSDK-01 verified, so the freshness gate can bind a status to it
+ * without adding a field to the public result.
  */
-const ISSUED_ELIGIBILITY = new WeakSet<object>();
+const ISSUED_ELIGIBILITY = new WeakMap<object, IssuedEligibilityEvidence>();
+
+interface IssuedEligibilityEvidence {
+  readonly currentManifestDigest: string;
+}
 
 /** Internal to this package (not exported from the index): whether `value` is an eligible result issued here. */
 export function isIssuedDocumentUseEligibility(value: unknown): value is DocumentUseEligible {
   return typeof value === 'object' && value !== null && ISSUED_ELIGIBILITY.has(value);
+}
+
+/** Internal to this package: the verified current manifest digest of an eligible result issued here. */
+export function issuedEligibilityManifestDigest(value: DocumentUseEligible): string | undefined {
+  return ISSUED_ELIGIBILITY.get(value)?.currentManifestDigest;
 }
 
 async function termsRejections(

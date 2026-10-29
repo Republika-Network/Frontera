@@ -48,6 +48,8 @@ export interface EligibleDocument {
   readonly sovereignAssetId: string;
   readonly signedTerms: SignedClaim<LicenseTermsClaim>;
   readonly eligibility: DocumentUseEligible;
+  /** The current manifest's digest, as RSDK-01 verified it. */
+  readonly manifestDigest: string;
 }
 
 /** Signs a document asset with the given terms and runs it through the real FV-P2 check. */
@@ -74,5 +76,5 @@ export async function eligibleDocument(options: TermsOptions = {}): Promise<Elig
     contentBytes: DOCUMENT,
   });
   if (result.outcome !== 'eligible_for_evaluation') throw new Error(`fixture not eligible: ${JSON.stringify(result)}`);
-  return { sovereignAssetId, signedTerms, eligibility: result };
+  return { sovereignAssetId, signedTerms, eligibility: result, manifestDigest: manifest.manifestDigest };
 }

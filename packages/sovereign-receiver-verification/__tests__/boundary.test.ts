@@ -152,11 +152,14 @@ test('an unexpected exception inside Protocol verification fails closed', async 
   }
 });
 
-test('the public surface is exactly the three verifiers, the policy evaluator, their reasons and their profiles', () => {
+test('the public surface is exactly the three verifiers, the policy evaluator, the freshness gate, their reasons and their profiles', () => {
   const sdk = require('../src/index.js') as Record<string, unknown>;
   const exported = Object.keys(sdk).filter((name) => name !== '__esModule' && name !== 'default').sort();
   assert.deepEqual(exported, [
     'DOCUMENT_USE_ACTIONS',
+    'DOCUMENT_USE_FRESHNESS_CEILINGS',
+    'DOCUMENT_USE_FRESHNESS_GATE',
+    'DOCUMENT_USE_FRESHNESS_VERDICTS',
     'DOCUMENT_USE_INELIGIBILITY_REASONS',
     'DOCUMENT_USE_POLICY_EVALUATOR',
     'DOCUMENT_USE_POLICY_REASONS',
@@ -168,7 +171,11 @@ test('the public surface is exactly the three verifiers, the policy evaluator, t
     'SOVEREIGN_STATUS_PURPOSE',
     'SOVEREIGN_STATUS_REJECTION_REASONS',
     'SOVEREIGN_STATUS_VERIFIER',
+    'STATUS_HISTORY_BOOTSTRAP_REASONS',
     'STRICT_RECEIVER_PROFILE',
+    'checkDocumentUseFreshness',
+    'createInMemoryStatusHighWaterMarkStore',
+    'establishStatusHistory',
     'evaluateDocumentUsePolicy',
     'verifyDocumentUseEligibility',
     'verifyReceivedSovereignAsset',
