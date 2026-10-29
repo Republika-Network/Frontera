@@ -254,10 +254,6 @@ function resolveBusyTimeoutMs(value: number | undefined): number {
   return timeout;
 }
 
-function tableExists(db: import('better-sqlite3').Database, tableName: string): boolean {
-  return db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(tableName) !== undefined;
-}
-
 function isSqliteConstraintViolation(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT');
@@ -280,6 +276,121 @@ function rowToAssessment(row: AssessmentRow): AssuranceAssessment {
   return assessment;
 }
 
+// ---------------------------------------------------------------------------
+// ASSURE-REL-01A-R1: open without mutating what is refused.
+//
+// Everything that reads the file runs before anything that writes it: the
+// journal-mode switch to WAL rewrites the file header, and every CREATE adds
+// objects. A file the store refuses -- another schema version, an unreadable
+// version ledger, objects of something that is not an Assurance Store, or a
+// release-custody table that is not this one -- is closed exactly as it was
+// found. A compatible file is then initialized in one transaction: the v1
+// schema, the release-custody extension and the version row are kept
+// together or not at all.
+// ---------------------------------------------------------------------------
+
+const COMMERCIAL_RELEASE_TABLE = 'assurance_commercial_releases';
+/** `name:type:notnull:pk` of every column, in order, as COMMERCIAL_RELEASE_SCHEMA creates them. */
+const COMMERCIAL_RELEASE_COLUMNS = [
+  'report_id:TEXT:0:1',
+  'assessment_id:TEXT:1:0',
+  'organization_id:TEXT:1:0',
+  'framework_id:TEXT:1:0',
+  'framework_version:TEXT:1:0',
+  'content_digest:TEXT:1:0',
+  'release_digest:TEXT:1:0',
+  'approved_by:TEXT:1:0',
+  'approved_at:TEXT:1:0',
+  'custody_version:TEXT:1:0',
+  'record_json:TEXT:1:0',
+  'record_digest:TEXT:1:0',
+].join(',');
+const COMMERCIAL_RELEASE_COMPANIONS: readonly { readonly type: string; readonly name: string }[] = [
+  { type: 'index', name: 'idx_assurance_releases_assessment' },
+  { type: 'trigger', name: 'assurance_commercial_releases_no_update' },
+  { type: 'trigger', name: 'assurance_commercial_releases_no_delete' },
+];
+
+interface SchemaObject {
+  readonly type: string;
+  readonly name: string;
+  readonly tbl_name: string;
+}
+
+/** What a file holds, learned by reading only. `fresh`: no object at all. */
+type OpenedDatabaseState = { readonly fresh: true } | { readonly fresh: false; readonly versionRecorded: boolean };
+
+/** Why the release-custody objects present in a file are not this runtime's, or `undefined`. Never repairs: an unexpected object is refused, not dropped. */
+function commercialReleaseObjectsProblem(db: import('better-sqlite3').Database, objects: readonly SchemaObject[]): string | undefined {
+  const table = objects.find((object) => object.name === COMMERCIAL_RELEASE_TABLE);
+  const companions = COMMERCIAL_RELEASE_COMPANIONS.filter((companion) => objects.some((object) => object.name === companion.name));
+  if (table === undefined) {
+    return companions.length > 0 ? `objects of the release-custody extension exist without '${COMMERCIAL_RELEASE_TABLE}'` : undefined;
+  }
+  if (table.type !== 'table') return `'${COMMERCIAL_RELEASE_TABLE}' is not a table`;
+  const columns = (db.prepare(`PRAGMA table_info(${COMMERCIAL_RELEASE_TABLE})`).all() as { name: string; type: string; notnull: number; pk: number }[])
+    .map((column) => `${column.name}:${column.type}:${column.notnull}:${column.pk}`)
+    .join(',');
+  if (columns !== COMMERCIAL_RELEASE_COLUMNS) return `'${COMMERCIAL_RELEASE_TABLE}' has a structure this runtime does not recognize`;
+  const missing = COMMERCIAL_RELEASE_COMPANIONS.filter((companion) => !objects.some((object) => object.name === companion.name && object.type === companion.type && object.tbl_name === COMMERCIAL_RELEASE_TABLE));
+  if (missing.length > 0) return `'${COMMERCIAL_RELEASE_TABLE}' is only partially created (missing ${missing.map((companion) => companion.name).join(', ')})`;
+  return undefined;
+}
+
+/** Reads the file and refuses it, unchanged, unless it is empty or a compatible Assurance Store. */
+function preflightAssuranceDatabase(db: import('better-sqlite3').Database): OpenedDatabaseState {
+  const refuse = (reason: string): never => {
+    db.close();
+    throw new AssuranceError('ASSURANCE_STORE_UNAVAILABLE', `${reason} Refusing to open the Assurance Store; nothing was changed.`);
+  };
+  let objects: SchemaObject[] = [];
+  try {
+    objects = db.prepare(`SELECT type, name, tbl_name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`).all() as SchemaObject[];
+  } catch {
+    refuse('The Assurance Store file is not a readable SQLite database.');
+  }
+  if (objects.length === 0) return { fresh: true };
+  if (!objects.some((object) => object.type === 'table' && object.name === 'assurance_store_versions')) {
+    refuse('The database holds objects but no Assurance Store version ledger, so it is not an Assurance Store.');
+  }
+  let latest: { schema_version: unknown } | undefined;
+  try {
+    latest = db.prepare(`SELECT schema_version FROM assurance_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: unknown } | undefined;
+  } catch {
+    refuse('The Assurance Store version ledger is unreadable.');
+  }
+  if (latest !== undefined && latest.schema_version !== ASSURANCE_STORE_SCHEMA_VERSION) {
+    refuse(`Assurance Store schema version '${String(latest.schema_version).slice(0, 80)}' is not supported by this runtime (expected '${ASSURANCE_STORE_SCHEMA_VERSION}').`);
+  }
+  let problem: string | undefined;
+  try {
+    problem = commercialReleaseObjectsProblem(db, objects);
+  } catch {
+    problem = 'the release-custody objects are unreadable';
+  }
+  if (problem !== undefined) refuse(`The Assurance Store's ${problem}.`);
+  // A ledger without a row: an initialization interrupted before it recorded its version. It is completed below.
+  return { fresh: false, versionRecorded: latest !== undefined };
+}
+
+/**
+ * ASSURE-REL-01A-R1: the stores this factory created. Only these provide the
+ * durable release custody a commercial release requires -- an object that
+ * merely looks like one (`providerKind: 'sqlite'`, the same methods) is not in
+ * this set and cannot be added to it from outside this module.
+ */
+const durableReleaseCustodyStores = new WeakSet<object>();
+
+/**
+ * Whether `store` is a SQLite Assurance Store created by this module, and so
+ * keeps release custody in a database file that survives a restart. What it
+ * cannot vouch for: the durability of the disk, or a database file written
+ * around the store.
+ */
+export function providesDurableReleaseCustody(store: unknown): boolean {
+  return typeof store === 'object' && store !== null && durableReleaseCustodyStores.has(store);
+}
+
 /**
  * SQLite-backed Assurance Store (mission sections 50-51): `better-sqlite3`
  * loaded lazily, hand-written SQL, explicit schema, transactions, prepared
@@ -292,37 +403,40 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
   const now = options.now ?? (() => new Date().toISOString());
   const path = dbPath === ':memory:' ? ':memory:' : resolveOnDisk(dbPath);
   const db = new Database(path);
+  // Connection settings only: neither writes the file.
   db.pragma('foreign_keys = ON');
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = FULL');
   db.pragma(`busy_timeout = ${resolveBusyTimeoutMs(options.busyTimeoutMs)}`);
 
-  // Check the recorded schema version BEFORE applying SCHEMA_V1 -- see the
-  // matching comment in sqlite-passport-store.ts. A foreign-schema database
-  // must not be mutated just because we were asked to open it.
-  if (tableExists(db, 'assurance_store_versions')) {
-    const existingVersion = db.prepare(`SELECT schema_version FROM assurance_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-    if (existingVersion !== undefined && existingVersion.schema_version !== ASSURANCE_STORE_SCHEMA_VERSION) {
-      db.close();
+  // ASSURE-REL-01A-R1: read first. A refused file is closed as it was found --
+  // before the WAL switch (which rewrites the header) and before any CREATE.
+  preflightAssuranceDatabase(db);
+
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = FULL');
+
+  // One transaction: the v1 schema, the release-custody extension and the
+  // version row are kept together, or nothing is. The ledger is read again
+  // under the write lock, so a concurrent first open records one version row.
+  const initialize = db.transaction(() => {
+    db.exec(SCHEMA_V1);
+    db.exec(COMMERCIAL_RELEASE_SCHEMA);
+    const latestVersion = db.prepare(`SELECT schema_version FROM assurance_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: unknown } | undefined;
+    if (latestVersion === undefined) {
+      db.prepare(`INSERT INTO assurance_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(ASSURANCE_STORE_SCHEMA_VERSION, now());
+    } else if (latestVersion.schema_version !== ASSURANCE_STORE_SCHEMA_VERSION) {
       throw new AssuranceError(
         'ASSURANCE_STORE_UNAVAILABLE',
-        `Assurance Store schema version '${existingVersion.schema_version}' is not supported by this runtime (expected '${ASSURANCE_STORE_SCHEMA_VERSION}'). Refusing to open the store.`,
+        `Assurance Store schema version '${String(latestVersion.schema_version).slice(0, 80)}' is not supported by this runtime (expected '${ASSURANCE_STORE_SCHEMA_VERSION}'). Refusing to open the store; nothing was changed.`,
       );
     }
-  }
-
-  db.exec(SCHEMA_V1);
-  db.exec(COMMERCIAL_RELEASE_SCHEMA);
-
-  const latestVersion = db.prepare(`SELECT schema_version FROM assurance_store_versions ORDER BY id DESC LIMIT 1`).get() as { schema_version: string } | undefined;
-  if (latestVersion === undefined) {
-    db.prepare(`INSERT INTO assurance_store_versions (schema_version, migration_state, recorded_at) VALUES (?, 'current', ?)`).run(ASSURANCE_STORE_SCHEMA_VERSION, now());
-  } else if (latestVersion.schema_version !== ASSURANCE_STORE_SCHEMA_VERSION) {
+  });
+  try {
+    initialize.immediate();
+  } catch (error) {
     db.close();
-    throw new AssuranceError(
-      'ASSURANCE_STORE_UNAVAILABLE',
-      `Assurance Store schema version '${latestVersion.schema_version}' is not supported by this runtime (expected '${ASSURANCE_STORE_SCHEMA_VERSION}'). Refusing to open the store.`,
-    );
+    if (error instanceof AssuranceError) throw error;
+    // The driver's message may name paths or SQL; it never leaves the store.
+    throw new AssuranceError('ASSURANCE_STORE_UNAVAILABLE', 'The Assurance Store could not be initialized; no part of the initialization was kept.');
   }
 
   const selectAssessment = db.prepare(`SELECT * FROM assurance_assessments WHERE assessment_id = ?`);
@@ -508,7 +622,7 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
     }
   }
 
-  return {
+  const store: AssuranceStore = {
     providerKind: 'sqlite',
 
     async saveFramework(context, framework) {
@@ -955,4 +1069,6 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
       }
     },
   };
+  durableReleaseCustodyStores.add(store);
+  return store;
 }

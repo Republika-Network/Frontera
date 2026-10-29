@@ -510,6 +510,15 @@ describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS and their resolutions (each pins 
     assert.deepEqual((await world.service.listCommercialReleases(PILOT_ORG_CONTEXT, assessment.assessmentId)).map((kept) => kept.release.releaseDigest), [release.releaseDigest]);
   });
 
+  it('F01 RESOLVED (ASSURE-REL-01A-R1) -- a commercial release requires durable custody: the in-memory store refuses it and keeps nothing', async () => {
+    const memory = track(await buildPilotWorld(join(tempDir(), 'unused.db'), { inMemory: true }));
+    const prepared = await preparePilotAssessment(memory);
+    await reviewPilotAssessment(memory, prepared.assessmentId);
+    await memory.service.completeAssessment(PILOT_ORG_CONTEXT, prepared.assessmentId);
+    await assert.rejects(releasePilotReport(memory, prepared.assessmentId), isCode('ASSURANCE_STORE_UNAVAILABLE'));
+    assert.deepEqual(await memory.service.listCommercialReleases(PILOT_ORG_CONTEXT, prepared.assessmentId), []);
+  });
+
   it('F01 KNOWN LIMITATION (remaining offline) -- offline verification cannot see a coherent content forgery; only the store or a full re-render can', () => {
     const reworded = tampered(packageDir, (dir) => {
       editText(dir, 'report.md', (text) => text.replace('not a certification', 'a certification'));

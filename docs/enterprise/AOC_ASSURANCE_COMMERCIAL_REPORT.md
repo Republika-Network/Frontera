@@ -71,7 +71,10 @@ Store before it is returned. A report version is released once:
   (`custody.outcome: 'replayed'`);
 - another approver, or other content under a released version, is refused
   (`ASSURANCE_ASSESSMENT_IMMUTABLE`, `commercial_release_conflict`);
-- a store without custody cannot release.
+- only durable custody can release: the SQLite Assurance Store
+  (ASSURE-REL-01A-R1). The in-memory store, and any store that merely claims to
+  be SQLite, is refused with `ASSURANCE_STORE_UNAVAILABLE` before an approval is
+  built. Drafting and verification still work on it.
 
 `verifyCommercialRelease` checks a delivered package against that record. See
 `docs/security/ASSURE-REL-01A-DURABLE-RELEASE-AUTHENTICITY.md`. The delivered
@@ -193,7 +196,8 @@ with `REP01_WRITE_EXAMPLE=1` set while running that test file.
 - Readiness is READY_FOR_RELEASE, and the release record exists.
 - `verifyCommercialReport` returns `valid: true` for the four delivered files,
   and `verifyCommercialRelease` returns `releaseAuthenticated: true`.
-- `custody.durable` was `true` for the release (SQLite persistence).
+- The Host releasing it runs `persistence.provider = sqlite`; no other provider
+  can release.
 - Re-read the scope, exclusions and limitations against the engagement contract.
 - Check that no customer-confidential term appears in the declared text.
 - Deliver the files unchanged, so that no editor re-encodes the Markdown.

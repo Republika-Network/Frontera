@@ -1,7 +1,8 @@
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,6 +15,7 @@ import { buildCommercialReleaseCustodyRecord, type CommercialReleasePackage } fr
 import { RN_SV_FRAMEWORK_V0_1 } from '../assurance/frameworks/rn-sv-framework.js';
 import { AOC_SAF_FRAMEWORK_ID, AOC_SAF_FRAMEWORK_V1, AOC_SAF_FRAMEWORK_VERSION } from '../assurance/saf-framework.js';
 import { ASSURANCE_STORE_SCHEMA_VERSION } from '../assurance/contracts.js';
+import { createSqliteAssuranceStore, providesDurableReleaseCustody } from '../assurance/sqlite-assurance-store.js';
 import type { AssuranceStore } from '../assurance/assurance-store.js';
 import type { AssuranceAccessContext } from '../assurance/contracts.js';
 import type { AssuranceReviewerCredential } from '../assurance/reviewer-identity.js';
@@ -85,6 +87,14 @@ function contextOf(world: PilotWorld, credential: AssuranceReviewerCredential): 
   return { system: false, organizationId: reviewer.organizationId, actorId: reviewer.reviewerId, roles: reviewer.roles, reviewer };
 }
 
+/** A second service over `store` with the world's registry and credentials: how an embedder would compose a custom store. */
+function serviceOver(store: AssuranceStore, world: PilotWorld): { readonly service: ReturnType<typeof createAssuranceService>; readonly context: AssuranceAccessContext } {
+  const service = createAssuranceService({ store, registry: world.registry, evidenceSources: {}, now: () => '2026-10-28T12:00:00.000Z', nextId: (prefix) => `${prefix}-embedded`, enterpriseVersion: 'embedded', reviewers: ALL_REVIEWERS });
+  const approver = service.authenticateReviewer(PILOT_CREDENTIALS.approver.key);
+  assert.ok(approver);
+  return { service, context: { system: false, organizationId: approver.organizationId, actorId: approver.reviewerId, roles: approver.roles, reviewer: approver } };
+}
+
 interface Completed {
   readonly world: PilotWorld;
   readonly dbPath: string;
@@ -131,7 +141,8 @@ describe('ASSURE-REL-01A -- a release is kept in custody, bound to the authentic
   it('R01 a first valid release is committed once, durably, with the tenant derived from the assessment and the approver from the credential', async () => {
     const { world, dbPath, assessmentId, request } = await completed();
     const result = await world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, { ...request, approvedBy: 'someone-else', organizationId: 'another-org' } as CommercialReportReleaseRequest);
-    assert.deepEqual(result.custody, { outcome: 'committed', durable: true });
+    assert.deepEqual(result.custody, { outcome: 'committed' });
+    assert.equal(providesDurableReleaseCustody(world.store), true);
     assert.equal(result.release.approvedBy, PILOT_CREDENTIALS.approver.reviewerId, 'the approver comes from the credential, never from the request body');
     assert.equal(rowCount(dbPath), 1);
     const kept = await world.service.getCommercialRelease(PILOT_ORG_CONTEXT, result.release.reportId);
@@ -180,7 +191,7 @@ describe('ASSURE-REL-01A -- a release is kept in custody, bound to the authentic
     const { world, dbPath, assessmentId, request } = await completed();
     const first = await world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, request);
     const again = await world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, request);
-    assert.deepEqual(again.custody, { outcome: 'replayed', durable: true });
+    assert.deepEqual(again.custody, { outcome: 'replayed' });
     assert.deepEqual(again.release, first.release);
     await world.store.close();
     // The next day: a fresh release would be refused for its date; the retry still recovers the original.
@@ -376,17 +387,28 @@ describe('ASSURE-REL-01A -- a release is kept in custody, bound to the authentic
   });
 
   it('R19 a store without release custody can neither release nor verify: a release is never returned unkept', async () => {
-    const { world, assessmentId, request } = await completed({ inMemory: true });
+    const { world, dbPath, assessmentId, request } = await completed();
     const { commitCommercialRelease: _commit, getCommercialRelease: _get, listCommercialReleases: _list, ...withoutCustody } = world.store;
     const legacy: AssuranceStore = withoutCustody;
-    const service = createAssuranceService({ store: legacy, registry: world.registry, evidenceSources: {}, now: () => '2026-10-28T12:00:00.000Z', nextId: (prefix) => `${prefix}-legacy`, enterpriseVersion: 'legacy', reviewers: ALL_REVIEWERS });
-    const approver = service.authenticateReviewer(PILOT_CREDENTIALS.approver.key);
-    assert.ok(approver);
-    const context = { system: false, organizationId: approver.organizationId, actorId: approver.reviewerId, roles: approver.roles, reviewer: approver };
+    const { service, context } = serviceOver(legacy, world);
     await assert.rejects(service.releaseCommercialReport(context, assessmentId, request), isCode('ASSURANCE_STORE_UNAVAILABLE'));
     const draft = await service.buildCommercialReportDraft(PILOT_ORG_CONTEXT, assessmentId, { engagement: PILOT_ENGAGEMENT, issue: PILOT_ISSUE });
     const unkept = buildCommercialReportRelease(draft, { approvedBy: 'pilot-approver', approverRole: COMMERCIAL_REPORT_RELEASE_ROLE, approvedAt: '2026-10-28T09:00:00.000Z', acknowledgements: PILOT_ACKNOWLEDGEMENTS });
     assert.equal((await service.verifyCommercialRelease(PILOT_ORG_CONTEXT, packageOf(draft, unkept))).authority, 'AUTHORITY_UNAVAILABLE');
+    assert.equal(rowCount(dbPath), 0);
+  });
+
+  it('R1-01 a store that only claims to be SQLite -- same providerKind, every custody method, the real database behind it -- cannot release', async () => {
+    const { world, dbPath, assessmentId, request } = await completed();
+    const impersonator: AssuranceStore = { ...world.store };
+    assert.equal(impersonator.providerKind, 'sqlite');
+    assert.equal(typeof impersonator.commitCommercialRelease, 'function');
+    assert.equal(providesDurableReleaseCustody(impersonator), false, 'durability is the factory instance, not a string');
+    const { service, context } = serviceOver(impersonator, world);
+    await assert.rejects(service.releaseCommercialReport(context, assessmentId, request), isCode('ASSURANCE_STORE_UNAVAILABLE'));
+    assert.equal(rowCount(dbPath), 0, 'nothing was written');
+    // An unauthorized caller still learns only that it is unauthorized.
+    await assert.rejects(service.releaseCommercialReport(PILOT_SYSTEM_CONTEXT, assessmentId, request), isCode('ASSURANCE_REVIEWER_UNAUTHORIZED'));
   });
 
   it('R21/R22 an incomplete assessment or a release without the commercial-use acknowledgement records nothing', async () => {
@@ -417,17 +439,21 @@ describe('ASSURE-REL-01A -- a release is kept in custody, bound to the authentic
     assert.equal(computeDigest(AOC_SAF_FRAMEWORK_V1), 'sha256:4c0b5c65a0b8cfe40de726f26d80b80224fac6ca80fe2c221f7a734548899bb9');
   });
 
-  it('in-memory store parity: one release per report version, replay, conflict and tenant scope -- declared not durable', async () => {
-    const { world, assessmentId, request } = await completed({ inMemory: true });
-    const first = await world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, request);
-    assert.deepEqual(first.custody, { outcome: 'committed', durable: false });
-    assert.equal((await world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, request)).custody.outcome, 'replayed');
-    await assert.rejects(world.service.releaseCommercialReport(contextOf(world, SECOND_APPROVER), assessmentId, request), isConflict('approver'));
-    assert.equal(await world.service.getCommercialRelease(PILOT_OTHER_ORG_CONTEXT, first.release.reportId), null);
-    const kept = await world.service.getCommercialRelease(PILOT_ORG_CONTEXT, first.release.reportId);
-    assert.ok(kept);
-    (kept.release as { approvedBy: string }).approvedBy = 'mutated-by-caller';
-    assert.equal((await world.service.getCommercialRelease(PILOT_ORG_CONTEXT, first.release.reportId))?.release.approvedBy, 'pilot-approver', 'a caller cannot alter what is kept');
+  it('R1-01 the in-memory store refuses every commercial release; drafting, verification and reads still work, and nothing is kept', async () => {
+    const { logger, lines } = capturingLogger();
+    const { world, assessmentId, draft, request } = await completed({ inMemory: true, logger });
+    assert.equal(providesDurableReleaseCustody(world.store), false);
+    await assert.rejects(world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, request), isCode('ASSURANCE_STORE_UNAVAILABLE', () => true));
+    await assert.rejects(world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, request), isCode('ASSURANCE_STORE_UNAVAILABLE'), 'a retry is refused too');
+    assert.equal(draft.content.readiness.status, 'READY_FOR_RELEASE', 'drafting works');
+    assert.deepEqual(await world.service.listCommercialReleases(PILOT_ORG_CONTEXT, assessmentId), [], 'no approval was kept');
+    assert.equal(await world.service.getCommercialRelease(PILOT_ORG_CONTEXT, draft.content.reportId), null);
+    const unkept = buildCommercialReportRelease(draft, { approvedBy: 'pilot-approver', approverRole: COMMERCIAL_REPORT_RELEASE_ROLE, approvedAt: '2026-10-28T09:00:00.000Z', acknowledgements: PILOT_ACKNOWLEDGEMENTS });
+    const verdict = await world.service.verifyCommercialRelease(PILOT_ORG_CONTEXT, packageOf(draft, unkept));
+    assert.equal(verdict.integrity, 'INTEGRITY_VALID', 'integrity can still be checked');
+    assert.equal(verdict.authority, 'RELEASE_NOT_IN_CUSTODY');
+    assert.equal(lines.some((line) => line.message === 'assurance.commercial_report.released'), false, 'no success is logged');
+    assert.equal(world.events.some((event) => /release/i.test(event.type)), false, 'no success event');
   });
 });
 
@@ -503,16 +529,181 @@ describe('ASSURE-REL-01A -- direct storage writes (A10) and migration of an exis
     }
   });
 
-  it('migration: a database of an unsupported schema version is refused untouched -- no custody table is added to it', async () => {
-    const dbPath = join(tempDir(), 'foreign.db');
+});
+
+// ===========================================================================
+
+/**
+ * A complete picture of a database file, read-only: every schema object and
+ * its SQL, every row of every table, `user_version` and the journal mode.
+ * Two equal snapshots mean nothing in the schema or data changed.
+ */
+function snapshot(dbPath: string): string {
+  const raw = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const schema = raw.prepare(`SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name`).all() as { type: string; name: string }[];
+    const tables = schema
+      .filter((object) => object.type === 'table' && !object.name.startsWith('sqlite_'))
+      .map((object) => [object.name, raw.prepare(`SELECT * FROM "${object.name}"`).all()]);
+    return JSON.stringify({ schema, tables, userVersion: raw.pragma('user_version', { simple: true }), journalMode: raw.pragma('journal_mode', { simple: true }) });
+  } finally {
+    raw.close();
+  }
+}
+const sha256File = (path: string): string => createHash('sha256').update(readFileSync(path)).digest('hex');
+const objectNames = (dbPath: string): string[] => {
+  const raw = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    return (raw.prepare(`SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name`).all() as { name: string }[]).map((row) => row.name);
+  } finally {
+    raw.close();
+  }
+};
+const CUSTODY_OBJECTS = ['assurance_commercial_releases', 'assurance_commercial_releases_no_delete', 'assurance_commercial_releases_no_update', 'idx_assurance_releases_assessment'];
+const refusedUnchanged = async (dbPath: string, message: RegExp): Promise<void> => {
+  const before = snapshot(dbPath);
+  await assert.rejects(createSqliteAssuranceStore(dbPath), (error: unknown) => {
+    assert.ok(error instanceof AssuranceError && error.code === 'ASSURANCE_STORE_UNAVAILABLE', String(error));
+    assert.match(error.message, message);
+    assert.match(error.message, /nothing was changed/);
+    assert.equal(/SQLITE|\//.test(error.message), false, `no driver detail or path: ${error.message}`);
+    return true;
+  });
+  assert.equal(snapshot(dbPath), before, 'schema, rows, user_version and journal mode are exactly as they were');
+};
+/** A completed, released pilot assessment on disk, closed: an ordinary v1 database with release custody. */
+async function releasedDatabase(): Promise<{ readonly dbPath: string; readonly assessmentId: string }> {
+  const { world, dbPath, assessmentId, request } = await completed();
+  await world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, request);
+  await world.store.close();
+  return { dbPath, assessmentId };
+}
+
+describe('ASSURE-REL-01A-R1 -- opening a database reads before it writes, and refuses without changing anything', () => {
+  it('a brand-new file is initialized with the v1 schema, release custody and one version row, in WAL mode', async () => {
+    const dbPath = join(tempDir(), 'fresh.db');
+    const store = await createSqliteAssuranceStore(dbPath);
+    await store.close();
+    assert.ok(CUSTODY_OBJECTS.every((name) => objectNames(dbPath).includes(name)));
+    const raw = new Database(dbPath, { readonly: true });
+    try {
+      assert.deepEqual((raw.prepare('SELECT schema_version FROM assurance_store_versions').all() as { schema_version: string }[]).map((row) => row.schema_version), [ASSURANCE_STORE_SCHEMA_VERSION]);
+      assert.equal(raw.pragma('journal_mode', { simple: true }), 'wal');
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('a v1 database with release custody reopens without any change', async () => {
+    const { dbPath } = await releasedDatabase();
+    const before = snapshot(dbPath);
+    const store = await createSqliteAssuranceStore(dbPath);
+    await store.close();
+    assert.equal(snapshot(dbPath), before);
+  });
+
+  it('a v1 database written before release custody gains exactly the custody objects; every other object and row is unchanged', async () => {
+    const { dbPath } = await releasedDatabase();
+    const raw = new Database(dbPath);
+    raw.exec('DROP TABLE assurance_commercial_releases');
+    raw.close();
+    const before = JSON.parse(snapshot(dbPath)) as { schema: unknown[]; tables: unknown[] };
+    const store = await createSqliteAssuranceStore(dbPath);
+    await store.close();
+    const after = JSON.parse(snapshot(dbPath)) as { schema: { tbl_name: string }[]; tables: [string, unknown][] };
+    // Every object the extension adds belongs to the custody table (its triggers, its index and SQLite's own primary-key index).
+    assert.deepEqual(after.schema.filter((object) => object.tbl_name !== 'assurance_commercial_releases'), before.schema);
+    assert.deepEqual(after.tables.filter(([name]) => name !== 'assurance_commercial_releases'), before.tables);
+    assert.ok(CUSTODY_OBJECTS.every((name) => objectNames(dbPath).includes(name)));
+  });
+
+  it('an unsupported schema version without release custody is refused untouched: no table, index or trigger, no WAL switch', async () => {
+    const dbPath = join(tempDir(), 'foreign-version.db');
     const raw = new Database(dbPath);
     raw.exec(`CREATE TABLE assurance_store_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, schema_version TEXT NOT NULL, migration_state TEXT NOT NULL, recorded_at TEXT NOT NULL);
       INSERT INTO assurance_store_versions (schema_version, migration_state, recorded_at) VALUES ('aoc.assurance-store.schema.v9', 'current', '2026-01-01T00:00:00.000Z');`);
+    raw.pragma('user_version = 7');
     raw.close();
-    await assert.rejects(buildPilotWorld(dbPath), isCode('ASSURANCE_STORE_UNAVAILABLE'));
+    await refusedUnchanged(dbPath, /schema version 'aoc\.assurance-store\.schema\.v9' is not supported/);
+    assert.deepEqual(objectNames(dbPath), ['assurance_store_versions']);
+  });
+
+  it('an unsupported schema version with release custody is refused with its releases, triggers and rows intact', async () => {
+    const { dbPath } = await releasedDatabase();
+    const raw = new Database(dbPath);
+    raw.prepare(`INSERT INTO assurance_store_versions (schema_version, migration_state, recorded_at) VALUES ('aoc.assurance-store.schema.v2', 'current', '2027-01-01T00:00:00.000Z')`).run();
+    raw.close();
+    await refusedUnchanged(dbPath, /schema version 'aoc\.assurance-store\.schema\.v2'/);
+    assert.equal(rowCount(dbPath), 1);
+  });
+
+  it('an unreadable version ledger, a file that is not a database, and a foreign database without a ledger are refused, unchanged', async () => {
+    const ledger = join(tempDir(), 'corrupt-ledger.db');
+    const raw = new Database(ledger);
+    raw.exec(`CREATE TABLE assurance_store_versions (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO assurance_store_versions (label) VALUES ('garbage');`);
+    raw.close();
+    await refusedUnchanged(ledger, /version ledger is unreadable/);
+
+    const foreign = join(tempDir(), 'foreign-app.db');
+    const other = new Database(foreign);
+    other.exec(`CREATE TABLE invoices (id TEXT PRIMARY KEY, total REAL); INSERT INTO invoices VALUES ('i-1', 10.5);`);
+    other.close();
+    await refusedUnchanged(foreign, /no Assurance Store version ledger/);
+    assert.deepEqual(objectNames(foreign), ['invoices']);
+
+    const garbage = join(tempDir(), 'not-a-database.db');
+    writeFileSync(garbage, Buffer.from('this is not an SQLite database, only bytes '.repeat(200)));
+    const bytes = sha256File(garbage);
+    await assert.rejects(createSqliteAssuranceStore(garbage), (error: unknown) => error instanceof AssuranceError && error.code === 'ASSURANCE_STORE_UNAVAILABLE' && /not a readable SQLite database/.test(error.message) && !/SQLITE/.test(error.message));
+    assert.equal(sha256File(garbage), bytes, 'the bytes are untouched');
+  });
+
+  it('a release-custody table of another structure, or one only partially created, is refused -- never repaired, never dropped', async () => {
+    const shaped = await releasedDatabase();
+    let raw = new Database(shaped.dbPath);
+    raw.exec('DROP TABLE assurance_commercial_releases');
+    raw.exec(`CREATE TABLE assurance_commercial_releases (report_id TEXT PRIMARY KEY, approved_by TEXT); INSERT INTO assurance_commercial_releases VALUES ('r-1', 'someone');`);
+    raw.close();
+    await refusedUnchanged(shaped.dbPath, /structure this runtime does not recognize/);
+
+    const partial = await releasedDatabase();
+    raw = new Database(partial.dbPath);
+    raw.exec('DROP TRIGGER assurance_commercial_releases_no_delete');
+    raw.close();
+    await refusedUnchanged(partial.dbPath, /only partially created \(missing assurance_commercial_releases_no_delete\)/);
+    assert.equal(rowCount(partial.dbPath), 1, 'the kept release is still there');
+  });
+
+  it('a failure in the middle of initialization keeps no part of it; once the cause is gone the same file opens and is completed', async () => {
+    // An initialization interrupted before it recorded its version (a ledger without rows), on a database written before release custody.
+    const { dbPath, assessmentId } = await releasedDatabase();
+    let raw = new Database(dbPath);
+    raw.exec('DROP TABLE assurance_commercial_releases');
+    raw.exec('DELETE FROM assurance_store_versions');
+    // The version row is the last write of the initialization: make it fail after the custody objects were created.
+    raw.exec(`CREATE TRIGGER rel01a_r1_inject BEFORE INSERT ON assurance_store_versions BEGIN SELECT RAISE(ABORT, 'rel01a-r1 injected'); END`);
+    raw.close();
+    const before = snapshot(dbPath);
+    await assert.rejects(createSqliteAssuranceStore(dbPath), (error: unknown) => {
+      assert.ok(error instanceof AssuranceError && error.code === 'ASSURANCE_STORE_UNAVAILABLE', String(error));
+      assert.match(error.message, /no part of the initialization was kept/);
+      assert.equal(/injected|SQLITE|\//.test(error.message), false, error.message);
+      return true;
+    });
+    const after = JSON.parse(snapshot(dbPath)) as { schema: unknown; tables: unknown; userVersion: unknown };
+    const expected = JSON.parse(before) as { schema: unknown; tables: unknown; userVersion: unknown };
+    assert.deepEqual([after.schema, after.tables, after.userVersion], [expected.schema, expected.tables, expected.userVersion], 'no custody table, no version row: nothing partial was kept');
+    assert.equal(objectNames(dbPath).includes('assurance_commercial_releases'), false);
+
+    raw = new Database(dbPath);
+    raw.exec('DROP TRIGGER rel01a_r1_inject');
+    raw.close();
+    const reopened = await open(dbPath, { startTick: 1_000_000, startId: 100_000 });
+    assert.equal((await reopened.service.verifyAssessment(PILOT_ORG_CONTEXT, assessmentId)).valid, true, 'the history is intact');
+    assert.ok(CUSTODY_OBJECTS.every((name) => objectNames(dbPath).includes(name)));
     const check = new Database(dbPath, { readonly: true });
     try {
-      assert.equal(check.prepare(`SELECT 1 FROM sqlite_master WHERE name = 'assurance_commercial_releases'`).get(), undefined);
+      assert.equal((check.prepare('SELECT count(*) AS n FROM assurance_store_versions').get() as { n: number }).n, 1);
     } finally {
       check.close();
     }

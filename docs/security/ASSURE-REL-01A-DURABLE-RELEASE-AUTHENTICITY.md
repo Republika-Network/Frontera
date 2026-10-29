@@ -1,6 +1,9 @@
 # ASSURE-REL-01A — Durable Release Records, Approval Authenticity and Anti-Replay
 
 **Scope:** `rn.sv@0.1.0` commercial report releases (ASSURE-REP-01).
+**Revision R1 (pre-merge review):** a release now requires durable custody, so
+the in-memory store refuses it (§6). Opening a SQLite file now reads before it
+writes, and refuses a file without changing it (§13).
 **Closes:** ASSURE-PILOT-01 finding F01, under authoritative verification only.
 **Does not change:** the `commercialUse: restricted` policy, the frozen
 `aoc.assurance-store.schema.v1` identifier, the delivered release record
@@ -171,9 +174,33 @@ record is never returned as custody.
 
 They are optional so that existing implementations still compile. **The service
 refuses to release or verify with a store that lacks them**
-(`ASSURANCE_STORE_UNAVAILABLE`). A release is never returned unkept. Both
-built-in stores implement custody. The in-memory store is not durable, and the
-service says so (`custody.durable: false`).
+(`ASSURANCE_STORE_UNAVAILABLE`). A release is never returned unkept.
+
+**A release requires durable custody (R1).** Custody that disappears on a
+restart cannot back a commercial approval: a "kept" release that is gone
+tomorrow can no longer be checked against, and the same report version could
+then be released again. The service therefore releases only into **a SQLite
+Assurance Store created by `createSqliteAssuranceStore`**. The factory
+registers each store it returns in a module-private `WeakSet`, and
+`providesDurableReleaseCustody(store)` checks membership. Any other store is
+refused with `ASSURANCE_STORE_UNAVAILABLE` after the approver's
+authentication, role and organization checks, and before a draft is rebuilt or
+an approval built. Nothing is written, logged as a success, or published.
+This covers the in-memory store, an embedder's own store, and an object that
+copies a SQLite store's `providerKind` and methods.
+
+A string cannot forge durability; only the factory's own instance qualifies.
+What membership does **not** vouch for: the durability of the disk, or a
+database file written around the store (§16).
+
+On the in-memory store, these still work:
+
+- drafting, completing assessments and every other operation;
+- `verifyCommercialRelease`, which checks integrity and, with nothing in its
+  custody, answers `RELEASE_NOT_IN_CUSTODY`;
+- `getCommercialRelease` and `listCommercialReleases`.
+
+Tests that release run on temporary SQLite files. No test-only bypass exists.
 
 ## 7. Atomicity
 
@@ -181,16 +208,17 @@ service says so (`custody.durable: false`).
 
 1. authenticates the approver and checks the release role and the
    organization;
-2. rebuilds the draft from the store, checks every release gate, the exact
+2. refuses unless the store provides durable custody (§6);
+3. rebuilds the draft from the store, checks every release gate, the exact
    content digest and both acknowledgements;
-3. looks up custody for the `reportId`; if a release is kept, answers from it
+4. looks up custody for the `reportId`; if a release is kept, answers from it
    (§8);
-4. checks the approval date, builds the release record and the custody record;
-5. **commits** it in one SQLite IMMEDIATE transaction. The transaction checks
+5. checks the approval date, builds the release record and the custody record;
+6. **commits** it in one SQLite IMMEDIATE transaction. The transaction checks
    that the assessment exists in the record's organization and is `completed`
    (not superseded), then either inserts or finds an existing row. The primary
    key backs this up;
-6. logs `assurance.commercial_report.released` (`status: committed`) and
+7. logs `assurance.commercial_report.released` (`status: committed`) and
    returns, **only after the commit**.
 
 If the write fails, the store raises `ASSURANCE_STORE_UNAVAILABLE` with
@@ -287,22 +315,70 @@ release custody.
 
 ## 13. Migration
 
-On open, the store:
+**Opening reads before it writes (R1).** Before R1, opening switched the file
+to WAL, which rewrites its header, before checking anything. It also ran the
+DDL whenever the version ledger was missing or empty, initialized in separate
+statements, and accepted an existing custody table of any shape. The opening
+order is now:
 
-1. checks the recorded schema version, as before;
-2. runs the v1 DDL;
-3. creates the custody table, its index and triggers if they are absent.
+1. Open the connection and apply connection-only settings (`foreign_keys`,
+   `busy_timeout`). Neither writes the file.
+2. **Preflight, read-only**, which refuses the file **without changing it**
+   (`ASSURANCE_STORE_UNAVAILABLE`, "nothing was changed", with no driver
+   detail or path) when:
+   - it is not a readable SQLite database;
+   - it holds objects but no `assurance_store_versions` ledger (another
+     application's database, or a non-Assurance file);
+   - the ledger is unreadable;
+   - the newest ledger row names another schema version;
+   - a custody table exists with other columns, types, nullability or primary
+     key;
+   - a custody table lacks its index or either trigger (partially created);
+   - custody objects exist without their table.
 
-A database written before REL-01A opens with every row and digest unchanged,
-gains an empty custody table, and keeps a single version row
-`aoc.assurance-store.schema.v1` (proven by test). A database of an unsupported
-version is refused before anything is created on it, as before (proven).
+   An unexpected object is refused. It is never repaired or dropped. An empty
+   file is fresh. A ledger without rows is an initialization interrupted
+   before it recorded its version, and is completed in step 4.
+3. Only then switch to WAL and set `synchronous = FULL`.
+4. **Initialize in one IMMEDIATE transaction**: the v1 DDL, the custody DDL,
+   and the version row if none exists. The ledger is re-read under the write
+   lock, so concurrent first opens record a single row. Any failure rolls the
+   whole initialization back ("no part of the initialization was kept"). The
+   file can be opened again once the cause is gone.
+
+**Proven by test, comparing before/after snapshots** of `sqlite_master`
+(every object and its SQL), every table's rows, `user_version` and the
+journal mode:
+
+- a fresh file initializes in WAL mode with one version row;
+- a v1 database with custody reopens unchanged;
+- a pre-REL-01A v1 database gains exactly the custody objects, and nothing else
+  changes;
+- an unsupported version is refused unchanged (no table, index or trigger, no
+  WAL switch, `user_version` kept), both with and without an existing custody
+  table, whose release stays intact;
+- an unreadable ledger, a foreign database and a non-database file are
+  refused unchanged (the non-database file's bytes are hashed);
+- a custody table of another structure, and one missing a trigger, are
+  refused unchanged;
+- a failure injected at the version-row insert, after the custody objects were
+  created inside the transaction, leaves no custody table and no version row;
+  once the cause is removed, the same file opens and is completed with its
+  history intact.
+
+**Limits.**
+
+- The v1 base tables are created with `IF NOT EXISTS` and are not validated
+  column by column: only the custody objects are.
+- Reading a refused file that is already in WAL mode can create its `-shm`
+  sidecar, as any reader would. The database file, its schema and its rows are
+  not changed.
 
 | Runtime | Database | Behaviour |
 | --- | --- | --- |
 | REL-01A | pre-REL-01A | Opens; table added; nothing else changes |
 | pre-REL-01A | post-REL-01A | Opens; never reads the table. **It releases without custody, as it always did. Do not run an older runtime against a production store** |
-| REL-01A | unsupported version | Refused, untouched |
+| REL-01A | unsupported version, unreadable ledger, foreign database, incompatible custody objects | Refused, untouched (R1) |
 
 No production migration was run as part of this change.
 
@@ -332,13 +408,13 @@ acceptable is Host policy, decided by whoever reads both fields.
 | **Issuer-controlled custody (A10)** | Someone who can write the store and recompute every digest can rewrite a release undetected (pinned as `A10 KNOWN LIMITATION`). Custody is the issuer's own record, not non-repudiation |
 | **Downgrade** | An older runtime ignores custody and releases without it |
 | **Restore to an older backup** | Loses later releases; they become uncorroborated and re-releasable |
-| **In-memory provider** | Custody lasts for the process only (`durable: false`) |
+| **Durability is the factory instance, not the disk** | `providesDurableReleaseCustody` recognizes the store this module created. It cannot vouch for the storage under it, nor for a database file written around the store (A10) |
 | **No operational interface (F04)** | Release and verification are reachable only in-process; nothing is exposed to customers |
 | **F02 contradiction deadlock, F03 Markdown "not yet released" banner** | Unchanged |
 | **`commercialUse: restricted`** | Unchanged. A release still acknowledges it, and nothing here authorizes commercial use |
 
-**Mutation testing.** Fourteen non-equivalent mutants were applied to the
-compiled custody code. Each was killed by the REL-01A suite:
+**Mutation testing.** Twenty non-equivalent mutants were applied to the
+compiled code. Each was killed by the REL-01A suite:
 
 - omitting the write;
 - skipping uniqueness in the store transaction;
@@ -353,22 +429,29 @@ compiled custody code. Each was killed by the REL-01A suite:
 - allowing a conflicting approver;
 - allowing conflicting content;
 - releasing an incomplete assessment;
-- dropping the assessment binding.
+- dropping the assessment binding;
+- (R1) dropping the durable-custody gate;
+- (R1) trusting a `providerKind` string for durability;
+- (R1) skipping the read-only preflight;
+- (R1) switching to WAL before the preflight;
+- (R1) initializing outside a transaction;
+- (R1) accepting a custody table of another structure.
 
-Two mutants are equivalent while the other mechanism holds, and are not
-counted:
+Each R1 mutant was killed by the specific test for its case.
 
-- removing only the primary key, while the in-transaction check holds the
-  write lock;
-- removing only the in-transaction check, while the primary key stays (it
-  turns a race into a store failure, not a double release).
+One mutant is equivalent and not counted: removing only the primary key, while
+the in-transaction check holds the write lock.
+
+Removing only the in-transaction check is **not** equivalent. The primary key
+turns the race into a store failure instead of returning the kept release, and
+R05 detects it.
 
 ## 17. Operation
 
 - **Release:** `releaseCommercialReport` as before. Read `custody.outcome`: a
-  `replayed` answer is the original approval, not a new one. Require
-  `custody.durable: true` in any environment that releases to customers, which
-  means configuring `persistence.provider = sqlite`.
+  `replayed` answer is the original approval, not a new one. A Host that
+  releases must run `persistence.provider = sqlite`. On the in-memory provider,
+  every release is refused (§6).
 - **Reissue:** increment `reportVersion`. Never expect a released version to
   accept another approval.
 - **Verify a received package:** call `verifyCommercialRelease` with an
@@ -382,7 +465,8 @@ counted:
 
 | Observation | Response |
 | --- | --- |
-| `ASSURANCE_STORE_UNAVAILABLE` on release | Nothing was released. Retry: the retry commits once or replays |
+| `ASSURANCE_STORE_UNAVAILABLE` on release | Nothing was released. A persistence failure (`retryable: true`) can be retried: the retry commits once or replays. A store without durable custody never releases: configure the SQLite provider |
+| `ASSURANCE_STORE_UNAVAILABLE` on open, "nothing was changed" | The file was refused untouched: another schema version, not an Assurance Store, unreadable, or custody objects this runtime does not recognize. Do not repair it by hand; restore or migrate it deliberately |
 | `ASSURANCE_ASSESSMENT_IMMUTABLE`, `commercial_release_conflict` | A release is already kept for that version. Read it with `getCommercialRelease`; issue a new version if a new approval is intended |
 | `RELEASE_MISMATCH` for a circulating package | Treat it as forged or altered. Compare `mismatchedFields` with the kept record; deliver the kept version again |
 | `RELEASE_NOT_IN_CUSTODY` | Not corroborated. It is either a pre-REL-01A release, a release lost to a restore, or a forgery under an unknown version |

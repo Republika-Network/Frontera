@@ -1,9 +1,12 @@
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { AssuranceError } from '../assurance/errors.js';
+import { createSqliteAssuranceStore } from '../assurance/sqlite-assurance-store.js';
+import type { AssuranceStore } from '../assurance/assurance-store.js';
 import { computeDigest } from '../governance-store/digest.js';
 import { verifyAssuranceAssessment } from '../assurance/verification.js';
 import { buildAssuranceReport } from '../assurance/report.js';
@@ -113,8 +116,26 @@ interface Fixture {
   readonly assessment: AssuranceAssessment;
 }
 
+/**
+ * ASSURE-REL-01A-R1: a commercial release requires durable custody, so the
+ * fixture runs on a temporary SQLite store (the in-memory store cannot release).
+ */
+const sqliteDirs: string[] = [];
+const sqliteStores: AssuranceStore[] = [];
+after(async () => {
+  for (const store of sqliteStores) await store.close().catch(() => {});
+  for (const dir of sqliteDirs) rmSync(dir, { recursive: true, force: true });
+});
+async function temporarySqliteStore(): Promise<AssuranceStore> {
+  const dir = mkdtempSync(join(tmpdir(), 'assure-rep-01-'));
+  sqliteDirs.push(dir);
+  const store = await createSqliteAssuranceStore(join(dir, 'assurance.db'));
+  sqliteStores.push(store);
+  return store;
+}
+
 async function completedRnSv(options: { readonly outcomes?: Readonly<Record<string, AssuranceManualReviewOutcome>>; readonly evidence?: readonly AssuranceEvidenceReference[] } = {}): Promise<Fixture> {
-  const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1, reviewers: [...TEST_REVIEWERS, APPROVER, APPROVER_ORG_2] });
+  const harness = buildAssuranceHarness({ framework: RN_SV_FRAMEWORK_V0_1, reviewers: [...TEST_REVIEWERS, APPROVER, APPROVER_ORG_2], store: await temporarySqliteStore() });
   const outcomes = options.outcomes ?? OUTCOMES;
   const created = await harness.service.createAssessment(ASSURANCE_ORG, {
     subject: { subjectType: 'system', subjectId: 'harborline-platform', organizationId: 'org-1', displayName: 'Harborline (fictional)' },

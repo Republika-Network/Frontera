@@ -85,6 +85,15 @@ FULL`, foreign keys ON, busy timeout, prepared statements, transactions
 around every multi-row write. No general UPDATE/DELETE surface exists; the
 only UPDATEs are non-terminal snapshot upserts and the supersession marker.
 
+**Opening (ASSURE-REL-01A-R1).** The file is read before anything writes it.
+It is refused, unchanged, if it is unreadable, holds objects without a version
+ledger, has an unreadable ledger, records another schema version, or has
+release-custody objects of another structure or only partly created. Only a
+compatible or empty file is switched to WAL. It is then initialized (v1 DDL,
+custody DDL and version row) in one IMMEDIATE transaction, kept whole or not
+at all. Commercial releases require this store: the in-memory provider cannot
+release.
+
 ## Access control assumptions
 
 The Assurance Runtime does not authenticate. The Enterprise HTTP adapter
