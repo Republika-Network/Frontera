@@ -553,10 +553,14 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
       assessmentJson: JSON.stringify(assessment),
     });
     if ((ASSURANCE_TERMINAL_STATUSES as readonly string[]).includes(assessment.status)) {
-      // Findings rows persist only at the terminal save (re-evaluation
-      // before completion replaces the working findings set; only the
-      // final set gets an append-only lifecycle).
-      for (const finding of assessment.findings) {
+      // Findings rows persist only when the assessment completes: re-evaluation
+      // before completion replaces the working findings set, and only the final
+      // set of a COMPLETED assessment gets an append-only lifecycle, whose
+      // opening events completeAssessment writes in the same unit (SEC-01E).
+      // A failed or terminated attempt (ASSURE-REL-01B) has no findings
+      // lifecycle: its working findings stay in its JSON and become no rows
+      // without history.
+      for (const finding of assessment.status === 'completed' ? assessment.findings : []) {
         const existingFinding = selectFinding.get(finding.findingId) as { finding_id: string } | undefined;
         if (existingFinding === undefined) {
           insertFinding.run({
@@ -664,7 +668,20 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
     async saveAssessment(context, assessment) {
       assertOpen();
       requireAccessToAssuranceOrganization(context, assessment.subject.organizationId);
-      db.transaction(() => writeAssessment(assessment))();
+      // ASSURE-REL-01B: IMMEDIATE -- the write lock is taken before the stored
+      // status is read, so two writers (e.g. two terminations, or a termination
+      // and an evaluation) cannot both see a non-terminal assessment; the
+      // second one sees the first one's terminal status and is refused.
+      try {
+        db.transaction(() => writeAssessment(assessment)).immediate();
+      } catch (error) {
+        if (error instanceof AssuranceError) throw error;
+        // The driver's message may name paths or SQL; it never leaves the store.
+        throw new AssuranceError('ASSURANCE_STORE_UNAVAILABLE', `Assessment '${assessment.assessmentId}' could not be saved: the Assurance Store did not persist it. Nothing was recorded; the save can be retried.`, {
+          assessmentId: assessment.assessmentId,
+          retryable: true,
+        });
+      }
     },
 
     async completeAssessment(context, commit) {

@@ -64,7 +64,9 @@ import {
  * (REL-01) is expected to break the assertion it addresses, which must then be
  * inverted, not deleted. F01 was inverted by ASSURE-REL-01A: its forgery cases
  * remain and now show both halves -- the forged package still passes offline
- * integrity, and custody rejects it. See
+ * integrity, and custody rejects it. F02 was inverted by ASSURE-REL-01B: the
+ * deadlocked attempt still cannot be concluded, and it can now be ended as
+ * inconclusive and followed by a linked new attempt. See
  * docs/enterprise/ASSURE_PILOT_01_COMMERCIAL_DRY_RUN.md.
  */
 
@@ -535,7 +537,7 @@ describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS and their resolutions (each pins 
     assert.ok(verify(rescored, { trustedDb }).failed.includes('assessmentConsistency: score equals the stored score'));
   });
 
-  it('F02 KNOWN LIMITATION -- contradiction deadlock: with contradictory evidence even an authenticated FAIL review leaves the control pending and the assessment can never complete', async () => {
+  it('F02 RESOLVED (ASSURE-REL-01B) -- contradiction deadlock: the attempt still cannot be concluded, but an authenticated reviewer can end it as inconclusive and a linked new attempt reaches a conclusion on new evidence', async () => {
     const created = await world.service.createAssessment(PILOT_ORG_CONTEXT, { subject: { subjectType: 'system', subjectId: 'pilot-contradiction-subject', organizationId: PILOT_ORG }, frameworkId: RN_SV_FRAMEWORK_ID, frameworkVersion: RN_SV_FRAMEWORK_VERSION, requestedBy: 'pilot-preparer', evidenceCutoffAt: PILOT_CUTOFF });
     const id = created.assessmentId;
     await world.service.collectEvidence(PILOT_ORG_CONTEXT, id, { manualEvidence: pilotContradictoryEvidence('pilot-contradiction-subject') });
@@ -549,7 +551,28 @@ describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS and their resolutions (each pins 
     assert.equal(statusesOf(reevaluated)['SV-08'], 'manual_review_required', 'the accepted FAIL review does not conclude the control');
     await assert.rejects(world.service.completeAssessment(PILOT_ORG_CONTEXT, id), isCode('ASSURANCE_MANUAL_REVIEW_REQUIRED'));
     await assert.rejects(world.service.collectEvidence(PILOT_ORG_CONTEXT, id, { manualEvidence: [pilotArtifact('sv08-fixed', 'SV-08', { subjectId: 'pilot-contradiction-subject' })] }), isCode('ASSURANCE_ASSESSMENT_IMMUTABLE'));
-    await assert.rejects(world.service.requestReassessment(PILOT_ORG_CONTEXT, { assessmentId: id, reason: 'withdraw contradictory evidence', requestedBy: 'pilot-preparer' }), isCode('ASSURANCE_ASSESSMENT_INCOMPLETE'));
+    await assert.rejects(world.service.requestReassessment(PILOT_ORG_CONTEXT, { assessmentId: id, reason: 'withdraw contradictory evidence', requestedBy: 'pilot-preparer' }), isCode('ASSURANCE_ASSESSMENT_INCOMPLETE'), 'an attempt that was not ended is still not continued');
+
+    // ASSURE-REL-01B: the supported exit. Ending the attempt concludes nothing and keeps everything.
+    const ended = await world.service.terminateAssessment(reviewer, id, { reasonCode: 'unresolved_contradiction', rationale: 'Two copies of the SV-08 runbook with different digests; neither can be shown to be the operative one.' });
+    assert.equal(ended.assessment.status, 'failed');
+    assert.equal(ended.assessment.termination?.outcome, 'inconclusive');
+    assert.equal(ended.assessment.termination?.terminatedBy, PILOT_CREDENTIALS.reviewer.reviewerId);
+    assert.equal(statusesOf(ended.assessment)['SV-08'], 'manual_review_required', 'the contradiction became neither PASS nor FAIL');
+    assert.deepEqual(ended.assessment.evidenceResolutions, reevaluated.evidenceResolutions, 'the contradictory evidence is kept');
+    assert.equal((await world.service.verifyAssessment(PILOT_ORG_CONTEXT, id)).valid, true);
+    await assert.rejects(world.service.buildCommercialReportDraft(PILOT_ORG_CONTEXT, id, { engagement: PILOT_ENGAGEMENT, issue: PILOT_ISSUE }), isCode('ASSURANCE_ASSESSMENT_INCOMPLETE'), 'no report from an inconclusive attempt');
+    const successor = await world.service.requestReassessment(PILOT_ORG_CONTEXT, { assessmentId: id, reason: 'New attempt with one authoritative runbook.', requestedBy: 'pilot-preparer' });
+    assert.equal(successor.previousAssessmentId, id);
+    assert.equal(successor.supersedesAssessmentId, undefined);
+    await world.service.collectEvidence(PILOT_ORG_CONTEXT, successor.assessmentId, { manualEvidence: [pilotArtifact('sv08-fixed', 'SV-08', { subjectId: 'pilot-contradiction-subject' })] });
+    await world.service.evaluateAssessment(PILOT_ORG_CONTEXT, successor.assessmentId);
+    await world.service.recordManualReview(reviewer, pilotReviewInput(successor.assessmentId, 'SV-08', 'pass', ['sv08-fixed']));
+    for (const controlId of PILOT_CONTROLS.filter((candidate) => candidate !== 'SV-08')) await world.service.recordManualReview(reviewer, pilotReviewInput(successor.assessmentId, controlId, 'insufficient_evidence'));
+    await world.service.evaluateAssessment(PILOT_ORG_CONTEXT, successor.assessmentId);
+    const concluded = await world.service.completeAssessment(PILOT_ORG_CONTEXT, successor.assessmentId);
+    assert.equal(statusesOf(concluded)['SV-08'], 'pass', 'concluded on new, consistent evidence');
+    assert.equal((await world.service.getAssessment(PILOT_ORG_CONTEXT, id))?.status, 'failed', 'the ended attempt is untouched');
   });
 
   it('F03 KNOWN LIMITATION -- the released Markdown says it is not released, while its release record says it is', () => {

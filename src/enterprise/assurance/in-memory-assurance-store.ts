@@ -108,10 +108,12 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
         }
       }
       assessments.set(assessment.assessmentId, assessment);
-      // Findings rows persist only at the terminal save (re-evaluation before
-      // completion replaces the working findings set; only the final set gets
-      // an append-only lifecycle). Content stays owned by the assessment.
-      if (ASSURANCE_TERMINAL_STATUSES.includes(assessment.status)) {
+      // Findings rows persist only when the assessment completes (re-evaluation
+      // before completion replaces the working findings set; only the final set
+      // of a completed assessment gets an append-only lifecycle). A failed or
+      // terminated attempt (ASSURE-REL-01B) keeps its working findings in its
+      // content only. Content stays owned by the assessment.
+      if (assessment.status === 'completed') {
         for (const finding of assessment.findings) {
           if (!findings.has(finding.findingId)) findings.set(finding.findingId, finding);
         }

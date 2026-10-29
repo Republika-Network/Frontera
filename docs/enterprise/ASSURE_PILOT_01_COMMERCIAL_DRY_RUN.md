@@ -178,9 +178,25 @@ completion, so after that:
 - collecting new evidence fails (`ASSURANCE_ASSESSMENT_IMMUTABLE`);
 - reassessment fails (`ASSURANCE_ASSESSMENT_INCOMPLETE`).
 
-No operation withdraws or abandons the assessment. The engagement can only
-continue with a new assessment, and the stuck one stays open. The engine is
-not changed here.
+No operation withdrew or abandoned the assessment. The engagement could only
+continue with an unrelated new assessment, and the stuck one stayed open.
+
+**Resolved by ASSURE-REL-01B**
+(`docs/security/ASSURE-REL-01B-CONTRADICTION-RECOVERY.md`). The attempt still
+cannot be concluded, by design: the engine, the contradiction policy and the
+framework are unchanged, and no contradiction becomes PASS or FAIL. What is
+new:
+
+- An authenticated reviewer (`assure.reviewer`) can **end** the attempt as
+  inconclusive with `terminateAssessment`. It becomes `failed`, carries a
+  self-digested `termination` record, and keeps its evidence, contradiction
+  and reviews.
+- `requestReassessment` then starts a **linked** new attempt
+  (`previousAssessmentId`, never `supersedesAssessmentId`). That attempt
+  concludes on new evidence.
+
+The F02 test was inverted, not deleted: it still reproduces the deadlock, then
+ends the attempt and concludes in the new one.
 
 ### F03 — Markdown and release record disagree
 
@@ -213,7 +229,7 @@ exists.
 
 | Dimension | Status |
 | --- | --- |
-| Evaluation engine | CONDITIONAL (F02) |
+| Evaluation engine | CONDITIONAL (F02 has a supported exit since ASSURE-REL-01B, by ending the attempt and starting a new one; a contradiction is still never resolved within an attempt) |
 | Evidence and provenance | CONDITIONAL (supplier-provided only) |
 | Authenticated reviewers | READY (technical); credential lifecycle is procedural |
 | Persistence and integrity | READY |
@@ -238,9 +254,9 @@ exists.
    digests over an independent channel.
 3. Provide a supported operator path to draft and release against the Host's
    store with its configured credentials (F04).
-4. Give contradicted controls a way out: let an authenticated FAIL or UNKNOWN
-   review conclude the control, or add an explicit withdraw or abandon
-   operation (F02). This is an engine and framework decision.
+4. ~~Give contradicted controls a way out (F02).~~ Done in ASSURE-REL-01B, by
+   explicit termination of the attempt and a linked new attempt. A review
+   still never concludes a contradicted control.
 5. Refuse manual reviews on terminal assessments.
 6. Reword the released Markdown's banner so that it is valid only together
    with a matching release record (F03).

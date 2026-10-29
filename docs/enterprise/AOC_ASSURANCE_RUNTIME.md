@@ -107,6 +107,14 @@ references and — only upon its own completion — supersedes the prior one
 (store-level bookkeeping outside every digest). Continuous signals derive
 staleness and state; they never rewrite history.
 
+**Ending an attempt (ASSURE-REL-01B).** An authenticated reviewer holding
+`assure.reviewer` can end a non-terminal attempt as inconclusive with
+`terminateAssessment()`. This is the way out of an unresolvable contradiction.
+The attempt becomes `failed` with a self-digested `termination` record, and
+its content and results are unchanged. `requestReassessment()` on it starts a
+linked new attempt (`previousAssessmentId`), which never supersedes it. See
+`docs/security/ASSURE-REL-01B-CONTRADICTION-RECOVERY.md`.
+
 ## Enterprise integration
 
 - Module `aoc.enterprise.assurance` (optional by default;
