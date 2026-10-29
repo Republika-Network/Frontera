@@ -1,0 +1,15 @@
+{
+  "manifestVersion": "rn.sv.commercial-report-manifest.v1",
+  "reportId": "rn-sv-report:assurance-assessment-1:v1.0",
+  "assessmentId": "assurance-assessment-1",
+  "assessmentDigest": "sha256:7346ed20936b70d1f6516772308c4907617661a0ef9cb6f8b7e63a2cc3899127",
+  "frameworkId": "rn.sv",
+  "frameworkVersion": "0.1.0",
+  "frameworkDigest": "sha256:e71fafe1a10af95514823e35d43138b1b93cdb72e37765200447a37748c13a58",
+  "generatorVersion": "aoc.assurance.commercial-report.v1",
+  "readiness": "READY_FOR_RELEASE",
+  "canonicalizationVersion": "aoc.canonical-json.v1",
+  "contentDigest": "sha256:00e43f33c28c92e044bd9bebd500be72d1c7bd2dc6941383406d04c0fbca25eb",
+  "markdownDigest": "sha256:ca94949699b7f40155b345843aadd2eaf8e0563bbf2cab5519b9668bceeba15d",
+  "manifestDigest": "sha256:f4da981cc3f19c6456f1cedf94cd90d447a7f5bc8a42ffae834780ab875009eb"
+}

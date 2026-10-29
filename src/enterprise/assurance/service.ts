@@ -21,6 +21,14 @@ import { assertAssessmentTransition, computeAssessmentIntegrity, emptyAssuranceS
 import { verifyAssuranceAssessment } from './verification.js';
 import { ASSURANCE_SIGNAL_OUTCOMES, buildAssuranceSignal, deriveContinuousAssuranceState, type BuildAssuranceSignalInput } from './signals.js';
 import { buildAssuranceReport, isAssuranceReportView } from './report.js';
+import {
+  COMMERCIAL_REPORT_RELEASE_ROLE,
+  buildCommercialReportDraft,
+  buildCommercialReportRelease,
+  type CommercialReleaseAcknowledgements,
+  type CommercialReportDraft,
+  type CommercialReportRelease,
+} from './commercial-report.js';
 import type { AssuranceStore } from './assurance-store.js';
 import type {
   AssuranceAccessContext,
@@ -114,6 +122,18 @@ export interface CollectEvidenceOptions {
   readonly manualEvidence?: readonly AssuranceEvidenceReference[];
 }
 
+/** ASSURE-REP-01: what a commercial report is drafted from beyond the stored assessment. Untrusted until validated. */
+export interface CommercialReportRequest {
+  readonly engagement: unknown;
+  readonly issue: unknown;
+}
+
+/** ASSURE-REP-01: a release names the exact content it approves and acknowledges the limitations it read. */
+export interface CommercialReportReleaseRequest extends CommercialReportRequest {
+  readonly approvedContentDigest: string;
+  readonly acknowledgements: CommercialReleaseAcknowledgements;
+}
+
 export interface AssuranceService {
   createAssessment(context: AssuranceAccessContext, input: CreateAssuranceAssessmentInput): Promise<AssuranceAssessment>;
   collectEvidence(context: AssuranceAccessContext, assessmentId: string, options?: CollectEvidenceOptions): Promise<AssuranceAssessment>;
@@ -133,6 +153,23 @@ export interface AssuranceService {
   getContinuousState(context: AssuranceAccessContext, subjectId: string, frameworkId?: string, frameworkVersion?: string): Promise<ContinuousAssuranceState>;
   requestReassessment(context: AssuranceAccessContext, input: RequestReassessmentInput): Promise<AssuranceAssessment>;
   buildAssuranceReport(context: AssuranceAccessContext, assessmentId: string, view: string, generatedBy: string): Promise<AssuranceReport>;
+  /**
+   * ASSURE-REP-01: the commercial `rn.sv@0.1.0` report as a DRAFT or
+   * READY_FOR_RELEASE draft -- never released. Reads only; writes nothing.
+   */
+  buildCommercialReportDraft(context: AssuranceAccessContext, assessmentId: string, request: CommercialReportRequest): Promise<CommercialReportDraft>;
+  /**
+   * ASSURE-REP-01: releases a READY_FOR_RELEASE draft. Requires an
+   * authenticated reviewer holding `assure.report-release` for the assessment's
+   * organization, who names the exact content digest approved. The draft is
+   * rebuilt from the store, so the approval binds what the store holds now.
+   * Returns the release record; nothing is persisted.
+   */
+  releaseCommercialReport(
+    context: AssuranceAccessContext,
+    assessmentId: string,
+    request: CommercialReportReleaseRequest,
+  ): Promise<{ readonly draft: CommercialReportDraft; readonly release: CommercialReportRelease }>;
 }
 
 export interface AssuranceServiceDependencies {
@@ -180,6 +217,18 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
 
   function frameworkFor(assessment: AssuranceAssessment): AssuranceFramework {
     return resolveFrameworkForAssessment(registry, assessment.frameworkId, assessment.frameworkVersion, { allowRetired: true });
+  }
+
+  /** ASSURE-REP-01: every source of the commercial report, read in `context`'s own scope. */
+  async function commercialDraft(context: AssuranceAccessContext, assessmentId: string, request: CommercialReportRequest): Promise<CommercialReportDraft> {
+    const assessment = await requireAssessment(context, assessmentId);
+    const framework = frameworkFor(assessment);
+    const verification = verifyAssuranceAssessment({ assessment, framework, now });
+    const findings = await store.listFindings(context, assessmentId);
+    const findingEvents = new Map<string, readonly AssuranceFindingEvent[]>();
+    for (const finding of findings) findingEvents.set(finding.findingId, await store.listFindingEvents(context, finding.findingId));
+    const manualReviews = await store.listManualReviews(context, assessmentId);
+    return buildCommercialReportDraft({ assessment, framework, verification, findings, findingEvents, manualReviews, engagement: request?.engagement, issue: request?.issue });
   }
 
   async function requireAssessment(context: AssuranceAccessContext, assessmentId: string): Promise<AssuranceAssessment> {
@@ -992,6 +1041,48 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
       const assessment = await requireAssessment(context, assessmentId);
       const framework = frameworkFor(assessment);
       return buildAssuranceReport({ assessment, framework, view: view as AssuranceReportView, generatedBy, now, nextId });
+    },
+
+    async buildCommercialReportDraft(context, assessmentId, request) {
+      return commercialDraft(context, assessmentId, request);
+    },
+
+    async releaseCommercialReport(context, assessmentId, request) {
+      const approver = context.reviewer;
+      if (!reviewerAuthenticator.isAuthenticated(approver)) {
+        throw unauthorizedReviewer('Releasing a commercial report requires an authenticated Assurance reviewer credential; a system context or declared identity is not accepted.');
+      }
+      if (!approver.roles.includes(COMMERCIAL_REPORT_RELEASE_ROLE)) {
+        throw unauthorizedReviewer(`Releasing a commercial report requires the role '${COMMERCIAL_REPORT_RELEASE_ROLE}'.`, { requiredRole: COMMERCIAL_REPORT_RELEASE_ROLE });
+      }
+      if (context.organizationId !== undefined && context.organizationId !== approver.organizationId) {
+        throw unauthorizedReviewer('The access context names a different organization than the authenticated approver.');
+      }
+      const approverContext: AssuranceAccessContext = { system: false, organizationId: approver.organizationId, actorId: approver.reviewerId, roles: approver.roles, reviewer: approver };
+      const draft = await commercialDraft(approverContext, assessmentId, request);
+      if (draft.content.readiness.status !== 'READY_FOR_RELEASE') {
+        throw new AssuranceError('ASSURANCE_ASSESSMENT_INCOMPLETE', `The commercial report for '${assessmentId}' is not ready for release.`, {
+          failedChecks: draft.content.readiness.checks.filter((entry) => !entry.passed).map((entry) => entry.check),
+        });
+      }
+      if (request.approvedContentDigest !== draft.manifest.contentDigest) {
+        throw new AssuranceError('ASSURANCE_INTEGRITY_FAILED', 'The approved content digest does not match the report the store produces now; review the current draft and approve its digest.');
+      }
+      if (request.acknowledgements?.limitationsReviewed !== true || request.acknowledgements?.commercialUseRestrictionAcknowledged !== true) {
+        throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', 'A release must acknowledge the reviewed limitations and the framework’s commercial-use restriction.');
+      }
+      const approvedAt = now();
+      if (approvedAt.slice(0, 10) > draft.content.cover.issuedOn) {
+        throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `A report dated ${draft.content.cover.issuedOn} cannot be approved after its issue date; draft it again with the current issue date.`);
+      }
+      const release = buildCommercialReportRelease(draft, {
+        approvedBy: approver.reviewerId,
+        approverRole: COMMERCIAL_REPORT_RELEASE_ROLE,
+        approvedAt,
+        acknowledgements: { limitationsReviewed: true, commercialUseRestrictionAcknowledged: true },
+      });
+      logger?.info('assurance.commercial_report.released', { assessmentId, status: 'released' });
+      return { draft, release };
     },
   };
 }
