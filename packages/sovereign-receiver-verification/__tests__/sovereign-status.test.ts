@@ -49,8 +49,9 @@ async function verify(text: unknown, context: unknown = statusContext()): Promis
 
 async function rejects(text: unknown, reason: SovereignStatusRejectionReason, context: unknown = statusContext(), message?: string): Promise<void> {
   const result = await verify(text, context);
-  assert.equal(result.outcome, 'rejected', message);
-  if (result.outcome === 'rejected') assert.equal(result.reason, reason, message);
+  const label = message ?? `expected ${reason}`;
+  assert.equal(result.outcome, 'rejected', label);
+  if (result.outcome === 'rejected') assert.equal(result.reason, reason, label);
 }
 
 async function accepts(text: unknown, context: unknown = statusContext(), message?: string) {
