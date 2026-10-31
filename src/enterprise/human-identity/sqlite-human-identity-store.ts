@@ -16,7 +16,7 @@ import {
 } from '../authority-state-freshness/session.js';
 import { HUMAN_IDENTITY_RECORD_KINDS, humanIdentityGenesisDigest, humanIdentityRowDigest, nextHumanIdentityChainDigest, type HumanIdentityRecordKind, type HumanIdentityRowContent, type HumanIdentityStateCommitment, type StoredHumanIdentityRow } from './chain.js';
 import { HUMAN_IDENTITY_STORE_SCHEMA_VERSION, HumanIdentityError } from './contracts.js';
-import type { HumanDecisionChallengeContract } from './decision-challenge.js';
+import { BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT, type BootstrapAuthorityChallengeContract, type HumanDecisionChallengeContract } from './decision-challenge.js';
 
 /**
  * The durable, **authenticated** human identity store (AUTH-02, signed by AUTH-03).
@@ -180,7 +180,8 @@ export interface CeremonyChallenge {
 /** A stored decision challenge: the WebAuthn challenge string and the contract whose commitment it must be. */
 export interface StoredDecisionChallenge {
   readonly challenge: string;
-  readonly contract: HumanDecisionChallengeContract;
+  /** FV-P4C-2B2B: a CORE-05 contract, or a bootstrap-authority contract (told apart by `format`, then by commitment domain). */
+  readonly contract: HumanDecisionChallengeContract | BootstrapAuthorityChallengeContract;
 }
 
 export interface SqliteHumanIdentityStoreOptions {
@@ -464,7 +465,9 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
   let tail: Promise<unknown> = Promise.resolve();
 
   const toDecisionChallenge = (row: DecisionChallengeRow): StoredDecisionChallenge => {
-    if (row.verdict !== 'approve' && row.verdict !== 'reject') corrupt('A decision challenge has an unknown verdict.');
+    // FV-P4C-2B2B: `attest` exists only in the bootstrap-authority domain; `reject` only in CORE-05's.
+    const bootstrap = row.format === BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT;
+    if (bootstrap ? row.verdict !== 'attest' && row.verdict !== 'approve' : row.verdict !== 'approve' && row.verdict !== 'reject') corrupt('A decision challenge has an unknown verdict.');
     return {
       challenge: row.challenge,
       contract: {
@@ -472,12 +475,12 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
         organizationId: row.organization_id,
         approvalRequestId: row.approval_request_id,
         subjectDigest: row.subject_digest,
-        verdict: row.verdict as 'approve' | 'reject',
+        verdict: row.verdict,
         operatorId: row.operator_id,
         nonce: row.nonce,
         issuedAt: row.issued_at,
         expiresAt: row.expires_at,
-      },
+      } as StoredDecisionChallenge['contract'],
     };
   };
 

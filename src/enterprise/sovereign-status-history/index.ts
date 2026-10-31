@@ -23,6 +23,7 @@ export {
   STATUS_SOURCE_CLASSES,
   bootstrapBindingDigest,
   bootstrapBindingOf,
+  bootstrapEvidenceDigest,
   parseStatusHistoryBootstrapEvidence,
   parseStatusHistoryBootstrapRequest,
 } from './bootstrap-contract.js';
@@ -45,19 +46,53 @@ export type {
 } from './bootstrap-contract.js';
 export { STATUS_HISTORY_BOOTSTRAP_COORDINATOR, coordinateStatusHistoryBootstrap } from './bootstrap-coordinator.js';
 export type { StatusHistoryBootstrapContext, StatusHistoryBootstrapResult, StatusHistoryReceiverPort } from './bootstrap-coordinator.js';
-// FV-P4C-2B2: the AUTH-03 passkey-decision authorizer core (not composed; see FV_HOST_AUTHORITY_INTEGRATION.md).
+// FV-P4C-2B2 / 2B2B: the AUTH-03 bootstrap-authority authorizer, its permissions and its settlement (not composed; see FV_AUTHORITY_LIFECYCLE.md).
 export {
+  BOOTSTRAP_AUTHORITY_REF_PREFIX,
   BOOTSTRAP_HUMAN_DECISION_DENIALS,
   BOOTSTRAP_HUMAN_DECISION_FORMAT,
   BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX,
+  BOOTSTRAP_HUMAN_DECISION_ROLES,
+  bootstrapAuthorityDecisionInput,
   bootstrapHumanDecisionInputs,
   createHumanDecisionBootstrapAuthorizer,
+  parseBootstrapAuthorityRef,
 } from './human-decision-authorizer.js';
 export type {
   BootstrapHumanDecisionContract,
   BootstrapHumanDecisionDenial,
   BootstrapHumanDecisionPort,
-  BootstrapHumanPermissions,
   HumanDecisionBootstrapAuthorizer,
   HumanDecisionBootstrapAuthorizerOptions,
 } from './human-decision-authorizer.js';
+export {
+  STATUS_HISTORY_BOOTSTRAP_APPROVE_PERMISSION,
+  STATUS_HISTORY_BOOTSTRAP_PERMISSIONS,
+  STATUS_HISTORY_BOOTSTRAP_REQUEST_PERMISSION,
+  STATUS_HISTORY_RESOURCE_SCOPE,
+  createKernelAuthorityBootstrapPermissions,
+  statusHistoryResourceScope,
+} from './authority-permissions.js';
+export type {
+  BootstrapHumanPermissions,
+  BootstrapPermissionScope,
+  BootstrapStandingPort,
+  KernelAuthorityBootstrapPermissionsOptions,
+  StatusHistoryBootstrapPermission,
+} from './authority-permissions.js';
+export {
+  BOOTSTRAP_AUTHORITY_RECONCILER,
+  BOOTSTRAP_AUTHORITY_SETTLEMENT_MAX_DECISIONS,
+  BOOTSTRAP_AUTHORITY_SETTLEMENT_MAX_GRACE_SECONDS,
+  createBootstrapAuthorityReconciler,
+} from './authority-settlement.js';
+export type {
+  BootstrapAuthorityConflictReason,
+  BootstrapAuthorityReconciler,
+  BootstrapAuthorityReconcilerOptions,
+  BootstrapAuthorityReconciliationEntry,
+  BootstrapAuthoritySettlementPort,
+  BootstrapAuthoritySettlementRecord,
+  BootstrapAuthorityUnresolvedReason,
+  BootstrapEvidenceHistory,
+} from './authority-settlement.js';

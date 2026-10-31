@@ -43,4 +43,26 @@ describe('FV-P4C-2B2 structure — internal, unreachable, not composed', () => {
     const text = readFileSync(join(MODULE, 'human-decision-authorizer.ts'), 'utf8');
     assert.equal(/from '[^']*human-identity|from '[^']*approval-authority|createHumanIdentityService/.test(text), false);
   });
+
+  it('2B2B. the bootstrap-authority settlement and decision methods are reached by nothing in the Host: no route, gateway, composition or CORE-05 code', () => {
+    const IDENTITY = join(SRC, 'human-identity');
+    const BOOTSTRAP_API = /beginBootstrapAuthorityDecision|peekBootstrapAuthorityDecision|authorizeBootstrapAuthorityDecision|recordBootstrapAuthoritySettlement|unsettledBootstrapAuthorityDecisions|bootstrapAuthorityDecision\(/;
+    const callers = walk(SRC)
+      .filter((file) => !file.startsWith(MODULE) && !file.startsWith(IDENTITY) && !file.includes(`${join('src', 'enterprise', '__tests__')}`))
+      .filter((file) => BOOTSTRAP_API.test(readFileSync(file, 'utf8')))
+      .map((file) => relative(ROOT, file));
+    assert.deepEqual(callers, []);
+    for (const file of walk(join(ROOT, 'src')).filter((f) => !f.includes('__tests__') && !f.startsWith(MODULE) && !f.startsWith(IDENTITY))) {
+      assert.equal(BOOTSTRAP_API.test(readFileSync(file, 'utf8')), false, relative(ROOT, file));
+    }
+    // CORE-05's passkey channel and its reconciliation are unchanged by this domain: they never name it.
+    assert.equal(/bootstrap/i.test(readFileSync(join(SRC, 'approval-authority', 'human-decision.ts'), 'utf8')), false);
+  });
+
+  it('2B2B. the new FV modules read AUTH-03, Kernel-Authority and the history only through structural ports', () => {
+    for (const name of ['authority-permissions.ts', 'authority-settlement.ts', 'human-decision-authorizer.ts']) {
+      const text = readFileSync(join(MODULE, name), 'utf8');
+      assert.equal(/from '[^']*(human-identity|approval-authority|kernel-authority|operator-control|features)/.test(text), false, name);
+    }
+  });
 });

@@ -374,6 +374,11 @@ export function serializeStatusHistoryBootstrapEvidence(evidence: StatusHistoryB
   return canonicalJson(evidence);
 }
 
+/** FV-P4C-2B2B: `sha256:<hex>` over the canonical evidence record — what an AUTH-03 settlement cites. */
+export function bootstrapEvidenceDigest(evidence: StatusHistoryBootstrapEvidence): string {
+  return `sha256:${createHash('sha256').update(`frontera:sovereign-status-bootstrap-evidence:v1\n${serializeStatusHistoryBootstrapEvidence(evidence)}`).digest('hex')}`;
+}
+
 // --------------------------------------------------------------------------
 // Shared, module-internal readers (exported for the coordinator and the store only).
 

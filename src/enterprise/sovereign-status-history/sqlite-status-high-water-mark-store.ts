@@ -135,6 +135,13 @@ export interface SqliteStatusHighWaterMarkStore {
   hasBootstrapRequest(requestId: string): Promise<boolean>;
   /** Every bootstrap evidence record of one history, oldest first. */
   readBootstrapEvidence(key: SovereignStatusHistoryKey): Promise<readonly StatusHistoryBootstrapEvidence[]>;
+  /**
+   * FV-P4C-2B2B: every bootstrap evidence record whose binding digest is this
+   * one, each fully validated as `readBootstrapEvidence` validates it. Read
+   * only; what authority settlement correlates a consumed decision with. A
+   * record that does not validate throws (never an empty answer).
+   */
+  readBootstrapEvidenceForBinding(bindingDigest: string): Promise<readonly StatusHistoryBootstrapEvidence[]>;
   /** The pinned namespace. */
   readonly namespace: string;
   close(): void;
@@ -318,6 +325,12 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
     .prepare('SELECT request_id, next_revision, anchored_at, record FROM sovereign_status_bootstrap_evidence WHERE sovereign_asset_id = ? AND issuer = ? ORDER BY next_revision ASC')
     .safeIntegers(true);
   const selectRequest = db.prepare('SELECT 1 FROM sovereign_status_bootstrap_evidence WHERE request_id = ?');
+  // FV-P4C-2B2B: a read-only filter by the record's own binding digest. Every row it returns is decoded and validated in full.
+  const selectEvidenceForBinding = db
+    .prepare(
+      "SELECT request_id, sovereign_asset_id, issuer, next_revision, anchored_at, record FROM sovereign_status_bootstrap_evidence WHERE json_extract(record, '$.bindingDigest') = ? ORDER BY sovereign_asset_id, issuer, next_revision",
+    )
+    .safeIntegers(true);
   const insertEvidence = readOnly
     ? undefined
     : db.prepare('INSERT INTO sovereign_status_bootstrap_evidence (request_id, sovereign_asset_id, issuer, next_revision, anchored_at, record) VALUES (?, ?, ?, ?, ?, ?)');
@@ -443,7 +456,7 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
     }
   };
 
-  return Object.freeze({
+  const handle: SqliteStatusHighWaterMarkStore = Object.freeze({
     namespace,
     async read(rawKey: SovereignStatusHistoryKey) {
       ensureOpen();
@@ -474,6 +487,19 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
       const key = validateKey(rawKey);
       return guarded(() => deepFreeze((selectEvidence.all(key.sovereignAssetId, key.issuer) as Array<Record<string, unknown>>).map((row) => decodeEvidence(row, key))));
     },
+    async readBootstrapEvidenceForBinding(bindingDigest: string) {
+      ensureOpen();
+      if (!isDigest(bindingDigest)) throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The binding digest is not lowercase hex SHA-256.');
+      return guarded(() =>
+        deepFreeze(
+          (selectEvidenceForBinding.all(bindingDigest) as Array<Record<string, unknown>>).map((row) => {
+            const evidence = decodeEvidence(row, { sovereignAssetId: row['sovereign_asset_id'] as string, issuer: row['issuer'] as string });
+            if (evidence.bindingDigest !== bindingDigest) throw new SovereignStatusHistoryStoreError('INTEGRITY', 'A bootstrap evidence record does not validate; refusing the history.');
+            return evidence;
+          }),
+        ),
+      );
+    },
     close() {
       if (!closed) {
         closed = true;
@@ -481,6 +507,64 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
       }
     },
   });
+  // FV-P4C-2B2B-F1: this handle's provenance, for the settlement reconciler only. Reads go through this
+  // closure's own statements and validators, never through the handle's (or a look-alike's) methods.
+  PROVENANCE.set(handle, {
+    namespace,
+    file,
+    readForBinding(bindingDigest: string): readonly StatusHistoryBootstrapEvidence[] {
+      ensureOpen();
+      if (!isDigest(bindingDigest)) throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The binding digest is not lowercase hex SHA-256.');
+      return guarded(() =>
+        deepFreeze(
+          (selectEvidenceForBinding.all(bindingDigest) as Array<Record<string, unknown>>).map((row) => {
+            const key = { sovereignAssetId: row['sovereign_asset_id'] as string, issuer: row['issuer'] as string };
+            const evidence = decodeEvidence(row, key);
+            if (evidence.bindingDigest !== bindingDigest) throw new SovereignStatusHistoryStoreError('INTEGRITY', 'A bootstrap evidence record does not validate; refusing the history.');
+            // The committed transition must still be in the durable history, which itself validates against its latest evidence.
+            const entry = readEntry(key);
+            if (entry === undefined || entry.revision < evidence.next.revision) throw new SovereignStatusHistoryStoreError('INTEGRITY', 'A bootstrap evidence record names a transition the history does not hold.');
+            return evidence;
+          }),
+        ),
+      );
+    },
+  });
+  return handle;
+}
+
+/** FV-P4C-2B2B-F1: what only a real store handle can provide. Module-private. */
+interface StoreProvenance {
+  readonly namespace: string;
+  readonly file: string;
+  readForBinding(bindingDigest: string): readonly StatusHistoryBootstrapEvidence[];
+}
+const PROVENANCE = new WeakMap<object, StoreProvenance>();
+
+/** A read-only evidence source backed by one genuine, open store handle. */
+export interface TrustedBootstrapEvidenceSource {
+  readonly namespace: string;
+  readBootstrapEvidenceForBinding(bindingDigest: string): readonly StatusHistoryBootstrapEvidence[];
+}
+
+/**
+ * FV-P4C-2B2B-F1 — the evidence source behind a handle returned by
+ * `openSqliteStatusHighWaterMarkStore`, in this process, for the expected
+ * namespace and database file. `undefined` for anything else: a look-alike
+ * object, a handle for another namespace or file. A closed handle yields a
+ * source whose every read throws `CLOSED`.
+ *
+ * Provenance only: it proves the evidence comes from that real store's
+ * durable, validated state. It does **not** prove that the file is the latest
+ * history (a whole-file rollback or replacement is undetectable, FV-P4D),
+ * and it cannot protect against a compromised process.
+ */
+export function trustedBootstrapEvidenceSource(handle: unknown, expected: { readonly namespace: string; readonly databasePath: string }): TrustedBootstrapEvidenceSource | undefined {
+  const provenance = typeof handle === 'object' && handle !== null ? PROVENANCE.get(handle) : undefined;
+  if (provenance === undefined || typeof expected !== 'object' || expected === null) return undefined;
+  if (typeof expected.namespace !== 'string' || expected.namespace !== provenance.namespace) return undefined;
+  if (typeof expected.databasePath !== 'string' || expected.databasePath.trim() === '' || resolve(expected.databasePath) !== provenance.file) return undefined;
+  return Object.freeze({ namespace: provenance.namespace, readBootstrapEvidenceForBinding: (bindingDigest: string) => provenance.readForBinding(bindingDigest) });
 }
 
 /**

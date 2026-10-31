@@ -14,14 +14,21 @@ import {
   type RegistrationOptionsJSON,
 } from './contracts.js';
 import {
+  BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT,
+  BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT,
+  BOOTSTRAP_AUTHORITY_REQUEST_PREFIX,
   HUMAN_DECISION_CHALLENGE_FORMAT,
   HUMAN_DECISION_CHALLENGE_MAX_LIFETIME_SECONDS,
   HUMAN_DECISION_EVIDENCE_FORMAT,
+  bootstrapAuthorityEvidenceDigest,
   challengeDigestOf,
+  decisionContractCommitment,
   humanDecisionAssertionDigest,
-  humanDecisionChallengeCommitment,
   humanDecisionEvidenceDigest,
   webAuthnChallengeOf,
+  type BootstrapAuthorityChallengeContract,
+  type BootstrapAuthorityDecisionEvidence,
+  type BootstrapAuthorityRole,
   type HumanDecisionChallengeContract,
   type HumanDecisionEvidence,
   type HumanDecisionVerdict,
@@ -118,6 +125,65 @@ export type HumanDecisionOutcome =
   /** AUTH-04A: reconciliation found no CORE-05 verdict citing a consumed decision that is no longer in flight. Terminal: it never authorizes again. */
   | { readonly outcome: 'abandoned' };
 
+/** FV-P4C-2B2B: a bootstrap-authority decision challenge as issued (see `decision-challenge.ts`). */
+export interface IssuedBootstrapAuthorityChallenge {
+  readonly contract: BootstrapAuthorityChallengeContract;
+  readonly commitment: string;
+  readonly options: AuthenticationOptionsJSON;
+}
+
+/** FV-P4C-2B2B: a verified, consumed bootstrap-authority decision. Consumed is not committed: the bootstrap may still fail. */
+export interface AuthorizedBootstrapAuthorityDecision {
+  readonly contract: BootstrapAuthorityChallengeContract;
+  readonly commitment: string;
+  readonly evidence: BootstrapAuthorityDecisionEvidence;
+  readonly evidenceDigest: string;
+}
+
+/** Why a consumed bootstrap-authority decision anchored nothing. Closed. */
+export type BootstrapAuthorityNotCommittedCode =
+  /** The receiver's history holds no bootstrap evidence for this binding, and the attempt can no longer commit. */
+  | 'NO_BOOTSTRAP_EVIDENCE'
+  /** The binding was anchored, but by other decisions: this one's attempt lost. */
+  | 'ANCHORED_BY_OTHER_DECISIONS';
+
+export const BOOTSTRAP_AUTHORITY_NOT_COMMITTED_CODES: readonly BootstrapAuthorityNotCommittedCode[] = Object.freeze(['NO_BOOTSTRAP_EVIDENCE', 'ANCHORED_BY_OTHER_DECISIONS']);
+
+/**
+ * FV-P4C-2B2B — the external settlement of one consumed bootstrap-authority
+ * decision: what happened to the bootstrap it was consumed for, correlated to
+ * the receiver's own bootstrap evidence. A settlement of this kind exists only
+ * for bootstrap-authority decisions; CORE-05 decisions keep
+ * `HumanDecisionOutcome`. One per decision, never rewritten.
+ */
+export type BootstrapAuthoritySettlement =
+  | {
+      readonly outcome: 'bootstrap-committed';
+      /** The FV-P4C-2B1 binding digest: must be this decision's subject. */
+      readonly bindingDigest: string;
+      /** The other decision of the same bootstrap: same subject, the other role, another human. */
+      readonly counterpartCommitment: string;
+      /** The FV bootstrap request id, as the receiver's evidence records it. */
+      readonly bootstrapRequestId: string;
+      /** `sha256:<hex>` over the receiver's committed bootstrap evidence record, as stored. */
+      readonly bootstrapEvidenceDigest: string;
+      /** The committed transition: history revision, status sequence and status digest. */
+      readonly historyRevision: number;
+      readonly statusSequence: number;
+      readonly statusDigest: string;
+    }
+  | { readonly outcome: 'bootstrap-not-committed'; readonly bindingDigest: string; readonly code: BootstrapAuthorityNotCommittedCode };
+
+/** FV-P4C-2B2B: what the identity store knows about one bootstrap-authority commitment. */
+export interface BootstrapAuthorityDecisionRecord {
+  readonly contract: BootstrapAuthorityChallengeContract;
+  readonly commitment: string;
+  readonly state: 'issued' | 'consumed' | 'expired';
+  readonly evidence?: BootstrapAuthorityDecisionEvidence;
+  readonly evidenceDigest?: string;
+  readonly settlement?: BootstrapAuthoritySettlement;
+}
+
 /** What the identity store knows about one decision commitment. */
 export interface HumanDecisionRecord {
   readonly contract: HumanDecisionChallengeContract;
@@ -163,8 +229,25 @@ export interface HumanIdentityService {
   /** AUTH-03: records what CORE-05 did with an authorized decision. At most once per decision. */
   recordDecisionOutcome(commitment: string, outcome: HumanDecisionOutcome): Promise<void>;
   decision(commitment: string): HumanDecisionRecord | undefined;
-  /** AUTH-04A: every consumed decision with no recorded outcome, oldest first — what reconciliation reads. */
+  /** AUTH-04A: every consumed CORE-05 decision with no recorded outcome, oldest first — what reconciliation reads. Never a bootstrap-authority decision. */
   unsettledDecisions(): readonly HumanDecisionRecord[];
+  /** FV-P4C-2B2B: issues a challenge in the bootstrap-authority domain, bound to one FV binding digest and one signed role. */
+  beginBootstrapAuthorityDecision(input: { readonly operatorId: string; readonly bindingDigest: string; readonly role: BootstrapAuthorityRole }): IssuedBootstrapAuthorityChallenge;
+  /** FV-P4C-2B2B: the stored bootstrap-authority contract an assertion answers. Verifies nothing about the assertion; refuses every other domain. */
+  peekBootstrapAuthorityDecision(response: unknown): { readonly contract: BootstrapAuthorityChallengeContract; readonly commitment: string };
+  /** FV-P4C-2B2B: verifies and consumes a bootstrap-authority decision, exactly as `authorizeDecision` does a CORE-05 one. Refuses every other domain. */
+  authorizeBootstrapAuthorityDecision(response: unknown): Promise<AuthorizedBootstrapAuthorityDecision>;
+  /**
+   * FV-P4C-2B2B: records the external settlement of a consumed bootstrap-authority decision.
+   * F1: refused unless `capability` is this very instance's live settlement capability, which only
+   * `createHumanIdentityServiceWithBootstrapSettlement` issues. Holding the service, a commitment or
+   * a well-formed settlement is not permission. Idempotent for an identical settlement; any other
+   * second settlement is a conflict.
+   */
+  recordBootstrapAuthoritySettlement(capability: BootstrapSettlementCapability, commitment: string, settlement: BootstrapAuthoritySettlement): Promise<'recorded' | 'unchanged'>;
+  bootstrapAuthorityDecision(commitment: string): BootstrapAuthorityDecisionRecord | undefined;
+  /** FV-P4C-2B2B: every consumed bootstrap-authority decision with no settlement, oldest first. */
+  unsettledBootstrapAuthorityDecisions(): readonly BootstrapAuthorityDecisionRecord[];
   principal(operatorId: string): HumanPrincipal | undefined;
   credentialsOf(operatorId: string): readonly PasskeyCredentialView[];
   enrolment(enrolmentId: string): EnrolmentAuthorizationView | undefined;
@@ -195,11 +278,10 @@ interface CredentialRecord {
   readonly publicKey: string;
 }
 
-interface DecisionState {
-  readonly evidence: HumanDecisionEvidence;
-  readonly evidenceDigest: string;
-  outcome?: HumanDecisionOutcome;
-}
+/** FV-P4C-2B2B: a consumed decision is of exactly one domain, fixed by its evidence format; an outcome of the other domain is corruption. */
+type DecisionState =
+  | { readonly domain: 'core-05'; readonly evidence: HumanDecisionEvidence; readonly evidenceDigest: string; outcome?: HumanDecisionOutcome }
+  | { readonly domain: 'bootstrap-authority'; readonly evidence: BootstrapAuthorityDecisionEvidence; readonly evidenceDigest: string; settlement?: BootstrapAuthoritySettlement };
 
 interface IdentityState {
   readonly principals: Map<string, PrincipalState>;
@@ -228,14 +310,26 @@ const count = (payload: Readonly<Record<string, unknown>>, key: string): number 
   return value;
 };
 
-function evidenceOf(payload: Readonly<Record<string, unknown>>): HumanDecisionEvidence {
+function evidenceOf(payload: Readonly<Record<string, unknown>>): { readonly domain: 'core-05'; readonly evidence: HumanDecisionEvidence } | { readonly domain: 'bootstrap-authority'; readonly evidence: BootstrapAuthorityDecisionEvidence } {
   const value = payload['evidence'];
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new HumanIdentityError('HUMAN_IDENTITY_STORE_CORRUPT', 'A decision row carries no evidence.');
   const e = value as Readonly<Record<string, unknown>>;
   const verdict = text(e, 'verdict');
+  // FV-P4C-2B2B: the evidence format fixes the domain, and the domain fixes the verdict vocabulary.
+  if (text(e, 'format') === BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT) {
+    if (verdict !== 'attest' && verdict !== 'approve') throw new HumanIdentityError('HUMAN_IDENTITY_STORE_CORRUPT', 'A bootstrap-authority decision row has an unknown role.');
+    const subjectDigest = text(e, 'subjectDigest');
+    if (!SHA256.test(subjectDigest) || text(e, 'approvalRequestId') !== `${BOOTSTRAP_AUTHORITY_REQUEST_PREFIX}${subjectDigest.slice('sha256:'.length)}`) {
+      throw new HumanIdentityError('HUMAN_IDENTITY_STORE_CORRUPT', 'A bootstrap-authority decision row is not bound to its binding digest.');
+    }
+    return { domain: 'bootstrap-authority', evidence: { ...commonEvidenceOf(e), format: BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT, verdict } };
+  }
   if (verdict !== 'approve' && verdict !== 'reject') throw new HumanIdentityError('HUMAN_IDENTITY_STORE_CORRUPT', 'A decision row has an unknown verdict.');
+  return { domain: 'core-05', evidence: { ...commonEvidenceOf(e), format: text(e, 'format'), verdict } };
+}
+
+function commonEvidenceOf(e: Readonly<Record<string, unknown>>): Omit<HumanDecisionEvidence, 'format' | 'verdict'> {
   return {
-    format: text(e, 'format'),
     organizationId: text(e, 'organizationId'),
     operatorId: text(e, 'operatorId'),
     actorRef: text(e, 'actorRef'),
@@ -244,13 +338,49 @@ function evidenceOf(payload: Readonly<Record<string, unknown>>): HumanDecisionEv
     assertionDigest: text(e, 'assertionDigest'),
     approvalRequestId: text(e, 'approvalRequestId'),
     subjectDigest: text(e, 'subjectDigest'),
-    verdict,
     decidedAt: text(e, 'decidedAt'),
     rpId: text(e, 'rpId'),
     origin: text(e, 'origin'),
     userVerified: true,
     backedUp: e['backedUp'] === true,
   };
+}
+
+/** Aborts an append whose decision was settled, identically, by a concurrent call. Module-private: nothing else can throw it. */
+const SETTLED_CONCURRENTLY: unique symbol = Symbol('settled-concurrently');
+
+const SETTLEMENT_KEYS = {
+  'bootstrap-committed': ['bindingDigest', 'bootstrapEvidenceDigest', 'bootstrapRequestId', 'counterpartCommitment', 'historyRevision', 'outcome', 'statusDigest', 'statusSequence'],
+  'bootstrap-not-committed': ['bindingDigest', 'code', 'outcome'],
+} as const;
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/**
+ * FV-P4C-2B2B: a bootstrap settlement, read exactly (closed keys, closed
+ * codes, digests, safe integers), and only when it names the decision's own
+ * binding digest. Anything else is `undefined`.
+ */
+function settlementOf(value: unknown, evidence: BootstrapAuthorityDecisionEvidence): BootstrapAuthoritySettlement | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as Readonly<Record<string, unknown>>;
+  const outcome = v['outcome'];
+  if (outcome !== 'bootstrap-committed' && outcome !== 'bootstrap-not-committed') return undefined;
+  const keys = Object.keys(v).sort();
+  if (keys.length !== SETTLEMENT_KEYS[outcome].length || keys.some((key, index) => key !== SETTLEMENT_KEYS[outcome][index])) return undefined;
+  const bindingDigest = v['bindingDigest'];
+  if (typeof bindingDigest !== 'string' || !HEX64.test(bindingDigest) || evidence.subjectDigest !== `sha256:${bindingDigest}`) return undefined;
+  if (outcome === 'bootstrap-not-committed') {
+    const code = v['code'];
+    return typeof code === 'string' && (BOOTSTRAP_AUTHORITY_NOT_COMMITTED_CODES as readonly string[]).includes(code) ? { outcome, bindingDigest, code: code as BootstrapAuthorityNotCommittedCode } : undefined;
+  }
+  const { counterpartCommitment, bootstrapRequestId, bootstrapEvidenceDigest, historyRevision, statusSequence, statusDigest } = v;
+  const positive = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 1;
+  const natural = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  if (typeof counterpartCommitment !== 'string' || !SHA256.test(counterpartCommitment) || counterpartCommitment === evidence.challengeCommitment) return undefined;
+  if (typeof bootstrapRequestId !== 'string' || bootstrapRequestId.length === 0 || bootstrapRequestId.length > 512 || bootstrapRequestId.trim() !== bootstrapRequestId) return undefined;
+  if (typeof bootstrapEvidenceDigest !== 'string' || !SHA256.test(bootstrapEvidenceDigest)) return undefined;
+  if (!positive(historyRevision) || !natural(statusSequence) || typeof statusDigest !== 'string' || !HEX64.test(statusDigest)) return undefined;
+  return { outcome, bindingDigest, counterpartCommitment, bootstrapRequestId, bootstrapEvidenceDigest, historyRevision, statusSequence, statusDigest };
 }
 
 function project(rows: readonly StoredHumanIdentityRow[], organizationId: string): IdentityState {
@@ -358,10 +488,12 @@ function project(rows: readonly StoredHumanIdentityRow[], organizationId: string
       }
       case 'decision_authorized': {
         const commitment = row.objectId ?? corrupt('A decision row has no commitment.');
-        const evidence = evidenceOf(payload);
+        const decided = evidenceOf(payload);
+        const evidence = decided.evidence;
         if (decisions.has(commitment) || evidence.challengeCommitment !== commitment || evidence.operatorId !== row.operatorId || !credentials.has(evidence.credentialId)) corrupt('A decision is inconsistent with the history.');
-        if (humanDecisionEvidenceDigest(evidence) !== text(payload, 'evidenceDigest')) corrupt('A decision row does not match its evidence digest.');
-        decisions.set(commitment, { evidence, evidenceDigest: text(payload, 'evidenceDigest') });
+        const digest = decided.domain === 'bootstrap-authority' ? bootstrapAuthorityEvidenceDigest(decided.evidence) : humanDecisionEvidenceDigest(decided.evidence);
+        if (digest !== text(payload, 'evidenceDigest')) corrupt('A decision row does not match its evidence digest.');
+        decisions.set(commitment, decided.domain === 'bootstrap-authority' ? { domain: 'bootstrap-authority', evidence: decided.evidence, evidenceDigest: digest } : { domain: 'core-05', evidence: decided.evidence, evidenceDigest: digest });
         // The decision row also records the deciding credential's use.
         const deciding = credentials.get(evidence.credentialId) as CredentialRecord;
         deciding.view = { ...deciding.view, counter: count(payload, 'counter'), backedUp: payload['backedUp'] === true, lastUsedAt: row.recordedAt };
@@ -369,6 +501,12 @@ function project(rows: readonly StoredHumanIdentityRow[], organizationId: string
       }
       case 'decision_outcome': {
         const decision = decisions.get(row.objectId ?? '') ?? corrupt('A decision outcome names an unknown decision.');
+        if (decision.domain === 'bootstrap-authority') {
+          // FV-P4C-2B2B: only a bootstrap settlement settles a bootstrap-authority decision, once.
+          if (decision.settlement !== undefined) corrupt('A decision has two outcomes.');
+          decision.settlement = settlementOf(payload, decision.evidence) ?? corrupt('A bootstrap-authority settlement is malformed or names another binding.');
+          break;
+        }
         if (decision.outcome !== undefined) corrupt('A decision has two outcomes.');
         const outcome = text(payload, 'outcome');
         decision.outcome =
@@ -413,7 +551,68 @@ function challengeRefused(): HumanIdentityError {
   return new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'The ceremony challenge is unknown, of another ceremony, expired or already used.');
 }
 
+/**
+ * FV-P4C-2B2B-F1 — the bootstrap settlement capability.
+ *
+ * An opaque, frozen token. Its authority is its identity: it is registered
+ * in a module-private `WeakMap` against exactly one service instance, so an
+ * object of the same shape, a token of another instance, or a revoked token
+ * is refused. It is issued only to the caller of
+ * `createHumanIdentityServiceWithBootstrapSettlement`, at construction, so a
+ * subsystem that is merely handed the service never holds it. It is never
+ * derived from a string, role, flag or commitment.
+ *
+ * What it does not do: it does not verify the bootstrap outcome. AUTH-03
+ * cannot read the receiver's history. The holder is trusted to settle only
+ * from evidence it read through a branded history handle (the FV
+ * reconciler). That is an in-process trust assumption, not a cryptographic
+ * guarantee.
+ */
+export interface BootstrapSettlementCapability {
+  readonly capability: 'frontera.sovereign-status-bootstrap-settlement.v1';
+  /**
+   * Review fix: the capability is itself the settlement port. Its methods are bound, at issuance, to
+   * the service it was issued for, and call it directly. A holder never has to hand the token to any
+   * other object (which could keep it), and the reconciler never does.
+   */
+  unsettledBootstrapAuthorityDecisions(): readonly BootstrapAuthorityDecisionRecord[];
+  recordBootstrapAuthoritySettlement(commitment: string, settlement: BootstrapAuthoritySettlement): Promise<'recorded' | 'unchanged'>;
+}
+
+const SETTLEMENT_CAPABILITIES = new WeakMap<object, { readonly instance: object; revoked: boolean }>();
+
+/** Revokes a settlement capability for good. Idempotent; an unknown value is ignored. */
+export function revokeBootstrapSettlementCapability(capability: unknown): void {
+  const entry = typeof capability === 'object' && capability !== null ? SETTLEMENT_CAPABILITIES.get(capability) : undefined;
+  if (entry !== undefined) entry.revoked = true;
+}
+
 export function createHumanIdentityService(options: HumanIdentityServiceOptions): HumanIdentityService {
+  return constructHumanIdentityService(options).service;
+}
+
+/**
+ * FV-P4C-2B2B-F1: the service, and the one settlement capability for it.
+ * Meant for the Host's authority-construction boundary only (no Host source
+ * calls it yet: B3; a structure test pins it).
+ */
+export function createHumanIdentityServiceWithBootstrapSettlement(options: HumanIdentityServiceOptions): { readonly service: HumanIdentityService; readonly settlementCapability: BootstrapSettlementCapability } {
+  const { service, instance } = constructHumanIdentityService(options);
+  // Captured from the frozen service before anyone else can see it.
+  const record = service.recordBootstrapAuthoritySettlement.bind(service);
+  const unsettled = service.unsettledBootstrapAuthorityDecisions.bind(service);
+  const settlementCapability: BootstrapSettlementCapability = Object.freeze({
+    capability: 'frontera.sovereign-status-bootstrap-settlement.v1' as const,
+    unsettledBootstrapAuthorityDecisions: () => unsettled(),
+    recordBootstrapAuthoritySettlement: (commitment: string, settlement: BootstrapAuthoritySettlement) => record(settlementCapability, commitment, settlement),
+  });
+  SETTLEMENT_CAPABILITIES.set(settlementCapability, { instance, revoked: false });
+  return Object.freeze({ service, settlementCapability });
+}
+
+function constructHumanIdentityService(options: HumanIdentityServiceOptions): { readonly service: HumanIdentityService; readonly instance: object } {
+  /** This instance's identity for its settlement capability. Never leaves this closure. */
+  const instance = Object.freeze({});
   const { store, relyingParty } = options;
   const organizationId = store.organizationId;
   const operatorIds = new Set(options.operatorIds);
@@ -557,27 +756,156 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
     await store.append(row('credential_counter_anomaly', credential.view.operatorId, credential.view.credentialId, { presented, stored: credential.view.counter, challengeDigest }, CEREMONY_RECORDER), (history) => void notUsed(challengeDigest)(history));
   };
 
-  /** The decision challenge an assertion's client data names, with its commitment recomputed from the stored contract; one refusal for every failure. */
-  function decisionChallengeOf(response: AuthenticationResponse): { readonly stored: StoredDecisionChallenge; readonly commitment: string } {
+  const FORMAT_OF = { 'core-05': HUMAN_DECISION_CHALLENGE_FORMAT, 'bootstrap-authority': BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT } as const;
+  type ContractOf<D extends DecisionState['domain']> = D extends 'core-05' ? HumanDecisionChallengeContract : BootstrapAuthorityChallengeContract;
+
+  /**
+   * The decision challenge an assertion's client data names, in exactly one
+   * domain, with its commitment recomputed from the stored contract under that
+   * domain; one refusal for every failure. FV-P4C-2B2B: a challenge of the
+   * other domain is refused here, so the CORE-05 methods never see a bootstrap
+   * decision and the bootstrap methods never see a CORE-05 one.
+   */
+  function decisionChallengeOf<D extends DecisionState['domain']>(response: AuthenticationResponse, domain: D): { readonly stored: StoredDecisionChallenge; readonly contract: ContractOf<D>; readonly commitment: string } {
     const clientData = clientDataOf(response.response.clientDataJSON, 'webauthn.get', relyingParty);
     const stored = store.decisionChallenge(clientData.challenge);
     if (stored === undefined) throw challengeRefused();
-    const commitment = humanDecisionChallengeCommitment(stored.contract);
-    if (webAuthnChallengeOf(commitment) !== clientData.challenge || stored.contract.format !== HUMAN_DECISION_CHALLENGE_FORMAT || stored.contract.organizationId !== organizationId) {
+    const commitment = stored.contract.format === FORMAT_OF[domain] ? decisionContractCommitment(stored.contract) : undefined;
+    if (commitment === undefined || webAuthnChallengeOf(commitment) !== clientData.challenge || stored.contract.organizationId !== organizationId) {
       throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'The decision challenge does not match its commitment.');
     }
-    return { stored, commitment };
+    return { stored, contract: stored.contract as ContractOf<D>, commitment };
   }
 
-  const decisionRecord = (current: IdentityState, stored: StoredDecisionChallenge, commitment: string): HumanDecisionRecord => {
+  /** The stored contract of a commitment in one domain, only when it still recomputes to that commitment. */
+  function storedContractOf<D extends DecisionState['domain']>(commitment: string, domain: D): ContractOf<D> | undefined {
+    if (typeof commitment !== 'string' || !SHA256.test(commitment)) return undefined;
+    const stored = store.decisionChallenge(webAuthnChallengeOf(commitment));
+    if (stored === undefined || stored.contract.format !== FORMAT_OF[domain] || decisionContractCommitment(stored.contract) !== commitment) return undefined;
+    return stored.contract as ContractOf<D>;
+  }
+
+  const decisionRecord = (current: IdentityState, contract: HumanDecisionChallengeContract, commitment: string): HumanDecisionRecord | undefined => {
     const decided = current.decisions.get(commitment);
     if (decided !== undefined) {
-      return { contract: stored.contract, commitment, state: 'consumed', evidence: decided.evidence, evidenceDigest: decided.evidenceDigest, ...(decided.outcome !== undefined ? { outcome: decided.outcome } : {}) };
+      if (decided.domain !== 'core-05') return undefined;
+      return { contract, commitment, state: 'consumed', evidence: decided.evidence, evidenceDigest: decided.evidenceDigest, ...(decided.outcome !== undefined ? { outcome: decided.outcome } : {}) };
     }
-    return { contract: stored.contract, commitment, state: stored.contract.expiresAt <= iso() ? 'expired' : 'issued' };
+    return { contract, commitment, state: contract.expiresAt <= iso() ? 'expired' : 'issued' };
   };
 
-  return {
+  const bootstrapRecord = (current: IdentityState, contract: BootstrapAuthorityChallengeContract, commitment: string): BootstrapAuthorityDecisionRecord | undefined => {
+    const decided = current.decisions.get(commitment);
+    if (decided !== undefined) {
+      if (decided.domain !== 'bootstrap-authority') return undefined;
+      return { contract, commitment, state: 'consumed', evidence: decided.evidence, evidenceDigest: decided.evidenceDigest, ...(decided.settlement !== undefined ? { settlement: decided.settlement } : {}) };
+    }
+    return { contract, commitment, state: contract.expiresAt <= iso() ? 'expired' : 'issued' };
+  };
+
+  /** Issues one decision challenge, in either domain, for an active human holding an active passkey. */
+  function issue<C extends HumanDecisionChallengeContract | BootstrapAuthorityChallengeContract>(operatorId: unknown, build: (operatorId: string) => C): { readonly contract: C; readonly commitment: string; readonly options: AuthenticationOptionsJSON } {
+    const current = state();
+    activePrincipal(current, typeof operatorId === 'string' ? operatorId : '');
+    const allow = activeCredentialsOf(current, operatorId as string);
+    if (allow.length === 0) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'That human holds no active passkey.');
+    const contract = build(operatorId as string);
+    const commitment = decisionContractCommitment(contract) as string;
+    const challenge = webAuthnChallengeOf(commitment);
+    store.saveDecisionChallenge({ challenge, contract });
+    return { contract, commitment, options: authenticationOptions(challenge, allow, decisionTtl) };
+  }
+
+  /**
+   * Verifies an assertion against its decision challenge in one domain, then
+   * consumes the challenge and records the decision evidence in one signed
+   * append. Identical for both domains except the evidence format, verdict
+   * vocabulary and evidence digest domain.
+   */
+  async function consume<D extends DecisionState['domain']>(raw: unknown, domain: D) {
+    const response = parseAuthenticationResponse(raw);
+    const { stored, contract, commitment } = decisionChallengeOf(response, domain);
+    const challengeDigest = challengeDigestOf(stored.challenge);
+    const before = state();
+    if (before.decisions.has(commitment)) throw new HumanIdentityError('HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED', 'This decision challenge was already used; read its outcome instead.');
+    if (contract.expiresAt <= iso() || before.usedChallenges.has(challengeDigest)) throw challengeRefused();
+    const known = before.credentials.get(response.id);
+    const use = await verifiedUse(response, stored.challenge, contract.operatorId, known === undefined ? async () => undefined : anomaly(known, challengeDigest, signatureCounterOf(response.response.authenticatorData)));
+    const decidedAt = iso();
+    const common = {
+      organizationId,
+      operatorId: contract.operatorId,
+      actorRef: use.principal.principal.actorRef,
+      credentialId: use.credential.view.credentialId,
+      challengeCommitment: commitment,
+      assertionDigest: humanDecisionAssertionDigest({ credentialId: response.id, clientDataJSON: response.response.clientDataJSON, authenticatorData: response.response.authenticatorData, signature: response.response.signature }),
+      approvalRequestId: contract.approvalRequestId,
+      subjectDigest: contract.subjectDigest,
+      decidedAt,
+      rpId: relyingParty.rpId,
+      origin: use.origin,
+      userVerified: true as const,
+      backedUp: use.backedUp,
+    };
+    let evidence: HumanDecisionEvidence | BootstrapAuthorityDecisionEvidence;
+    let evidenceDigest: string;
+    if (domain === 'bootstrap-authority') {
+      const bootstrap: BootstrapAuthorityDecisionEvidence = { ...common, format: BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT, verdict: (contract as BootstrapAuthorityChallengeContract).verdict };
+      evidence = bootstrap;
+      evidenceDigest = bootstrapAuthorityEvidenceDigest(bootstrap);
+    } else {
+      const core05: HumanDecisionEvidence = { ...common, format: HUMAN_DECISION_EVIDENCE_FORMAT, verdict: (contract as HumanDecisionChallengeContract).verdict };
+      evidence = core05;
+      evidenceDigest = humanDecisionEvidenceDigest(core05);
+    }
+    await store.append(
+      // One row (CORE-07 advances one position per append): the decision also records the credential's use.
+      row('decision_authorized', contract.operatorId, commitment, { evidence: { ...evidence }, evidenceDigest, challengeDigest, counter: use.counter, backedUp: use.backedUp }, CEREMONY_RECORDER),
+      (history) => {
+        const current = project(history, organizationId);
+        if (current.decisions.has(commitment)) throw new HumanIdentityError('HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED', 'This decision challenge was already used; read its outcome instead.');
+        if (current.usedChallenges.has(challengeDigest) || contract.expiresAt <= decidedAt) throw challengeRefused();
+        stillUsable(use.credential.view.credentialId, current);
+        counterStillAdvances(current, use.credential.view.credentialId, use.counter);
+      },
+    );
+    return { contract, commitment, evidence, evidenceDigest };
+  }
+
+  /** FV-P4C-2B2B: the checks a bootstrap settlement must pass against the verified history; throws a conflict otherwise. */
+  function checkSettlement(current: IdentityState, commitment: string, settlement: BootstrapAuthoritySettlement): Extract<DecisionState, { domain: 'bootstrap-authority' }> {
+    const conflict = (message: string): never => {
+      throw new HumanIdentityError('HUMAN_IDENTITY_DECISION_SETTLEMENT_CONFLICT', message);
+    };
+    const decided = current.decisions.get(commitment);
+    if (decided === undefined || decided.domain !== 'bootstrap-authority') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No consumed bootstrap-authority decision exists for that commitment.');
+    const read = settlementOf(settlement, decided.evidence);
+    if (read === undefined) conflict('The settlement is malformed or names another binding than the decision.');
+    if (read!.outcome === 'bootstrap-committed') {
+      const counterpart = current.decisions.get(read!.counterpartCommitment);
+      if (counterpart === undefined || counterpart.domain !== 'bootstrap-authority') conflict('The settlement names no consumed counterpart decision.');
+      const other = counterpart as Extract<DecisionState, { domain: 'bootstrap-authority' }>;
+      if (other.evidence.subjectDigest !== decided.evidence.subjectDigest || other.evidence.verdict === decided.evidence.verdict || other.evidence.operatorId === decided.evidence.operatorId) {
+        conflict('The counterpart is not the other role of the same bootstrap, by another human.');
+      }
+      const theirs = other.settlement;
+      if (theirs !== undefined && (theirs.outcome !== 'bootstrap-committed' || theirs.counterpartCommitment !== commitment || theirs.bootstrapEvidenceDigest !== read!.bootstrapEvidenceDigest || theirs.bootstrapRequestId !== read!.bootstrapRequestId)) {
+        conflict("The settlement contradicts the counterpart's.");
+      }
+    }
+    if (read!.outcome === 'bootstrap-not-committed') {
+      // Review fix: never "not committed" for a decision a committed counterpart already names.
+      for (const [other, entry] of current.decisions) {
+        if (other !== commitment && entry.domain === 'bootstrap-authority' && entry.settlement?.outcome === 'bootstrap-committed' && entry.settlement.counterpartCommitment === commitment) {
+          conflict("The settlement contradicts the counterpart's.");
+        }
+      }
+    }
+    if (decided.settlement !== undefined && canonicalJson({ ...decided.settlement }) !== canonicalJson({ ...read! })) conflict('A different settlement is already recorded for that decision.');
+    return decided;
+  }
+
+  const service: HumanIdentityService = {
     organizationId,
 
     async createPrincipal(admin, input) {
@@ -781,102 +1109,125 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
       if (typeof approvalRequestId !== 'string' || approvalRequestId.trim().length === 0 || approvalRequestId.length > MAX_TEXT) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'A decision names one approval request.');
       if (typeof subjectDigest !== 'string' || !SHA256.test(subjectDigest)) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'A decision names the exact subject digest the human was shown.');
       if (verdict !== 'approve' && verdict !== 'reject') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'A decision verdict is approve or reject.');
-      const current = state();
-      activePrincipal(current, typeof operatorId === 'string' ? operatorId : '');
-      const allow = activeCredentialsOf(current, operatorId as string);
-      if (allow.length === 0) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'That human holds no active passkey.');
-      const contract: HumanDecisionChallengeContract = {
+      return issue(operatorId, (id): HumanDecisionChallengeContract => ({
         format: HUMAN_DECISION_CHALLENGE_FORMAT,
         organizationId,
         approvalRequestId,
         subjectDigest,
         verdict,
-        operatorId: operatorId as string,
+        operatorId: id,
         nonce: randomBytes(32).toString('base64url'),
         issuedAt: iso(),
         expiresAt: after(decisionTtl),
-      };
-      const commitment = humanDecisionChallengeCommitment(contract);
-      const challenge = webAuthnChallengeOf(commitment);
-      store.saveDecisionChallenge({ challenge, contract });
-      return { contract, commitment, options: authenticationOptions(challenge, allow, decisionTtl) };
+      }));
     },
 
     peekDecision(raw) {
-      const { stored, commitment } = decisionChallengeOf(parseAuthenticationResponse(raw));
-      return { contract: stored.contract, commitment };
+      const { contract, commitment } = decisionChallengeOf(parseAuthenticationResponse(raw), 'core-05');
+      return { contract, commitment };
     },
 
     async authorizeDecision(raw) {
-      const response = parseAuthenticationResponse(raw);
-      const { stored, commitment } = decisionChallengeOf(response);
-      const contract = stored.contract;
-      const challengeDigest = challengeDigestOf(stored.challenge);
-      const before = state();
-      if (before.decisions.has(commitment)) throw new HumanIdentityError('HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED', 'This decision challenge was already used; read its outcome instead.');
-      if (contract.expiresAt <= iso() || before.usedChallenges.has(challengeDigest)) throw challengeRefused();
-      const known = before.credentials.get(response.id);
-      const use = await verifiedUse(response, stored.challenge, contract.operatorId, known === undefined ? async () => undefined : anomaly(known, challengeDigest, signatureCounterOf(response.response.authenticatorData)));
-      const decidedAt = iso();
-      const evidence: HumanDecisionEvidence = {
-        format: HUMAN_DECISION_EVIDENCE_FORMAT,
-        organizationId,
-        operatorId: contract.operatorId,
-        actorRef: use.principal.principal.actorRef,
-        credentialId: use.credential.view.credentialId,
-        challengeCommitment: commitment,
-        assertionDigest: humanDecisionAssertionDigest({ credentialId: response.id, clientDataJSON: response.response.clientDataJSON, authenticatorData: response.response.authenticatorData, signature: response.response.signature }),
-        approvalRequestId: contract.approvalRequestId,
-        subjectDigest: contract.subjectDigest,
-        verdict: contract.verdict,
-        decidedAt,
-        rpId: relyingParty.rpId,
-        origin: use.origin,
-        userVerified: true,
-        backedUp: use.backedUp,
-      };
-      const evidenceDigest = humanDecisionEvidenceDigest(evidence);
-      await store.append(
-        // One row (CORE-07 advances one position per append): the decision also records the credential's use.
-        row('decision_authorized', contract.operatorId, commitment, { evidence: { ...evidence }, evidenceDigest, challengeDigest, counter: use.counter, backedUp: use.backedUp }, CEREMONY_RECORDER),
-        (history) => {
-          const current = project(history, organizationId);
-          if (current.decisions.has(commitment)) throw new HumanIdentityError('HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED', 'This decision challenge was already used; read its outcome instead.');
-          if (current.usedChallenges.has(challengeDigest) || contract.expiresAt <= decidedAt) throw challengeRefused();
-          stillUsable(use.credential.view.credentialId, current);
-          counterStillAdvances(current, use.credential.view.credentialId, use.counter);
-        },
-      );
-      return { contract, commitment, evidence, evidenceDigest };
+      const { contract, commitment, evidence, evidenceDigest } = await consume(raw, 'core-05');
+      return { contract, commitment, evidence: evidence as HumanDecisionEvidence, evidenceDigest };
     },
 
     async recordDecisionOutcome(commitment, outcome) {
       const decided = state().decisions.get(commitment);
-      if (decided === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
+      // FV-P4C-2B2B: a CORE-05 outcome (recorded, refused, abandoned) never settles a bootstrap-authority decision.
+      if (decided === undefined || decided.domain !== 'core-05') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
       const payload = outcome.outcome === 'recorded' ? { outcome: 'recorded', verdictRowDigest: outcome.verdictRowDigest } : outcome.outcome === 'refused' ? { outcome: 'refused', code: outcome.code } : { outcome: 'abandoned' };
       await store.append(row('decision_outcome', decided.evidence.operatorId, commitment, payload, CEREMONY_RECORDER), (history) => {
         const current = project(history, organizationId).decisions.get(commitment);
-        if (current === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
+        if (current === undefined || current.domain !== 'core-05') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
         if (current.outcome !== undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That decision already has a recorded outcome.');
       });
     },
 
     decision(commitment) {
-      if (typeof commitment !== 'string' || !SHA256.test(commitment)) return undefined;
-      const stored = store.decisionChallenge(webAuthnChallengeOf(commitment));
-      if (stored === undefined || humanDecisionChallengeCommitment(stored.contract) !== commitment) return undefined;
-      return decisionRecord(state(), stored, commitment);
+      const contract = storedContractOf(commitment, 'core-05');
+      return contract === undefined ? undefined : decisionRecord(state(), contract, commitment);
     },
 
     unsettledDecisions() {
       const current = state();
       const unsettled: HumanDecisionRecord[] = [];
       for (const [commitment, decided] of current.decisions) {
-        if (decided.outcome !== undefined) continue;
-        const stored = store.decisionChallenge(webAuthnChallengeOf(commitment));
+        // FV-P4C-2B2B: only CORE-05 decisions are CORE-05 reconciliation's to settle; a bootstrap-authority decision is never listed here.
+        if (decided.domain !== 'core-05' || decided.outcome !== undefined) continue;
         // A consumed decision whose issued contract is missing or altered is never reconciled here: it stays unsettled and unusable.
-        if (stored === undefined || humanDecisionChallengeCommitment(stored.contract) !== commitment) continue;
-        unsettled.push(decisionRecord(current, stored, commitment));
+        const contract = storedContractOf(commitment, 'core-05');
+        if (contract === undefined) continue;
+        const record = decisionRecord(current, contract, commitment);
+        if (record !== undefined) unsettled.push(record);
+      }
+      return unsettled;
+    },
+
+    beginBootstrapAuthorityDecision(input) {
+      const { operatorId, bindingDigest, role } = input ?? ({} as Partial<typeof input>);
+      if (typeof bindingDigest !== 'string' || !HEX64.test(bindingDigest)) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'A bootstrap-authority decision names one FV bootstrap binding digest (lowercase hex SHA-256).');
+      if (role !== 'attest' && role !== 'approve') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'A bootstrap-authority role is attest or approve.');
+      return issue(operatorId, (id): BootstrapAuthorityChallengeContract => ({
+        format: BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT,
+        organizationId,
+        approvalRequestId: `${BOOTSTRAP_AUTHORITY_REQUEST_PREFIX}${bindingDigest}`,
+        subjectDigest: `sha256:${bindingDigest}`,
+        verdict: role,
+        operatorId: id,
+        nonce: randomBytes(32).toString('base64url'),
+        issuedAt: iso(),
+        expiresAt: after(decisionTtl),
+      }));
+    },
+
+    peekBootstrapAuthorityDecision(raw) {
+      const { contract, commitment } = decisionChallengeOf(parseAuthenticationResponse(raw), 'bootstrap-authority');
+      return { contract, commitment };
+    },
+
+    async authorizeBootstrapAuthorityDecision(raw) {
+      const { contract, commitment, evidence, evidenceDigest } = await consume(raw, 'bootstrap-authority');
+      return { contract, commitment, evidence: evidence as BootstrapAuthorityDecisionEvidence, evidenceDigest };
+    },
+
+    async recordBootstrapAuthoritySettlement(capability, commitment, settlement) {
+      // F1: authority first, before any read or validation. Shape, strings and commitments grant nothing.
+      const held = typeof capability === 'object' && capability !== null ? SETTLEMENT_CAPABILITIES.get(capability) : undefined;
+      if (held === undefined || held.revoked || held.instance !== instance) {
+        throw new HumanIdentityError('HUMAN_IDENTITY_DECISION_SETTLEMENT_UNAUTHORIZED', 'Recording a bootstrap settlement needs this service’s own live settlement capability.');
+      }
+      const decided = checkSettlement(state(), commitment, settlement);
+      if (decided.settlement !== undefined) return 'unchanged';
+      const read = settlementOf(settlement, decided.evidence) as BootstrapAuthoritySettlement;
+      try {
+        await store.append(row('decision_outcome', decided.evidence.operatorId, commitment, { ...read }, CEREMONY_RECORDER), (history) => {
+          const current = project(history, organizationId);
+          const now = checkSettlement(current, commitment, read);
+          // Settled meanwhile (identically, or checkSettlement would have refused): nothing to append.
+          if (now.settlement !== undefined) throw SETTLED_CONCURRENTLY;
+        });
+      } catch (error) {
+        if (error === SETTLED_CONCURRENTLY) return 'unchanged';
+        throw error;
+      }
+      return 'recorded';
+    },
+
+    bootstrapAuthorityDecision(commitment) {
+      const contract = storedContractOf(commitment, 'bootstrap-authority');
+      return contract === undefined ? undefined : bootstrapRecord(state(), contract, commitment);
+    },
+
+    unsettledBootstrapAuthorityDecisions() {
+      const current = state();
+      const unsettled: BootstrapAuthorityDecisionRecord[] = [];
+      for (const [commitment, decided] of current.decisions) {
+        if (decided.domain !== 'bootstrap-authority' || decided.settlement !== undefined) continue;
+        const contract = storedContractOf(commitment, 'bootstrap-authority');
+        if (contract === undefined) continue;
+        const record = bootstrapRecord(current, contract, commitment);
+        if (record !== undefined) unsettled.push(record);
       }
       return unsettled;
     },
@@ -889,4 +1240,6 @@ export function createHumanIdentityService(options: HumanIdentityServiceOptions)
     },
     enrolmentsOf: (operatorId) => [...state().enrolments.values()].filter((record) => record.operatorId === operatorId).map(enrolmentView),
   };
+  // Review fix: frozen, so no holder of the general service can replace a method and intercept a capability passed to it.
+  return { service: Object.freeze(service), instance };
 }

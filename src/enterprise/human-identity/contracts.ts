@@ -168,7 +168,11 @@ export type HumanIdentityErrorCode =
   /** The store needs an authority signer that signs human identity state, and its verifier; or the file is of another schema. */
   | 'HUMAN_IDENTITY_STORE_UNSUPPORTED'
   /** The decision challenge was already consumed by an authorized decision. Its outcome can be read; it never authorizes again. */
-  | 'HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED';
+  | 'HUMAN_IDENTITY_DECISION_CHALLENGE_CONSUMED'
+  /** FV-P4C-2B2B: a bootstrap-authority settlement disagrees with the one already recorded, or with the decisions it names. Nothing was recorded. */
+  | 'HUMAN_IDENTITY_DECISION_SETTLEMENT_CONFLICT'
+  /** FV-P4C-2B2B-F1: a bootstrap settlement was attempted without this service's own live settlement capability. Nothing was read or recorded. */
+  | 'HUMAN_IDENTITY_DECISION_SETTLEMENT_UNAUTHORIZED';
 
 export class HumanIdentityError extends Error {
   constructor(

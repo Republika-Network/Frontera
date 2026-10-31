@@ -94,7 +94,12 @@ describe('AUTH-03 structure — the passkey channel is the only way a human deci
     // CORE-07 advances a store by exactly one position per transition: an append is one row.
     assert.match(code(STORE), /append\(\s*row: Omit<HumanIdentityRowContent, 'organizationId'>,/);
     const source = code(SERVICE);
-    const authorize = source.slice(source.indexOf('async authorizeDecision(raw) {'), source.indexOf('async recordDecisionOutcome('));
+    // FV-P4C-2B2B: both domains consume through one function, so the property is pinned where it lives,
+    // and each public authorize method must delegate to it with its own domain.
+    assert.match(source.slice(source.indexOf('async authorizeDecision(raw) {'), source.indexOf('async recordDecisionOutcome(')), /await consume\(raw, 'core-05'\)/);
+    assert.match(source.slice(source.indexOf('async authorizeBootstrapAuthorityDecision(raw) {'), source.indexOf('async recordBootstrapAuthoritySettlement(')), /await consume\(raw, 'bootstrap-authority'\)/);
+    const authorize = source.slice(source.indexOf('async function consume<'), source.indexOf('function checkSettlement('));
+    assert.ok(authorize.length > 0);
     assert.match(authorize, /row\('decision_authorized', contract\.operatorId, commitment, \{ evidence: \{ \.\.\.evidence \}, evidenceDigest, challengeDigest, counter: use\.counter, backedUp: use\.backedUp \}/);
     assert.match(authorize, /current\.decisions\.has\(commitment\)/);
     assert.match(read(STORE), /human_identity_one_authorization_per_decision/);

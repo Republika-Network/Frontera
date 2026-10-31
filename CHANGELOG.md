@@ -4,6 +4,35 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2B2B authority lifecycle and permission integration (not composed)
+- **B2, a dedicated AUTH-03 domain.** `frontera.sovereign-status-bootstrap-authority.v1`, with its own commitment and evidence digest domains, bound to the FV-P4C-2B1 binding digest.
+  - New AUTH-03 methods: `beginBootstrapAuthorityDecision`, `peekBootstrapAuthorityDecision`, `authorizeBootstrapAuthorityDecision`, `recordBootstrapAuthoritySettlement`, `bootstrapAuthorityDecision`, `unsettledBootstrapAuthorityDecisions`.
+  - The CORE-05 methods (`peekDecision`, `authorizeDecision`, `decision`, `unsettledDecisions`, `recordDecisionOutcome`) refuse or skip this domain, and the bootstrap methods refuse CORE-05's.
+  - The chain projection fixes each decision's domain by its evidence format. An outcome of the other domain is store corruption.
+  - No new row kind and no AUTH-03 schema change. Existing CORE-05 commitments, digests and outcomes are unchanged.
+- **B5, signed roles.** In this domain `verdict` is the signed role, `attest` (requester) or `approve` (approver), so roles cannot be swapped or one decision used for both. The authorizer adds the `ROLE_MISMATCH` denial; `VERDICT_NOT_APPROVE` is removed. The evidence `authorityRef` is `frontera.sovereign-status-bootstrap-authority.v1:<requester>:<approver>`.
+- **B4, permissions.** `status-history.bootstrap.request` and `status-history.bootstrap.approve` are Kernel-Authority actions over `frontera.sovereign-status-history:<percent-encoded namespace>`, checked by `createKernelAuthorityBootstrapPermissions` through CORE-05's standing-port shape (recognition, authority, lineage). They are default-deny and explicit per human, and they can be revoked or expire.
+  - **CTRL-02 is unchanged.** Its `organization-administrator` role holds every CTRL-02 permission, so adding these there would grant them implicitly. No CTRL-02 role holds them.
+- **B1, external settlement.** `createBootstrapAuthorityReconciler` settles consumed bootstrap decisions from the receiver's own evidence, read through the new read-only `readBootstrapEvidenceForBinding`.
+  - `bootstrap-committed` cites the evidence digest (`bootstrapEvidenceDigest`), the request id and the committed transition.
+  - `bootstrap-not-committed` is recorded with a closed code, only after a grace bound and when the decision is not in flight.
+  - Unreadable stores, failed appends, contradictions and conflicting settlements leave the decision unsettled or report a conflict. Nothing is ever rewritten.
+  - AUTH-03 checks every settlement against its signed decisions: own binding, closed keys, counterpart of the other role by another human. An identical repeat is `unchanged`; any other repeat is a conflict (`HUMAN_IDENTITY_DECISION_SETTLEMENT_CONFLICT`).
+  - CORE-05's `reconcile()` (`approval-authority/human-decision.ts`) is byte-identical and never sees bootstrap decisions.
+- **F1 (High) remediated: settlement authenticity.** `recordBootstrapAuthoritySettlement` now requires the service's own `BootstrapSettlementCapability`. The token is module-branded, bound to one instance and revocable, and is issued only by `createHumanIdentityServiceWithBootstrapSettlement`. Without it, the call is refused with `HUMAN_IDENTITY_DECISION_SETTLEMENT_UNAUTHORIZED`. The reconciler accepts only genuine `openSqliteStatusHighWaterMarkStore` handles for the configured namespace and file (module-private provenance), and reads evidence through the store's own statements. Look-alike readers are refused. Both original exploits are blocked by regression test (`fv-p4c2b2b-f1-settlement-authenticity.test.ts`). The remaining assumptions are in-process: capability, raw-store and history-handle holders are trusted, and whole-file rollback is undetectable. See `FV_AUTHORITY_LIFECYCLE.md` §7a, which also covers F2 and F3, both still open.
+- **Independent-review fixes:**
+  - **R1 (High):** the identity service is frozen, and the settlement capability is itself the bound settlement port, so the capability can no longer be intercepted through the shared service object.
+  - **R2 (Medium):** the namespace is percent-encoded in the Kernel-Authority resource scope, so no grant covers another namespace by `:`-prefix.
+  - **R3:** a not-committed settlement can no longer contradict a committed counterpart.
+  - **R4:** the reconciler's `inFlight` registry is required.
+- **Still open:** B3 (Host composition) and B6 (trusted status source). There is no endpoint, CLI, composition, schema change or operational bootstrap. See `docs/integration/FV_AUTHORITY_LIFECYCLE.md`.
+- **Tests:**
+  - `fv-p4c2b2b-authority-lifecycle.test.ts` (new): real AUTH-03, real Kernel-Authority world, the real CORE-05 channel's reconciliation and a real SQLite history.
+  - `fv-p4c2b2-human-decision-authorizer.test.ts`: ported to the new domain, with role tests added.
+  - `fv-p4c2b2-structure.test.ts`: reachability pins added.
+  - `tests/fv-p4c2b2-host-authority.e2e.test.mjs`: settlement after commit and restart, and a consumed-but-failed bootstrap settled as not committed.
+  - The AUTH-03 consumption structure pin now points at the shared `consume` function both domains use.
+
 ### Added — FV-P4C-2B2 AUTH-03 bootstrap authorizer core (not composed; blockers documented)
 - **Authorizer**: `createHumanDecisionBootstrapAuthorizer` in `src/enterprise/sovereign-status-history/` implements the FV-P4C-2B1 `StatusHistoryBootstrapAuthorizer` over two AUTH-03 passkey decisions.
   - **Binding**: both decisions must name the bootstrap binding digest as their subject (`sha256:<digest>`), with a request id derived from it that is never a CORE-05 request. The digest is the 2B1 one; there is no second algorithm.

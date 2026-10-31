@@ -8,6 +8,14 @@ design with explicit blockers.
 
 It continues `FV_TRUSTED_BOOTSTRAP_RECOVERY.md` (FV-P4C-2B1).
 
+> **FV-P4C-2B2B update.** B1, B2, B4 and B5 are resolved in `FV_AUTHORITY_LIFECYCLE.md`: a dedicated
+> AUTH-03 bootstrap-authority domain with signed `attest` / `approve` roles, Kernel-Authority-backed
+> `status-history.bootstrap.request` / `.approve` permissions, and a bootstrap-only settlement written
+> from the receiver's evidence. The authorizer described in §3 now uses that domain. B3 and B6 remain
+> open, and the bootstrap is still not operational. The B4 recommendation below (CTRL-02 permissions)
+> was not followed: CTRL-02's administrator role holds every permission, so the permissions are
+> Kernel-Authority grants instead (`FV_AUTHORITY_LIFECYCLE.md` §4).
+
 ## Implemented and proposed
 
 **Implemented:**
