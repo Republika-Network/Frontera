@@ -167,8 +167,12 @@ describe('ASSURE-01 structure — action neutrality and bounds', () => {
     const tracePatterns = [...router.matchAll(/\/(\^\\\/api\\\/evidence\\\/traces[^/]*?(?:\/[^/]+?)*?)\/\.exec/g)].map((match) => match[1]);
     assert.deepEqual(tracePatterns.sort(), ['^\\/api\\/evidence\\/traces\\/([^/]+)$', '^\\/api\\/evidence\\/traces\\/([^/]+)\\/verify$']);
     const surface = JSON.parse(readFileSync('release/api-surface.v1.json', 'utf8')) as { routePatterns: string[] };
+    // ASSURE-REL-01D's `POST /api/assurance/assessments/{id}/(evidence|terminate)` submits evidence to one
+    // assessment (reviewer credential only); it lists nothing. The trace patterns above still pin that no
+    // route lists traces.
     assert.deepEqual(surface.routePatterns.filter((pattern) => pattern.includes('evidence')).sort(), [
       '^\\/api\\/admin\\/evidence\\/decisions\\/([^/]+)$',
+      '^\\/api\\/assurance\\/assessments\\/([^/]+)\\/(evidence|terminate)$',
       '^\\/api\\/evidence\\/([^/]+)$',
       '^\\/api\\/evidence\\/traces\\/([^/]+)$',
       '^\\/api\\/evidence\\/traces\\/([^/]+)\\/verify$',
