@@ -230,6 +230,8 @@ interface AdmittedInventory {
   readonly byNamespace: ReadonlyMap<string, TrustedBootstrapEvidenceSource>;
   /** namespace → resolved database file. */
   readonly files: ReadonlyMap<string, string>;
+  /** Namespaces this snapshot maps to another file than this reconciler pinned: never read. */
+  readonly moved: ReadonlySet<string>;
 }
 
 type InventoryFailure = Extract<BootstrapAuthorityUnresolvedReason, `INVENTORY_${string}`>;
@@ -304,8 +306,14 @@ export function createBootstrapAuthorityReconciler(options: BootstrapAuthorityRe
     if (typeof admitted === 'string') return admitted;
     if (admitted.generation < highGeneration) return 'INVENTORY_STALE';
     if (admitted.generation === highGeneration && admitted.fingerprint !== highFingerprint) return 'INVENTORY_GENERATION_REUSED';
-    for (const [namespace, file] of admitted.files) if ((pinnedFiles.get(namespace) ?? file) !== file) return 'INVENTORY_HISTORY_MOVED';
-    for (const [namespace, file] of admitted.files) pinnedFiles.set(namespace, file);
+    // Review #1 (re-review): only the namespace that moved is refused; the pin never follows it.
+    const moved = new Set<string>();
+    for (const [namespace, file] of admitted.files) {
+      const pinned = pinnedFiles.get(namespace);
+      if (pinned === undefined) pinnedFiles.set(namespace, file);
+      else if (pinned !== file) moved.add(namespace);
+    }
+    if (moved.size > 0) return { ...admitted, moved };
     highGeneration = admitted.generation;
     highFingerprint = admitted.fingerprint;
     return admitted;
@@ -317,7 +325,8 @@ export function createBootstrapAuthorityReconciler(options: BootstrapAuthorityRe
    * evidence can be written to (the coordinator refuses another namespace; the file is pinned to one).
    * Another history being unreadable never blocks this decision.
    */
-  function evidenceFor(inventory: AdmittedInventory, decision: UnsettledDecision): readonly StatusHistoryBootstrapEvidence[] | 'HISTORY_NOT_IN_INVENTORY' | 'HISTORY_UNAVAILABLE' | 'HISTORY_CORRUPT' {
+  function evidenceFor(inventory: AdmittedInventory, decision: UnsettledDecision): readonly StatusHistoryBootstrapEvidence[] | 'HISTORY_NOT_IN_INVENTORY' | 'HISTORY_UNAVAILABLE' | 'HISTORY_CORRUPT' | 'INVENTORY_HISTORY_MOVED' {
+    if (inventory.moved.has(decision.namespace)) return 'INVENTORY_HISTORY_MOVED';
     const own = inventory.byNamespace.get(decision.namespace);
     if (own === undefined) return 'HISTORY_NOT_IN_INVENTORY';
     try {
@@ -380,7 +389,7 @@ export function createBootstrapAuthorityReconciler(options: BootstrapAuthorityRe
     if (inFlight(commitment)) return { commitment, result: 'unresolved', reason: 'IN_FLIGHT' };
     // The inventory the absence was read under must still be the Host's.
     const current = snapshot();
-    if (typeof current === 'string' || current.fingerprint !== inventory.fingerprint || current.byNamespace.get(decision.namespace) === undefined) return { commitment, result: 'unresolved', reason: 'INVENTORY_CHANGED' };
+    if (typeof current === 'string' || current.fingerprint !== inventory.fingerprint || current.byNamespace.get(decision.namespace) === undefined || current.moved.has(decision.namespace)) return { commitment, result: 'unresolved', reason: 'INVENTORY_CHANGED' };
     const settled = await record(decision, { outcome: 'bootstrap-not-committed', bindingDigest, code: 'NO_BOOTSTRAP_EVIDENCE' });
     if (settled.result !== 'settled' && settled.result !== 'unchanged') return settled;
     // A commit that still landed is surfaced, never rewritten.
@@ -424,7 +433,13 @@ export function createBootstrapAuthorityReconciler(options: BootstrapAuthorityRe
     // Every unsettled decision, grouped by commitment: a listing that names one twice is not believed for it.
     const listed = new Map<string, unknown[]>();
     for (const raw of [...decisions.unsettledBootstrapAuthorityDecisions()]) {
-      const named = (raw as { commitment?: unknown } | null)?.commitment;
+      let named: unknown;
+      try {
+        named = (raw as { commitment?: unknown } | null)?.commitment;
+      } catch {
+        // A record that cannot be read is malformed; it never stops the listing (look-alike ports only).
+        named = undefined;
+      }
       const key = typeof named === 'string' && COMMITMENT.test(named) ? named : MALFORMED_KEY;
       const group = listed.get(key);
       if (group === undefined) listed.set(key, [raw]);
@@ -447,7 +462,7 @@ export function createBootstrapAuthorityReconciler(options: BootstrapAuthorityRe
     for (const key of examined) {
       const group = listed.get(key)!;
       if (key === MALFORMED_KEY) {
-        entries.push({ commitment: typeof (group[0] as { commitment?: unknown } | null)?.commitment === 'string' ? (group[0] as { commitment: string }).commitment : '', result: 'conflict', reason: 'DECISION_MALFORMED' });
+        entries.push({ commitment: MALFORMED_KEY, result: 'conflict', reason: 'DECISION_MALFORMED' });
         continue;
       }
       if (group.length > 1) {
@@ -543,7 +558,7 @@ function admit(value: unknown): AdmittedInventory | InventoryFailure {
     named.push([namespace, file]);
   }
   named.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  return { generation, fingerprint: JSON.stringify(named), sources, byNamespace, files: new Map(named) };
+  return { generation, fingerprint: JSON.stringify(named), sources, byNamespace, files: new Map(named), moved: new Set<string>() };
 }
 
 /** An unsettled AUTH-03 record, read as plain data and checked against the bootstrap-authority domain; `undefined` if anything disagrees. */

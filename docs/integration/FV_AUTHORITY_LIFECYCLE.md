@@ -51,7 +51,7 @@ format. Identical fields commit to different values in the two domains (tested).
 **v2 (FV-P4C-2B2C).** The request id now names the status history namespace the bootstrap targets,
 inside the signed contract, so the reconciler can tell which one history must hold the evidence
 (`FV_RECONCILER_LIVENESS.md` §3). v1 named only the digest. It was never composed by any Host and is
-retired: a v1 challenge or decision row is store corruption, never read as either domain. The
+retired: a signed v1 decision row is store corruption, and an unsigned v1 challenge row is inert; neither is ever read as either domain. The
 `authorityRef` format (`frontera.sovereign-status-bootstrap-authority.v1:…`, an FV evidence field)
 is unchanged.
 

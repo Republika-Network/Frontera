@@ -17,7 +17,7 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - `NO_BOOTSTRAP_EVIDENCE` is recorded only from the decision's own namespace history, present and genuine in an unchanged inventory snapshot. Otherwise the decision stays unresolved, with a distinct reason (`HISTORY_NOT_IN_INVENTORY`, `INVENTORY_*`, `HISTORY_CORRUPT`).
   - New `inventory: () => { generation, histories } | undefined` provider, beside the fixed `histories`. The snapshot has a closed shape, so no completeness flag is believed. Generations must not decrease and must not be reused.
 - **Breaking for the non-operational bootstrap domain only.**
-  - The v1 bootstrap formats are retired. A v1 challenge or decision row is store corruption, never read as a CORE-05 decision.
+  - The v1 bootstrap formats are retired. A signed v1 decision row is store corruption; an unsigned v1 challenge row is inert. Neither is ever read as a CORE-05 decision.
   - v1 was never composed by any Host.
   - CORE-05 formats, commitments and reconciliation are unchanged.
 - **Hardening:** `inFlight` is fail-safe. Only exactly `false` means "not in flight"; any other answer, or a throw, is in flight.
@@ -29,6 +29,10 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - commitment re-binding;
   - a bounded inventory copy.
   - Residual (Medium): a remap across restarts is a B3 precondition.
+- **Re-review fixes:**
+  - a retired-format *challenge* row (unsigned table) is inert, not store corruption;
+  - a namespace move refuses only that namespace, and the pin never follows it;
+  - getter faults are contained at grouping.
 - **Tests:** `fv-p4c2b2c-reconciler-liveness.test.ts` (new): real AUTH-03, real SQLite histories, the real FV authorizer; F2, R5 and the retired format. Existing 2B2B suites were updated for v2 and order-independent results, with no assertion weakened.
 - **Docs:** `docs/integration/FV_RECONCILER_LIVENESS.md` (new); `FV_AUTHORITY_LIFECYCLE.md` and `FV_HOST_AUTHORITY_INTEGRATION.md` updated.
 - **Still open:** F3 (needs B3 in-flight registration), B3, B6, FV-P4D (whole-file rollback). No endpoint, CLI, composition, schema change or operational bootstrap.

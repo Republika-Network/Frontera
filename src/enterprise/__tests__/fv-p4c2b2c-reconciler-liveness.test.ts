@@ -325,7 +325,7 @@ describe('FV-P4C-2B2C R5 — a bootstrap decision signs the namespace of the one
     assert.deepEqual(parseBootstrapAuthorityRequestId(record.contract.approvalRequestId), { namespace: NS_B, bindingDigest: b.digest });
   });
 
-  it('a retired v1 bootstrap row — challenge or signed decision — is refused as corrupt, never read as a CORE-05 decision', async () => {
+  it('a retired v1 bootstrap row: a signed decision row is refused as corrupt; an unsigned challenge row is inert — never read as either domain', async () => {
     const w = await world();
     const commitment = await loneRequester(w, binding(NS_A));
     const real = w.service.bootstrapAuthorityDecision(commitment)!.evidence!;
@@ -337,10 +337,16 @@ describe('FV-P4C-2B2C R5 — a bootstrap decision signs the namespace of the one
     const payload = { evidence: v1, evidenceDigest: humanDecisionEvidenceDigest(v1 as never), challengeDigest: `sha256:${'2'.repeat(64)}`, counter: 0, backedUp: false };
     await w.store.append({ kind: 'decision_authorized', operatorId: real.operatorId, objectId: v1.challengeCommitment, payload: sortedJson(payload), recordedBy: 'webauthn-ceremony', recordedAt: w.clock.iso() }, () => undefined);
     assert.throws(() => w.service.unsettledDecisions(), (error: { code?: string; message?: string }) => error.code === 'HUMAN_IDENTITY_STORE_CORRUPT' && /retired/.test(String(error.message)));
-    // The raw challenge table refuses a v1 contract on read, too.
+    // The challenge table is not chained: a v1 challenge row (even one tampered in place) is inert, never a store-wide failure.
     const w2 = await world();
-    w2.store.saveDecisionChallenge({ challenge: 'retired-challenge', contract: { format: 'frontera.sovereign-status-bootstrap-authority.v1', organizationId: ORG, approvalRequestId: `frontera.sovereign-status-bootstrap:${digest}`, subjectDigest: real.subjectDigest, verdict: 'approve', operatorId: 'approver-b', nonce: 'n', issuedAt: w2.clock.iso(), expiresAt: w2.clock.iso() } as never });
-    assert.throws(() => w2.store.decisionChallenge('retired-challenge'), /retired/);
+    for (const verdict of ['approve', 'attest'] as const) {
+      const challenge = `retired-challenge-${verdict}`;
+      w2.store.saveDecisionChallenge({ challenge, contract: { format: 'frontera.sovereign-status-bootstrap-authority.v1', organizationId: ORG, approvalRequestId: `frontera.sovereign-status-bootstrap:${digest}`, subjectDigest: real.subjectDigest, verdict, operatorId: 'approver-b', nonce: 'n', issuedAt: w2.clock.iso(), expiresAt: w2.clock.iso() } as never });
+      assert.equal(w2.store.decisionChallenge(challenge)?.contract.format, 'frontera.sovereign-status-bootstrap-authority.v1');
+    }
+    const still = await loneRequester(w2, binding(NS_A));
+    assert.doesNotThrow(() => w2.service.unsettledDecisions());
+    assert.deepEqual(w2.service.unsettledBootstrapAuthorityDecisions().map((d) => d.commitment), [still]);
   });
 
   it('a decision signed for another namespace than its binding never authorizes that bootstrap', async () => {
@@ -495,6 +501,10 @@ describe('FV-P4C-2B2C F2 — permanently stuck decisions never starve the rest',
     // A settlement port that throws synchronously is contained, too.
     const throwing: BootstrapAuthoritySettlementPort = { unsettledBootstrapAuthorityDecisions: () => [poison], recordBootstrapAuthoritySettlement: () => { throw new Error('boom'); } };
     await assert.doesNotReject(reconciler(w, { settlement: throwing }).reconcile());
+    // A record whose commitment itself cannot be read is malformed; the listing and the run go on.
+    const unreadable = Object.defineProperty({}, 'commitment', { enumerable: true, get: () => { throw new Error('poison'); } });
+    const both: BootstrapAuthoritySettlementPort = { unsettledBootstrapAuthorityDecisions: () => [unreadable, poison], recordBootstrapAuthoritySettlement: port.recordBootstrapAuthoritySettlement };
+    assert.deepEqual(summary(await reconciler(w, { settlement: both }).reconcile()), [['conflict', 'DECISION_MALFORMED'], ['conflict', 'DECISION_MALFORMED']]);
   });
 
   it('invalid, unreadable or replayed cursors only change where a run starts — never an outcome; a failing save is tolerated', async () => {
@@ -715,19 +725,26 @@ describe('FV-P4C-2B2C R5 — absence of evidence is believed only from the decis
     const pair = await consumedPair(w, b);
     await anchor(w, b, pair.authorityRef);
     const elsewhere = await openHistory(w.dir, NS_A, true, join(w.dir, 'a-restored.sqlite'));
+    const unrelated = await loneRequester(w, binding(NS_B));
     w.clock.advance(GRACE + 1);
     let generation = 1;
     let remapped = false;
     let flying = true;
-    const inventory = () => ({ generation, histories: [remapped ? { store: elsewhere.store, namespace: NS_A, databasePath: elsewhere.path } : entryOf(w, NS_A)] });
+    const inventory = () => ({ generation, histories: [remapped ? { store: elsewhere.store, namespace: NS_A, databasePath: elsewhere.path } : entryOf(w, NS_A), entryOf(w, NS_B)] });
     const r = reconciler(w, { inventory, inFlight: () => flying });
-    assert.deepEqual(summary(await r.reconcile()), [['unresolved', 'IN_FLIGHT'], ['unresolved', 'IN_FLIGHT']]);
+    assert.deepEqual(summary(await r.reconcile()), [['unresolved', 'IN_FLIGHT'], ['unresolved', 'IN_FLIGHT'], ['unresolved', 'IN_FLIGHT']]);
     flying = false;
     generation = 2;
     remapped = true;
-    assert.deepEqual(summary(await r.reconcile()), [['unresolved', 'INVENTORY_HISTORY_MOVED'], ['unresolved', 'INVENTORY_HISTORY_MOVED']]);
-    assert.equal(outcomeRows(w).length, 0, 'no false NO_BOOTSTRAP_EVIDENCE');
+    const movedRun = await r.reconcile();
+    for (const c of [pair.requester, pair.approver]) assert.deepEqual(of(movedRun, c), [['unresolved', 'INVENTORY_HISTORY_MOVED']]);
+    // Only the moved namespace is refused: B's decision settles truthfully meanwhile.
+    assert.deepEqual(of(movedRun, unrelated), [['settled', 'bootstrap-not-committed']]);
+    assert.equal(outcomeRows(w).length, 1, 'no false NO_BOOTSTRAP_EVIDENCE for A');
+    // The pin never follows the move: a later generation still mapping A elsewhere is still refused.
     generation = 3;
+    for (const e of await r.reconcile()) assert.deepEqual(summary([e]), [['unresolved', 'INVENTORY_HISTORY_MOVED']]);
+    generation = 4;
     remapped = false;
     assert.deepEqual(summary(await r.reconcile()), [['settled', 'bootstrap-committed'], ['settled', 'bootstrap-committed']]);
   });

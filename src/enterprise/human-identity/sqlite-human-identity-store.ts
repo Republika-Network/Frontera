@@ -466,10 +466,11 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
 
   const toDecisionChallenge = (row: DecisionChallengeRow): StoredDecisionChallenge => {
     // FV-P4C-2B2B: `attest` exists only in the bootstrap-authority domain; `reject` only in CORE-05's.
-    // FV-P4C-2B2C: a retired bootstrap format is corrupt, never read as another domain.
-    if (RETIRED_BOOTSTRAP_AUTHORITY_FORMATS.includes(row.format)) corrupt('A decision challenge is of a retired bootstrap-authority format.');
+    // FV-P4C-2B2C: a retired bootstrap format is inert. This table is not chained, so the row is returned as it is and
+    // every reader refuses it by format (no domain issues or recomputes it), rather than one unsigned row failing the store.
+    const retired = RETIRED_BOOTSTRAP_AUTHORITY_FORMATS.includes(row.format);
     const bootstrap = row.format === BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT;
-    if (bootstrap ? row.verdict !== 'attest' && row.verdict !== 'approve' : row.verdict !== 'approve' && row.verdict !== 'reject') corrupt('A decision challenge has an unknown verdict.');
+    if (!retired && (bootstrap ? row.verdict !== 'attest' && row.verdict !== 'approve' : row.verdict !== 'approve' && row.verdict !== 'reject')) corrupt('A decision challenge has an unknown verdict.');
     return {
       challenge: row.challenge,
       contract: {
