@@ -18,8 +18,9 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - Only `CONTINUOUS` and `ADVANCED` are admitted.
   - Every other class is quarantined: `UNEXPLAINED_EVIDENCE`, `MOVED`, `ROLLED_BACK`, `DIVERGED`, `FILE_REPLACED`, `NAMESPACE_MISMATCH`, `SCHEMA_MISMATCH`, `MISSING`, `CORRUPT`, `UNAVAILABLE`, `UNREGISTERED`, `RECORD_INVALID`, `NOT_GENUINE`, `INTENT_UNRESOLVED`.
   - Assessment opens files read-only.
-- **Durable write-ahead intents (`trackBootstrap`):** every own bootstrap records its intent before it runs, and the record is re-captured after it. A pending intent with no evidence (a crash) quarantines its namespace until an operator ceremony (B3C).
+- **Durable write-ahead intents (`trackBootstrap`):** every own bootstrap records its intent immediately before it consumes a decision, and the record is re-captured after it. A pending intent with no evidence (a crash) quarantines its namespace until an operator ceremony (B3C).
 - **Third adversarial review (R3) corrections:** the gated `authorize` consumes one plain snapshot of the response (a switching getter could consume another binding's decision, High); `refresh()` and tracked bootstraps exclude each other; an intent resolves by the file's exact evidence even when the record already holds it. N6 is now tested deterministically; its ABA residual is documented.
+- **Release review corrections:** a commit rolled back in place under the open handle before the run settles no longer clears the intent. The handle remembers the request ids it committed itself (internal `storeCommittedRequestOf`), and evidence it committed that is now gone keeps the intent pending. The unused `INTENT_NOT_RECORDED` refusal is removed.
 - **AUTH-03:** new `isBootstrapSettlementCapabilityOf(capability, service)`, an exact custody predicate over the module-private instance.
 - **`createHostHistoryInventory`:** explicit readiness, a configuration generation that never decreases, monotonic snapshot generations, re-assessment on every read and per-namespace quarantine.
 - **`assessRestoreCandidate`:** a staged history is promotable only if it holds everything recorded; never automatic.

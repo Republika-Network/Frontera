@@ -39,6 +39,7 @@ import {
   readHistoryContinuityRecord,
 } from '../sovereign-status-history/index.js';
 import * as fvIndex from '../sovereign-status-history/index.js';
+import { storeCommittedRequestOf } from '../sovereign-status-history/sqlite-status-high-water-mark-store.js';
 import type {
   BootstrapAuthorityReconciliationEntry,
   BootstrapIntent,
@@ -1082,6 +1083,48 @@ describe('FV-P4C-2B3A-R3 independent review — gate snapshot (F1), refresh excl
     assert.equal(classes(await again.refresh())[NS_A], 'INTENT_UNRESOLVED');
     again.close();
   });
+
+  it('release review M1: a commit rolled back in place under the open handle before the run settles keeps the intent pending; never cleared, never a negative', async () => {
+    const w = await world();
+    const inventory = hostInventory(w);
+    await inventory.refresh();
+    const preCommit = join(w.dir, 'pre-commit.sqlite');
+    backupOf(w.paths[NS_A]!, preCommit);
+    const inode = statSync(w.paths[NS_A]!).ino;
+    const b = boundary(w, inventory);
+    const request = bootstrapRequest(NS_A);
+    let consumed: { requester: string; approver: string } | undefined;
+    const ran = await b.runBootstrap(request, async (parsed, history) => {
+      consumed = await attempt(w, b.bootstrapDecisions, history, parsed);
+      assert.equal(await history.hasBootstrapRequest(parsed.requestId), true, 'committed through this handle');
+      // A writer restores the pre-commit copy into the same file (same inode) before the operation settles.
+      const source = new Database(preCommit, { readonly: true });
+      try {
+        await source.backup(w.paths[NS_A]!);
+      } finally {
+        source.close();
+      }
+      assert.equal(await history.hasBootstrapRequest(parsed.requestId), false, 'the handle now reads the rolled-back file');
+      return 'done';
+    });
+    assert.equal(ran.outcome, 'ran');
+    assert.equal(statSync(w.paths[NS_A]!).ino, inode, 'an in-place rollback, not a rename');
+    assert.deepEqual([...(w.intents.get(NS_A)?.keys() ?? [])], [request.requestId], 'the intent stays pending');
+    assert.deepEqual(inventory.inventory()?.histories.map((h) => h.namespace), [NS_B], 'the namespace is out of every snapshot; the other is served');
+    w.clock.advance(GRACE + 1);
+    const entries = await b.reconcile();
+    for (const commitment of [consumed!.requester, consumed!.approver]) assert.deepEqual(of(entries, commitment), [['unresolved', 'HISTORY_NOT_IN_INVENTORY']]);
+    assert.equal(outcomeRows(w).length, 0, 'no settlement is recorded');
+    // The handle-local memory is per genuine handle: a look-alike never reads as "committed nothing".
+    assert.equal(storeCommittedRequestOf({}, request.requestId), true);
+    // Control: a run that consumes and does not commit still completes its intent.
+    const other = bootstrapRequest(NS_B);
+    const inv2 = hostInventory(w);
+    await inv2.refresh();
+    const b2 = boundary(w, inv2);
+    assert.equal((await b2.runBootstrap(other, (parsed, history) => attempt(w, b2.bootstrapDecisions, history, parsed, async () => undefined, false))).outcome, 'ran');
+    assert.deepEqual([...(w.intents.get(NS_B)?.keys() ?? [])], []);
+  });
 });
 
 // ── R3 N6: substitution at the path while the store opens it ────────────────
@@ -1212,7 +1255,7 @@ const walkFiles = (dir: string): string[] => readdirSync(dir).flatMap((name) => 
 
 describe('FV-P4C-2B3A structure — foundations only: nothing composes or reaches them', () => {
   it('no Host source names the boundary, the registry, the inventory or the continuity record; the checkpoint stays internal', () => {
-    const NAMES = /createFvBootstrapAuthorityBoundary|createBootstrapOperationRegistry|createHostHistoryInventory|captureHistoryContinuity|assessRestoreCandidate|openRecordedHistory|storeCheckpointOf/;
+    const NAMES = /createFvBootstrapAuthorityBoundary|createBootstrapOperationRegistry|createHostHistoryInventory|captureHistoryContinuity|assessRestoreCandidate|openRecordedHistory|storeCheckpointOf|storeCommittedRequestOf/;
     const MODULE = join(SRC, 'sovereign-status-history');
     const callers = walkFiles(join(ROOT, 'src'))
       .filter((file) => !file.startsWith(MODULE) && !file.includes('__tests__'))
@@ -1228,6 +1271,7 @@ describe('FV-P4C-2B3A structure — foundations only: nothing composes or reache
     assert.deepEqual(scriptCallers, []);
     assert.equal(/isBootstrapSettlementCapabilityOf|createHumanIdentityServiceWithBootstrapSettlement/.test(readFileSync(join(SRC, 'composition', 'human-authority-composition.ts'), 'utf8')), false, 'AUTH-04A does not issue the capability yet (B3B)');
     assert.equal('storeCheckpointOf' in fvIndex, false);
+    assert.equal('storeCommittedRequestOf' in fvIndex, false);
     assert.equal('trustedBootstrapEvidenceSource' in fvIndex, false);
     const MODULE_DIR = join(SRC, 'sovereign-status-history');
     for (const script of walkFiles(join(ROOT, 'src')).filter((f) => !f.includes('__tests__') && !f.startsWith(MODULE_DIR) && (f.includes('composition') || f.includes(`${join('enterprise', 'host')}`)))) {

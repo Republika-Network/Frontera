@@ -4,6 +4,7 @@ import { isIdentifier } from './bootstrap-contract.js';
 import type { BootstrapEvidenceInventorySnapshot } from './authority-settlement.js';
 import { assessHistoryContinuity, captureHistoryContinuity, openRecordedHistory } from './history-continuity.js';
 import type { BootstrapIntent, HistoryContinuityAssessment, HistoryContinuityRecord } from './history-continuity.js';
+import { storeCommittedRequestOf } from './sqlite-status-high-water-mark-store.js';
 import type { SqliteStatusHighWaterMarkStore } from './sqlite-status-high-water-mark-store.js';
 
 /**
@@ -20,11 +21,13 @@ import type { SqliteStatusHighWaterMarkStore } from './sqlite-status-high-water-
  * **Write-ahead intents (review H1).** `trackBootstrap` makes a bootstrap's commit always visible:
  * 1. The operation calls `ensureIntent()` **immediately before it consumes a decision** (the boundary's
  *    gated `authorize` does). That writes the intent `{ requestId, bindingDigest }` durably, so a
- *    request that never reaches consumption writes nothing (re-review N4). If the write fails, the
- *    consumption is refused.
+ *    request that never reaches consumption writes nothing (re-review N4). If the write fails,
+ *    `ensureIntent()` throws and the consumption is refused.
  * 2. When the operation settles in this process, the commit happened or not, and it can no longer
  *    happen later:
- *    - **No evidence for its request id:** the intent is completed (one write).
+ *    - **No evidence for its request id, and this handle never committed it:** the intent is completed
+ *      (one write). Evidence the handle committed that is now gone (a rollback under the handle,
+ *      release review M1) leaves the intent pending.
  *    - **Evidence:** the record is re-captured, then the intent is completed.
  * 3. If anything fails, the intent stays pending.
  *
@@ -79,7 +82,7 @@ export interface HostInventoryStatus {
   readonly histories: readonly HistoryContinuityAssessment[];
 }
 
-export type TrackedBootstrapRefusal = 'HISTORY_NOT_ADMITTED' | 'INTENT_NOT_RECORDED' | 'INVENTORY_REFRESHING';
+export type TrackedBootstrapRefusal = 'HISTORY_NOT_ADMITTED' | 'INVENTORY_REFRESHING';
 
 export interface HostHistoryInventory {
   /** Loads the configuration, opens and assesses every configured history, resolves intents by evidence. */
@@ -334,8 +337,12 @@ export function createHostHistoryInventory(options: {
               committed = undefined;
             }
             const pending = pendingOf(namespace);
-            // No evidence: nothing for the record to catch up with. Evidence: re-capture first. Anything else stays pending.
-            const settled = committed === false || (committed === true && pending !== undefined && recapture(namespace, entry, pending, configurationGeneration));
+            // No evidence, and this handle never committed it: nothing for the record to catch up with.
+            // Release review M1: evidence this handle committed that is now gone means the file was rolled back
+            // under it; the intent stays pending, so no negative is ever read from it.
+            const absent = committed === false && !storeCommittedRequestOf(entry.store, requestId);
+            // Evidence: re-capture first. Anything else stays pending.
+            const settled = absent || (committed === true && pending !== undefined && recapture(namespace, entry, pending, configurationGeneration));
             if (settled) {
               try {
                 records.completeIntent(namespace, requestId);

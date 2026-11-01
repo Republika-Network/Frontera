@@ -174,6 +174,13 @@ own timeout, releases its registration and completes its intent while the commit
 false not-committed. B3B's coordinator call must be awaited to completion inside `runBootstrap`; this
 is a contract, not enforced.
 
+**The gate is checked at call time (release review L1).** `authorize` checks the registration and
+writes the intent synchronously, then awaits AUTH-03's consumption. A second holder of
+`bootstrapDecisions` that calls it during a run can see its consumption finish after that run has
+settled. The result is a decision consumed with no evidence, settled not committed, which is true
+because no run of that binding is left to commit it. B3B should hand `bootstrapDecisions` only to the
+run's own authorizer, or have the run await outstanding gated calls before it settles.
+
 **Durable-write ordering B3B storage must provide (R3 F5).** The port here is in memory in tests; these
 are requirements, not properties of anything in B3A:
 1. `beginIntent` is durable (synced) before it returns. It is what blocks a false negative after a
@@ -192,6 +199,7 @@ crash point between them is covered by the table below, not by atomicity.
 | after the commit, before the re-capture | the evidence resolves the intent: record re-captured, intent completed, settled committed |
 | after the re-capture, before the intent is completed | the evidence (already in the record) resolves it at restart (R3 F3; before R3 this stayed quarantined) |
 | after the commit, then the file replaced or rolled back | intent pending, no evidence: **quarantined**, never a negative (H1) |
+| no crash: the commit rolled back **in place** (same inode) under the open handle before the run settles | the handle remembers the request ids it committed itself; evidence it committed that is now gone keeps the intent **pending**, so the namespace is quarantined (release review M1; before, the intent was completed and a false negative followed). In memory per handle: a rollback by another process after the handle closes is the crash rows above |
 | history, record **and** intent journal restored together | indistinguishable from no commit: settled `bootstrap-not-committed`. **Undetectable here; FV-P4D** (tested as a limitation) |
 
 Every row is exercised by the B3A tests through the real boundary, AUTH-03 and SQLite, with a crash
@@ -278,7 +286,7 @@ A crash at any step leaves nothing written by these foundations, except the reco
 | A holder of `historyFor`'s handle | Evidence outside a run: quarantined as `UNEXPLAINED_EVIDENCE` |
 | A compromised Host process | Yes: it holds the capability, the handles and the record port |
 | A writer of the history file or directory | Yes, for any pending intent (request id and binding are not secret); including the ABA and WAL paths in §4 |
-| A database rollback alone | Caught while a record or intent is newer (`ROLLED_BACK`, `INTENT_UNRESOLVED`); not when restored together with them (FV-P4D) |
+| A database rollback alone | Caught while a record or intent is newer (`ROLLED_BACK`, `INTENT_UNRESOLVED`), and during a run by the handle's own memory of its commits (release review M1); not when restored together with them (FV-P4D) |
 
 B3A provides **no cryptographically independent evidence authenticity**. B3B capability custody can
 narrow the in-process rows (no exposed handle, a narrowed gate port, protected storage, filesystem
@@ -331,4 +339,18 @@ no predicate at all.
   - **F8 Low:** the reopen window. Documented (§4).
   - **F9, F10:** informational (§4, §10).
   - **N6:** now tested deterministically, with the ABA residual characterized.
+- **Release review** (PR #247), a fresh read-only agent of the same model family, given the published
+  diff and the security objectives, with runnable probes:
+  - **M1 Medium (confirmed by probe):** a commit rolled back in place (same inode, for example through
+    SQLite's backup API) under the open handle before the run settled let the post-settle "no
+    evidence" branch complete the intent. The namespace was then admitted, and the reconciler could
+    settle a committed bootstrap as not committed. Fixed: the handle remembers what it committed, and
+    evidence that disappeared keeps the intent pending. Tested, and three mutants are killed.
+  - **L1 Low:** the gate is checked at call time, not held through consumption. Documented (§5).
+  - **L2 Low:** CHANGELOG wording on when the intent is written. Fixed.
+  - **L3 Low:** an unused `INTENT_NOT_RECORDED` refusal literal. Removed: a failed intent write
+    throws from `ensureIntent` and refuses the consumption.
+  - **I1–I4:** informational. A refresh can close handles an in-progress `reconcile()` reads; that
+    fails closed as unavailable, never as a negative. `refresh()` is silently a no-op while excluded.
+    The internal export surface was reviewed. A declaration-order note on `SERVICE_INSTANCES`.
 - **No human review yet.**

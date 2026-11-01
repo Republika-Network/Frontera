@@ -444,6 +444,8 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
     },
   );
 
+  /** Request ids whose evidence this handle itself committed. In memory, per handle. */
+  const committedHere = new Set<string>();
   let closed = false;
   const ensureOpen = (): void => {
     if (closed) throw new SovereignStatusHistoryStoreError('CLOSED', 'The sovereign status history is closed.');
@@ -490,7 +492,10 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
       if (typeof draft !== 'object' || draft === null || (draft as { schemaVersion?: unknown }).schemaVersion !== STATUS_HISTORY_BOOTSTRAP_EVIDENCE_SCHEMA) {
         throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The bootstrap evidence is not well formed.');
       }
-      return guarded(() => evidenceTransaction.immediate(key, expectedRevision, next, draft));
+      const recorded = guarded(() => evidenceTransaction.immediate(key, expectedRevision, next, draft));
+      // FV-P4C-2B3A (release review M1): remembered once committed, so a later rollback under this handle is detectable.
+      if (recorded !== false) committedHere.add(recorded.requestId);
+      return recorded;
     },
     async hasBootstrapRequest(requestId: string) {
       ensureOpen();
@@ -527,6 +532,7 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
   PROVENANCE.set(handle, {
     namespace,
     file,
+    committedByThisHandle: (requestId: string) => committedHere.has(requestId),
     readForBinding(bindingDigest: string): readonly StatusHistoryBootstrapEvidence[] {
       ensureOpen();
       if (!isDigest(bindingDigest)) throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The binding digest is not lowercase hex SHA-256.');
@@ -581,6 +587,18 @@ interface StoreProvenance {
   readonly file: string;
   readForBinding(bindingDigest: string): readonly StatusHistoryBootstrapEvidence[];
   checkpoint(): StoreCheckpoint;
+  committedByThisHandle(requestId: string): boolean;
+}
+
+/**
+ * FV-P4C-2B3A (release review M1) — whether this genuine handle itself committed evidence for
+ * `requestId` during its lifetime. `true` for anything that is not a genuine handle, so a caller can
+ * never read "this handle committed nothing" from a look-alike. Module-internal: not exported from the
+ * module index.
+ */
+export function storeCommittedRequestOf(handle: unknown, requestId: string): boolean {
+  const provenance = typeof handle === 'object' && handle !== null ? PROVENANCE.get(handle) : undefined;
+  return provenance === undefined ? true : provenance.committedByThisHandle(requestId);
 }
 
 /**
