@@ -199,7 +199,7 @@ crash point between them is covered by the table below, not by atomicity.
 | after the commit, before the re-capture | the evidence resolves the intent: record re-captured, intent completed, settled committed |
 | after the re-capture, before the intent is completed | the evidence (already in the record) resolves it at restart (R3 F3; before R3 this stayed quarantined) |
 | after the commit, then the file replaced or rolled back | intent pending, no evidence: **quarantined**, never a negative (H1) |
-| no crash: the commit rolled back **in place** (same inode) under the open handle before the run settles | the handle remembers the request ids it committed itself; evidence it committed that is now gone keeps the intent **pending**, so the namespace is quarantined (release review M1; before, the intent was completed and a false negative followed). In memory per handle: a rollback by another process after the handle closes is the crash rows above |
+| no crash: a commit made **through the tracked handle**, rolled back **in place** (same inode) before the run settles | the handle remembers the request ids it committed itself; evidence it committed that is now gone keeps the intent **pending**, so the namespace is quarantined (release review M1; before, the intent was completed and a false negative followed). In memory per handle: a rollback by another process after the handle closes is the crash rows above. An operation that commits through **another** handle it opened itself is not covered; that breaks the operation contract (F4, B3B) |
 | history, record **and** intent journal restored together | indistinguishable from no commit: settled `bootstrap-not-committed`. **Undetectable here; FV-P4D** (tested as a limitation) |
 
 Every row is exercised by the B3A tests through the real boundary, AUTH-03 and SQLite, with a crash
@@ -286,7 +286,7 @@ A crash at any step leaves nothing written by these foundations, except the reco
 | A holder of `historyFor`'s handle | Evidence outside a run: quarantined as `UNEXPLAINED_EVIDENCE` |
 | A compromised Host process | Yes: it holds the capability, the handles and the record port |
 | A writer of the history file or directory | Yes, for any pending intent (request id and binding are not secret); including the ABA and WAL paths in §4 |
-| A database rollback alone | Caught while a record or intent is newer (`ROLLED_BACK`, `INTENT_UNRESOLVED`), and during a run by the handle's own memory of its commits (release review M1); not when restored together with them (FV-P4D) |
+| A database rollback alone | Caught while a record or intent is newer (`ROLLED_BACK`, `INTENT_UNRESOLVED`), and during a run for commits made through the tracked handle, by that handle's memory of them (release review M1; an operation committing through another handle is F4); not when restored together with them (FV-P4D) |
 
 B3A provides **no cryptographically independent evidence authenticity**. B3B capability custody can
 narrow the in-process rows (no exposed handle, a narrowed gate port, protected storage, filesystem
@@ -346,6 +346,12 @@ no predicate at all.
     evidence" branch complete the intent. The namespace was then admitted, and the reconciler could
     settle a committed bootstrap as not committed. Fixed: the handle remembers what it committed, and
     evidence that disappeared keeps the intent pending. Tested, and three mutants are killed.
+  - **Re-check of the fix (same agent):** its probe now leaves the intent pending and the namespace
+    out of the snapshot. **N-L1 Low:** an operation that commits through a handle it opened itself,
+    and not the one it was handed, is not covered. That is a contract violation by trusted Host code,
+    the F4 class: B3B's boundary invokes the coordinator on the tracked handle itself. **N-L2 Low:**
+    the wording here is narrowed to match. An I/O error that leaves a "failed" commit durable,
+    combined with an in-place rollback before settle, is informational.
   - **L1 Low:** the gate is checked at call time, not held through consumption. Documented (§5).
   - **L2 Low:** CHANGELOG wording on when the intent is written. Fixed.
   - **L3 Low:** an unused `INTENT_NOT_RECORDED` refusal literal. Removed: a failed intent write
