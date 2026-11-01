@@ -27,6 +27,11 @@ export type AssuranceErrorCode =
   | 'ASSURANCE_REVIEWER_UNAUTHORIZED'
   | 'ASSURANCE_ASSESSMENT_NOT_FOUND'
   | 'ASSURANCE_ASSESSMENT_IMMUTABLE'
+  /**
+   * ASSURE-REL-01D: the assessment changed after the writer read it (another
+   * writer saved first). Nothing was written; re-read and retry.
+   */
+  | 'ASSURANCE_ASSESSMENT_CONFLICT'
   | 'ASSURANCE_ASSESSMENT_INCOMPLETE'
   | 'ASSURANCE_FINDING_NOT_FOUND'
   | 'ASSURANCE_INVALID_FINDING_TRANSITION'

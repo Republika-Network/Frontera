@@ -7,7 +7,7 @@ import { resolve as resolvePath } from 'node:path';
 import { createEnterpriseHostClient } from '../src/client.js';
 import { EnterpriseHostApiError, EnterpriseHostNetworkError, EnterpriseHostTimeoutError } from '../src/errors.js';
 import * as sdk from '../src/index.js';
-import type { GovernedActionDecisionRef, GovernedActionExecutionFailure, GovernedActionIntent, GovernedActionResult } from '../src/index.js';
+import type { CommercialReleaseRequest, GovernedActionDecisionRef, GovernedActionExecutionFailure, GovernedActionIntent, GovernedActionResult } from '../src/index.js';
 
 interface RecordedRequest {
   method: string;
@@ -96,6 +96,13 @@ before(async () => {
         });
       }
       if (req.url?.startsWith('/api/governance/evaluations/')) return respond(404, { error: { code: 'GOVERNANCE_RECORD_NOT_FOUND', message: 'missing', details: ['detail-1'] } });
+      // ASSURE-REL-01D operator routes: echo what was asked; a release answers 201 (committed).
+      if (req.url?.startsWith('/api/assurance/')) {
+        const echoed = { method: req.method, url: req.url };
+        if (req.url.endsWith('/commercial-report/release')) return respond(201, { ...echoed, custody: { outcome: 'committed' } });
+        if (req.url.startsWith('/api/assurance/commercial-releases/missing')) return respond(404, { error: { code: 'ASSURANCE_RELEASE_NOT_FOUND', message: 'none' } });
+        return respond(200, echoed);
+      }
       if (req.url === '/slow') {
         setTimeout(() => respond(200, {}), 5_000);
         return;
@@ -401,6 +408,51 @@ describe('governAction', () => {
         return true;
       },
     );
+  });
+});
+
+describe('ASSURE-REL-01D operator interface', () => {
+  const REVIEWER_KEY = 'rel01d-sdk-reviewer-credential-0000000000000000';
+  const release: CommercialReleaseRequest = {
+    engagement: { organizationName: 'Synthetic' },
+    issue: { issuedOn: '2026-11-01', reportVersion: '1.0' },
+    approvedContentDigest: 'sha256:abc',
+    acknowledgements: { limitationsReviewed: true, commercialUseRestrictionAcknowledged: true },
+  };
+
+  it('each operator method sends exactly its route, the reviewer bearer and the supplied body -- nothing synthesized', async () => {
+    const client = createEnterpriseHostClient({ baseUrl, apiKey: REVIEWER_KEY });
+    const cases: readonly (readonly [() => Promise<unknown>, string, string, unknown])[] = [
+      [() => client.submitAssessmentEvidence('a/1', { manualEvidence: [{ evidenceReferenceId: 'e-1' }] }), 'POST', '/api/assurance/assessments/a%2F1/evidence', { manualEvidence: [{ evidenceReferenceId: 'e-1' }] }],
+      [() => client.terminateAssessment('a-1', { reasonCode: 'engagement_withdrawn', rationale: 'r' }), 'POST', '/api/assurance/assessments/a-1/terminate', { reasonCode: 'engagement_withdrawn', rationale: 'r' }],
+      [() => client.draftCommercialReport('a-1', { engagement: release.engagement, issue: release.issue }), 'POST', '/api/assurance/assessments/a-1/commercial-report/draft', { engagement: release.engagement, issue: release.issue }],
+      [() => client.releaseCommercialReport('a-1', release), 'POST', '/api/assurance/assessments/a-1/commercial-report/release', release],
+      [() => client.listCommercialReleases('a-1'), 'GET', '/api/assurance/assessments/a-1/commercial-releases', undefined],
+      [() => client.getCommercialRelease('r 1'), 'GET', '/api/assurance/commercial-releases/r%201', undefined],
+      [() => client.verifyCommercialRelease({ content: {}, markdown: '# r', manifest: { reportId: 'r-1' } }), 'POST', '/api/assurance/commercial-releases/verify', { content: {}, markdown: '# r', manifest: { reportId: 'r-1' } }],
+    ];
+    for (const [invoke, method, url, body] of cases) {
+      await invoke();
+      const request = recorded[recorded.length - 1];
+      if (request === undefined) throw new Error('no request recorded');
+      assert.equal(request.method, method, url);
+      assert.equal(request.url, url);
+      assert.equal(request.headers['authorization'], `Bearer ${REVIEWER_KEY}`);
+      if (body === undefined) assert.equal(request.body, '');
+      else assert.deepEqual(JSON.parse(request.body), body, `${url} sends exactly the supplied body`);
+    }
+  });
+
+  it('a committed release (201) resolves with its body; a missing release maps to EnterpriseHostApiError 404', async () => {
+    const client = createEnterpriseHostClient({ baseUrl, apiKey: REVIEWER_KEY });
+    assert.deepEqual((await client.releaseCommercialReport('a-1', release)).custody, { outcome: 'committed' });
+    await assert.rejects(client.getCommercialRelease('missing'), (error: unknown) => error instanceof EnterpriseHostApiError && error.status === 404 && error.code === 'ASSURANCE_RELEASE_NOT_FOUND');
+  });
+
+  it('a release request is closed: there is no approver field to set', () => {
+    // @ts-expect-error -- the approver is the authenticated credential, never a field.
+    const forged: CommercialReleaseRequest = { ...release, approvedBy: 'someone-else' };
+    assert.ok(forged);
   });
 });
 

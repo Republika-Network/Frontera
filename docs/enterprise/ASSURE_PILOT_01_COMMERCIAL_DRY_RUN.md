@@ -227,6 +227,13 @@ as this pilot does. A test scans `src`, `packages`, `apps` and `scripts`,
 outside the Assurance module and this pilot's tooling, and pins that no caller
 exists.
 
+**Resolved by ASSURE-REL-01D.** The Host exposes the commercial flow through
+reviewer-authenticated operator routes (`docs/security/ASSURE-REL-01D-OPERATOR-INTERFACE.md`)
+and the Enterprise Host SDK has client methods for them. The F04 test was
+inverted, not deleted: the same scan now pins exactly two callers, the HTTP
+adapter and the SDK client. This closes the operational gap only; it changes
+none of the commercial-use blockers below.
+
 ### Other observations
 
 - A manual review is still accepted after completion. In the pilot it did not
@@ -251,7 +258,7 @@ exists.
 | Reproducibility | CONDITIONAL |
 | Customer delivery | CONDITIONAL (no signature; CRLF fragility; F03 resolved for v2 reports by ASSURE-REL-01C, while v1 reports keep their wording) |
 | Commercial-use policy | **BLOCKED** (`commercialUse: restricted`; needs a governance decision and a new framework version) |
-| Host operation | **BLOCKED** (F04) |
+| Host operation | CONDITIONAL (ASSURE-REL-01D: reviewer-authenticated operator routes, separation of duties, private/loopback operation only; static bearer credentials, no rate limiting) |
 | Customer data handling | **BLOCKED** (no retention, deletion or location policy) |
 | Contract documentation | **BLOCKED** |
 
@@ -263,8 +270,8 @@ exists.
 2. Sign the `releaseDigest` with an issuer key. Consider reusing the signed
    verifier pattern of FV-P4B (#234). Until then, customers must confirm the
    digests over an independent channel.
-3. Provide a supported operator path to draft and release against the Host's
-   store with its configured credentials (F04).
+3. ~~Provide a supported operator path to draft and release against the Host's
+   store with its configured credentials (F04).~~ Done in ASSURE-REL-01D.
 4. ~~Give contradicted controls a way out (F02).~~ Done in ASSURE-REL-01B, by
    explicit termination of the attempt and a linked new attempt. A review
    still never concludes a contradicted control.

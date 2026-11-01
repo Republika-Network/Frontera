@@ -212,7 +212,7 @@ describe('CTRL-04 structure — the HTTP surface', () => {
     );
     // 49 (CTRL-03) + 2 reads + 5 verdict paths = 56; + 2 ASSURE-01 trace reads = 58; + 5 PROD-03-01 operational reads = 63;
     // + 1 PROD-03-02 operator resolution = 64; + 1 PROD-03-03 release identity (GET /version) = 65;
-    // + 4 AUTH-04B2 passkey enrolment administration routes = 69.
-    assert.equal(surface.endpointCount, 69);
+    // + 4 AUTH-04B2 passkey enrolment administration routes = 69; + 7 ASSURE-REL-01D Assurance operator routes = 76.
+    assert.equal(surface.endpointCount, 76);
   });
 });

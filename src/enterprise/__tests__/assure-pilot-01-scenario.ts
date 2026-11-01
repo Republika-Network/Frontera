@@ -95,13 +95,16 @@ export async function buildPilotWorld(
     readonly reviewers?: readonly AssuranceReviewerCredential[];
     readonly inMemory?: boolean;
     readonly logger?: EnterpriseLogger;
+    /** ASSURE-REL-01D: wraps the opened store before the service is built over it (race tests interpose a read barrier). */
+    readonly wrapStore?: (store: AssuranceStore) => AssuranceStore;
   } = {},
 ): Promise<PilotWorld> {
   let tick = options.startTick ?? 0;
   const now = (): string => new Date(Date.UTC(2026, 9, 28, 9, 0, 0, tick++)).toISOString();
   let counter = options.startId ?? 0;
   const nextId = (prefix: string): string => `${prefix}-${(counter += 1)}`;
-  const store = options.inMemory === true ? createInMemoryAssuranceStore({ now }) : await createSqliteAssuranceStore(dbPath, { now });
+  const opened = options.inMemory === true ? createInMemoryAssuranceStore({ now }) : await createSqliteAssuranceStore(dbPath, { now });
+  const store = options.wrapStore === undefined ? opened : options.wrapStore(opened);
   const registry = createAssuranceFrameworkRegistry();
   registry.register(RN_SV_FRAMEWORK_V0_1);
   registry.register(AOC_SAF_FRAMEWORK_V1);

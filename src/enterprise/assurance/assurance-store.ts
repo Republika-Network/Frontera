@@ -41,8 +41,19 @@ export interface AssuranceStore {
   getFramework(context: AssuranceAccessContext, frameworkId: string, frameworkVersion: string): Promise<AssuranceFramework | null>;
   listFrameworks(context: AssuranceAccessContext): Promise<readonly AssuranceFramework[]>;
 
-  /** Saves an assessment snapshot. Allowed while the stored status is non-terminal; a completed/failed assessment is immutable. */
-  saveAssessment(context: AssuranceAccessContext, assessment: AssuranceAssessment): Promise<void>;
+  /**
+   * Saves an assessment snapshot. Allowed while the stored status is
+   * non-terminal; a completed/failed assessment is immutable.
+   *
+   * ASSURE-REL-01D: with `expected`, the save is a compare-and-set. Under the
+   * same write lock that guards terminal immutability, the stored status and
+   * `integrity.assessmentDigest` must equal what the writer read, or nothing is
+   * written and `ASSURANCE_ASSESSMENT_CONFLICT` is thrown. Terminal immutability
+   * is checked first and keeps its own error. Without `expected` the save is
+   * unconditional (kept for compatibility; the service always passes it when
+   * it rewrites a stored assessment).
+   */
+  saveAssessment(context: AssuranceAccessContext, assessment: AssuranceAssessment, expected?: AssuranceAssessmentWritePrecondition): Promise<void>;
   getAssessment(context: AssuranceAccessContext, assessmentId: string): Promise<AssuranceAssessment | null>;
   queryAssessments(context: AssuranceAccessContext, query: AssuranceAssessmentQuery): Promise<AssuranceAssessmentQueryResult>;
   /** Store-level supersession bookkeeping over a completed assessment -- content and digests stay frozen (mission section 40). */
@@ -97,6 +108,41 @@ export interface AssuranceStore {
 
   health(): Promise<AssuranceStoreHealth>;
   close(): Promise<void>;
+}
+
+/**
+ * ASSURE-REL-01D: the stored state a writer read, which a compare-and-set save
+ * requires to be unchanged. The integrity digest covers the assessment's
+ * content but not its lifecycle status (nor a termination record), so both are
+ * compared: two stored states that differ only in status are distinct.
+ */
+export interface AssuranceAssessmentWritePrecondition {
+  readonly status: AssuranceAssessment['status'];
+  readonly assessmentDigest: string;
+}
+
+/** The precondition for rewriting `read`, an assessment as the store returned it. */
+export function assessmentWritePrecondition(read: AssuranceAssessment): AssuranceAssessmentWritePrecondition {
+  return { status: read.status, assessmentDigest: read.integrity.assessmentDigest };
+}
+
+/**
+ * Refuses a compare-and-set write whose precondition does not hold against the
+ * stored state (`undefined` when no assessment is stored). Shared by every store
+ * so the conflict is the same everywhere; call it inside the write lock.
+ */
+export function assertAssessmentWritePrecondition(
+  assessmentId: string,
+  stored: AssuranceAssessmentWritePrecondition | undefined,
+  expected: AssuranceAssessmentWritePrecondition | undefined,
+): void {
+  if (expected === undefined) return;
+  if (stored === undefined || stored.status !== expected.status || stored.assessmentDigest !== expected.assessmentDigest) {
+    throw new AssuranceError('ASSURANCE_ASSESSMENT_CONFLICT', `Assessment '${assessmentId}' changed after it was read; nothing was written. Read it again and retry.`, {
+      reason: 'concurrent_modification',
+      retryable: true,
+    });
+  }
 }
 
 /** True when `context` may see a record scoped to `recordOrganizationId`. Mirrors `canAccessPassportOrganization`. */

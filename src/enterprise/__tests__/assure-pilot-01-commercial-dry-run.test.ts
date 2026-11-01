@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import Database from 'better-sqlite3';
 
 import { AssuranceError } from '../assurance/errors.js';
@@ -67,8 +67,11 @@ import {
  * integrity, and custody rejects it. F02 was inverted by ASSURE-REL-01B: the
  * deadlocked attempt still cannot be concluded, and it can now be ended as
  * inconclusive and followed by a linked new attempt. F03 was inverted by
- * ASSURE-REL-01C: a released report no longer says it is not released. See
- * docs/enterprise/ASSURE_PILOT_01_COMMERCIAL_DRY_RUN.md.
+ * ASSURE-REL-01C: a released report no longer says it is not released. F04 was
+ * inverted by ASSURE-REL-01D: the scan still runs and now pins the only two
+ * callers outside the module -- the reviewer-authenticated Host routes and the
+ * SDK client for them. See docs/enterprise/ASSURE_PILOT_01_COMMERCIAL_DRY_RUN.md
+ * and docs/security/ASSURE-REL-01D-OPERATOR-INTERFACE.md.
  */
 
 const VERIFIER = join(process.cwd(), 'scripts', 'assurance', 'verify-commercial-package.mjs');
@@ -609,10 +612,10 @@ describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS and their resolutions (each pins 
     assert.equal((await world.service.verifyCommercialRelease(PILOT_ORG_CONTEXT, readPackage(resealed))).authority, 'RELEASE_MISMATCH');
   });
 
-  it('F04 KNOWN LIMITATION -- no operational interface: no route, SDK, app or script outside the Assurance module invokes the commercial report', () => {
+  it('F04 CLOSED by ASSURE-REL-01D -- the commercial flow is reachable outside the Assurance module only through the reviewer-authenticated Host interface', () => {
     const roots = ['src', 'packages', 'apps', 'scripts'].map((root) => join(process.cwd(), root));
     // The Assurance module itself, this pilot's own tooling, tests and build output are not an operational interface.
-    const excludedDirectories = new Set(['__tests__', 'node_modules', 'dist', '.next']);
+    const excludedDirectories = new Set(['__tests__', 'node_modules', 'dist', 'dist-test', '.next']);
     const excludedPaths = new Set([join(process.cwd(), 'src', 'enterprise', 'assurance'), join(process.cwd(), 'scripts', 'assurance')]);
     const callers: string[] = [];
     const walk = (dir: string): void => {
@@ -624,7 +627,13 @@ describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS and their resolutions (each pins 
       }
     };
     for (const root of roots) if (existsSync(root)) walk(root);
-    assert.deepEqual(callers, [], 'the commercial flow is reachable only by in-process integration with the Assurance service');
+    // Exactly two: the HTTP adapter (reviewer credential only, `assure.report-release`
+    // and separation of duties enforced by the service) and the transport-only SDK
+    // client for those routes. Any other caller is a new, unreviewed interface.
+    assert.deepEqual(callers.map((path) => relative(process.cwd(), path).split(sep).join('/')).sort(), [
+      'packages/enterprise-host-sdk/src/client.ts',
+      'src/enterprise/adapters/node-http-adapter.ts',
+    ]);
   });
 
   it('KNOWN LIMITATION -- a review is still accepted after completion (it did not change the regenerated report here)', async () => {

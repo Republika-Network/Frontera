@@ -107,6 +107,8 @@ default (an unreasonable value never disables a timeout or limit).
 | `AOC_ENTERPRISE_HEALTH_CHECK_TIMEOUT_MS` | `5000` | Bound on each module's health check. |
 | `AOC_ENTERPRISE_PASSPORT_REQUIRED` | `false` | `true` makes a Passport Store outage block Enterprise readiness. Default: Passport-backed recognition degrades gracefully. |
 | `AOC_ENTERPRISE_ASSURANCE_REQUIRED` | `false` | `true` makes an Assurance Store outage block Enterprise readiness. Default: Assurance degrades without blocking `POST /api/governance/evaluate`. |
+| `AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS` | unset | ASSURE-REL-01D. Opt-in built-in Assurance frameworks; only `rn.sv@0.1.0`. An unknown entry refuses boot. |
+| `AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY` | `false` | ASSURE-REL-01D. `true`: Assurance writes accept an Assurance reviewer credential only. |
 
 ### Authentication is off by default, and then loopback-only
 

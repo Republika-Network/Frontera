@@ -159,7 +159,14 @@ export type { BuildAssuranceSignalInput, DeriveContinuousStateInput } from './si
 export { buildAssuranceReport, isAssuranceReportView, ASSURANCE_REPORT_ENGINE_VERSION } from './report.js';
 export type { BuildAssuranceReportInput } from './report.js';
 
-export { canAccessAssuranceOrganization, requireAccessToAssuranceOrganization, requireAssuranceTenantScope } from './assurance-store.js';
+export {
+  assertAssessmentWritePrecondition,
+  assessmentWritePrecondition,
+  canAccessAssuranceOrganization,
+  requireAccessToAssuranceOrganization,
+  requireAssuranceTenantScope,
+  type AssuranceAssessmentWritePrecondition,
+} from './assurance-store.js';
 export type { AssuranceStore } from './assurance-store.js';
 export { createInMemoryAssuranceStore } from './in-memory-assurance-store.js';
 export type { CreateInMemoryAssuranceStoreOptions } from './in-memory-assurance-store.js';

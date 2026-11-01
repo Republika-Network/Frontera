@@ -17,6 +17,8 @@ import type { AssuranceAssessment, AssuranceFinding, AssuranceFindingEvent } fro
 export interface AssuranceCompletionCommit {
   readonly assessment: AssuranceAssessment;
   readonly findingEvents: readonly AssuranceFindingEvent[];
+  /** ASSURE-REL-01D: the stored state the completion was computed from; when present the store refuses (`ASSURANCE_ASSESSMENT_CONFLICT`) if it changed. */
+  readonly expected?: { readonly status: AssuranceAssessment['status']; readonly assessmentDigest: string };
 }
 
 /** Whether `event`'s digest recomputes from its own fields (the `buildFindingEvent` digest, not a second algorithm). */

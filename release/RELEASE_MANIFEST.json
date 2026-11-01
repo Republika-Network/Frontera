@@ -34,7 +34,7 @@
   "api": {
     "surface": "aoc-enterprise-host-http.v1",
     "documentation": "docs/enterprise/API_STABILITY_V1.md",
-    "endpointCount": 69
+    "endpointCount": 76
   },
   "compatibilityMatrix": {
     "node": ">=22",
