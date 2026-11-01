@@ -336,6 +336,46 @@ describe('ASSURE-REL-01D Stage 0 -- compare-and-set for nonterminal assessment w
     assert.deepEqual(await b.service.getAssessment(PILOT_ORG_CONTEXT, prepared.assessmentId), ended.assessment);
   });
 
+  it('C10 no service path rewrites a stored assessment unconditionally: only the first save of an assessment carries no precondition', async () => {
+    const saves: { readonly assessmentId: string; readonly conditioned: boolean }[] = [];
+    const world = await buildPilotWorld(dbFile(), {
+      wrapStore: (store) =>
+        new Proxy(store, {
+          get(target, property, receiver) {
+            const value: unknown = Reflect.get(target, property, receiver);
+            if (typeof value !== 'function') return value;
+            if (property === 'saveAssessment') {
+              return (context: unknown, assessment: AssuranceAssessment, expected?: unknown) => {
+                saves.push({ assessmentId: assessment.assessmentId, conditioned: expected !== undefined });
+                return (value as (...a: unknown[]) => Promise<void>).call(target, context, assessment, expected);
+              };
+            }
+            if (property === 'completeAssessment') {
+              return (context: unknown, commit: { assessment: AssuranceAssessment; expected?: unknown }) => {
+                saves.push({ assessmentId: commit.assessment.assessmentId, conditioned: commit.expected !== undefined });
+                return (value as (...a: unknown[]) => Promise<void>).call(target, context, commit);
+              };
+            }
+            return (value as (...a: unknown[]) => unknown).bind(target);
+          },
+        }),
+    });
+    stores.push(world.store);
+    // Every rewriting operation: collect, evaluate, review + re-evaluate, complete, reassess, and an end.
+    const prepared = await preparePilotAssessment(world);
+    await reviewPilotAssessment(world, prepared.assessmentId);
+    await world.service.completeAssessment(PILOT_ORG_CONTEXT, prepared.assessmentId);
+    const next = await world.service.requestReassessment(PILOT_ORG_CONTEXT, { assessmentId: prepared.assessmentId, reason: 'C10', requestedBy: 'cas-preparer' });
+    await world.service.terminateAssessment(pilotContext(world, 'reviewer'), next.assessmentId, { reasonCode: 'engagement_withdrawn', rationale: 'C10 end.' });
+    const seen = new Set<string>();
+    for (const save of saves) {
+      if (seen.has(save.assessmentId)) assert.equal(save.conditioned, true, `a rewrite of '${save.assessmentId}' is conditioned`);
+      else assert.equal(save.conditioned, false, 'a first save creates the assessment');
+      seen.add(save.assessmentId);
+    }
+    assert.ok(saves.length >= 6 && seen.size === 2, JSON.stringify(saves));
+  });
+
   it('C09 the conflict is HTTP 409 with a retryable reason; frozen framework digests are unchanged', () => {
     const http = mapAssuranceErrorToHttp(new AssuranceError('ASSURANCE_ASSESSMENT_CONFLICT', 'changed', { reason: 'concurrent_modification', retryable: true }));
     assert.equal(http.httpStatus, 409);

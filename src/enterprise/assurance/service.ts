@@ -1173,7 +1173,8 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
         ...(followsTermination ? {} : { supersedesAssessmentId: previous.assessmentId }),
         reassessmentReason: input.reason,
       });
-      await store.saveAssessment(context, reassessment);
+      // ASSURE-REL-01D: a rewrite of the assessment just created, conditioned like every other rewrite.
+      await store.saveAssessment(context, reassessment, assessmentWritePrecondition(created));
       publish('AssuranceReassessmentRequested', {
         assessmentId: reassessment.assessmentId,
         organizationId: previous.subject.organizationId,

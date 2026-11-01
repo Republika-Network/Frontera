@@ -16,6 +16,7 @@ import { assertAuditorConfiguration } from '../orchestration/governance-record-d
 import { assertAssuranceReviewerConfiguration } from '../orchestration/assurance-reviewer-credentials.js';
 import type { EnterpriseGovernedActionResponse } from '../api/governed-action-contract.js';
 import { createInMemoryGovernanceStore } from '../governance-store/in-memory-governance-store.js';
+import { computeDigest } from '../governance-store/digest.js';
 import { createSqliteGovernanceStore } from '../governance-store/sqlite-governance-store.js';
 import type { GovernanceStore } from '../governance-store/governance-store.js';
 import type { GovernanceEnterpriseContext } from '../governance-store/contracts.js';
@@ -2581,13 +2582,17 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   assuranceFrameworkRegistry.register(AOC_SAF_FRAMEWORK_V1);
   for (const framework of options.assuranceFrameworks ?? []) assuranceFrameworkRegistry.register(framework);
   // ASSURE-REL-01D: built-in frameworks the configuration opts into, registered
-  // exactly as frozen (an embedder that already passed the same definition is
-  // not asked to register it twice).
+  // exactly as frozen. An embedder that already registered the identical
+  // definition is not asked to register it twice; a DIFFERENT definition under
+  // the same id and version fails composition rather than standing in for it.
   const optionalFrameworks: Readonly<Record<string, AssuranceFramework>> = { 'rn.sv@0.1.0': RN_SV_FRAMEWORK_V0_1 };
   for (const name of configuration.assurance.frameworks ?? []) {
     const framework = optionalFrameworks[name];
-    if (framework !== undefined && assuranceFrameworkRegistry.get(framework.frameworkId, framework.frameworkVersion) === undefined) {
-      assuranceFrameworkRegistry.register(framework);
+    if (framework === undefined) continue;
+    const existing = assuranceFrameworkRegistry.get(framework.frameworkId, framework.frameworkVersion);
+    if (existing === undefined) assuranceFrameworkRegistry.register(framework);
+    else if (computeDigest(existing) !== computeDigest(framework)) {
+      throw new Error(`AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS names ${name}, but a different definition is already registered under that id and version; only the frozen definition may be used.`);
     }
   }
   for (const framework of assuranceFrameworkRegistry.list()) {

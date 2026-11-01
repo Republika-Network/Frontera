@@ -2,6 +2,10 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { bootEnterpriseHost } from '../host/enterprise-host.js';
+import { createEnterprise } from '../composition/composition-root.js';
+import { loadEnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
+import { RN_SV_FRAMEWORK_V0_1 } from '../assurance/frameworks/rn-sv-framework.js';
+import { buildTestKernelProviders } from './support.js';
 import { EnterpriseHostConfigurationError } from '../host/host-configuration.js';
 import { withDeploymentWitness } from './core07-freshness-fixture.js';
 import { ORG, call, capturingLogger, createWorkspace, errorCode, logLines, responses, type Reply } from './ctrl02-host-fixture.js';
@@ -277,7 +281,7 @@ describe('ASSURE-REL-01D operator interface -- the real Host, over HTTP', () => 
       ['POST', `/api/assurance/assessments/${id}/evidence`, REL01D_AUTH.reviewer, { manualEvidence: hostEvidence() }],
       ['POST', `/api/assurance/assessments/${id}/terminate`, REL01D_AUTH.reviewer, { reasonCode: 'engagement_withdrawn', rationale: 'cross-tenant probe' }],
       ['POST', `/api/assurance/assessments/${id}/commercial-report/draft`, REL01D_AUTH.reviewer, draftBody()],
-      ['POST', `/api/assurance/assessments/${id}/commercial-report/release`, REL01D_AUTH.approver, releaseBody('sha256:any')],
+      ['POST', `/api/assurance/assessments/${id}/commercial-report/release`, REL01D_AUTH.approver, releaseBody('sha256:not-a-current-digest')],
       ['GET', `/api/assurance/assessments/${id}/commercial-releases`, REL01D_AUTH.reviewer, undefined],
     ] as const) {
       const reply = await call(baseUrl, method, path, { authorization, ...(body !== undefined ? { body } : {}) });
@@ -349,6 +353,23 @@ describe('ASSURE-REL-01D operator interface -- the real Host, over HTTP', () => 
     assert.deepEqual(stored.body['evidenceReferences'], winner.body['evidenceReferences']);
   });
 
+  it('O15 a malformed path segment is never answered before authentication; for a reviewer it is a 400, audited and not cached', async () => {
+    for (const [method, path] of [
+      ['POST', '/api/assurance/assessments/%E0%A4%A/terminate'],
+      ['GET', '/api/assurance/commercial-releases/%E0%A4%A'],
+      ['GET', '/api/assurance/assessments/%E0%A4%A'],
+      ['POST', '/api/assurance/assessments/%E0%A4%A/evaluate'],
+    ] as const) {
+      for (const authorization of [undefined, REL01D_AUTH.unknown]) {
+        const anonymous = await unreadable(baseUrl, method, path, authorization);
+        assert.equal(anonymous.status, 401, `${method} ${path}: ${anonymous.text.slice(0, 160)}`);
+      }
+      const reviewer = await call(baseUrl, method, path, { authorization: REL01D_AUTH.reviewer, ...(method === 'POST' ? { body: {} } : {}) });
+      assert.equal(reviewer.status, 400, `${method} ${path} (reviewer): ${reviewer.text.slice(0, 160)}`);
+    }
+    assert.equal(await noStoreHeader(baseUrl, 'POST', '/api/assurance/assessments/%E0%A4%A/terminate', REL01D_AUTH.reviewer, {}), NO_STORE);
+  });
+
   it('O11 no token, secret, rationale, evidence content or store internal reaches a log line or an error body; every operator action is audited by id', () => {
     const logs = logLines.join('\n');
     for (const secret of ALL_SECRETS) assert.equal(logs.includes(secret), false, 'no secret in logs');
@@ -378,6 +399,15 @@ describe('ASSURE-REL-01D Host configuration -- opt-in framework, reviewer-only m
       async () => bootEnterpriseHost({ env: await withDeploymentWitness(rel01dEnv(badDir, { frameworks: 'rn.sv@0.2.0' })), logger: capturingLogger }),
       (error: unknown) => error instanceof EnterpriseHostConfigurationError,
     );
+  });
+
+  it('O16 an opted-in framework is the frozen definition or nothing: a different rn.sv@0.1.0 from an embedder fails composition', async () => {
+    const base = loadEnterpriseConfiguration({ AOC_ENTERPRISE_KERNEL_AUTHORITY_ORGANIZATION_ID: ORG, AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS: 'rn.sv@0.1.0' });
+    const altered = { ...RN_SV_FRAMEWORK_V0_1, name: `${RN_SV_FRAMEWORK_V0_1.name} (altered)` };
+    await assert.rejects(createEnterprise({ kernelProviders: buildTestKernelProviders(), configuration: base, assuranceFrameworks: [altered] }), /different definition is already registered/);
+    const same = await createEnterprise({ kernelProviders: buildTestKernelProviders(), configuration: base, assuranceFrameworks: [RN_SV_FRAMEWORK_V0_1] });
+    assert.ok(same.assuranceFrameworks.get('rn.sv', '0.1.0'));
+    await same.stop();
   });
 
   it('O13 reviewer-only mode: every Assurance write needs a reviewer credential; reads and the manual-review route are unchanged', async () => {

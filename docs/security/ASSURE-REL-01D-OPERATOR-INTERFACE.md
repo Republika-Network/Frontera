@@ -142,6 +142,14 @@ cannot remove or re-attribute one. Every recorded review counts, including any
 kept from before SEC-01B, and a single reviewed control disqualifies. Holding
 both roles grants nothing by itself.
 
+**Timing.** The reviews are read before the draft is built, without a lock.
+That is sufficient: a release needs a `READY_FOR_RELEASE` draft, which exists
+only for a `completed` assessment, and the report content is derived from the
+completed assessment. A review recorded after completion (still accepted — a
+pinned PILOT-01 limitation) changes no released content, and the check counts
+it anyway when it is already stored, which is stricter than the content it
+protects.
+
 **What it does not prove.** It distinguishes **credentials**, not people:
 two credentials issued to one person defeat it. Issue one credential per person
 and keep the assessor and approver roles on different people (procedural).
