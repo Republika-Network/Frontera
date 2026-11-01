@@ -54,6 +54,7 @@ export {
   ENROLMENT_TTL_MAX_SECONDS,
   createHumanIdentityService,
   createHumanIdentityServiceWithBootstrapSettlement,
+  isBootstrapSettlementCapabilityOf,
   identityAdministratorFor,
   revokeBootstrapSettlementCapability,
   type BootstrapSettlementCapability,

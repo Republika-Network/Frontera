@@ -286,3 +286,5 @@ independent human review has happened yet.
 | R-5 | Info | Pre-existing (#213): a challenge row whose verdict is tampered with in place makes the store refuse | Unchanged |
 
 No Critical or High finding. The review found no path to a false `bootstrap-committed`.
+
+FV-P4C-2B3A adds the foundations for these B3 requirements (`FV_HOST_COMPOSITION_FOUNDATIONS.md`): continuity records for durable namespace identity, the in-flight registry and the Host inventory provider. They remain uncomposed.
