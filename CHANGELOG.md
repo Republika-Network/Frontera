@@ -4,6 +4,26 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — ASSURE-REL-01D Secure Host operator interface (private pilot; not a commercial authorization)
+- **Operator routes (7, always mounted; 69 → 76 endpoints).** Evidence submission, termination, commercial draft, release, release listing and retrieval, and delivered-package verification, on the existing Host adapter over the existing `AssuranceService`.
+  - Authenticated by an Assurance reviewer credential (SEC-01B) only. Organization keys, operator/administrator/auditor secrets, unknown tokens and the system context get `401`, before the body is read, with or without `AOC_ENTERPRISE_REQUIRE_AUTH`.
+  - Roles are checked before the body (`assure.reviewer`, `assure.report-release`). JSON only (`415`), 1 MiB bound, `Cache-Control: no-store` on every response.
+  - Another organization's assessment or release is answered as absent (`404`; new code `ASSURANCE_RELEASE_NOT_FOUND`).
+  - A release returns `201` when committed and `200` when replayed. A stale approved digest is `409` (`reason: approved_digest_stale`), no longer `500`.
+- **Separation of duties.** A credential that recorded any manual review of an assessment cannot release it (`403 ASSURANCE_REVIEWER_UNAUTHORIZED`, `reason: separation_of_duties`), even holding both roles. Decided in the service from the append-only review records.
+- **v1 Assurance routes accept a reviewer credential** (tried first). The actor is then the credential: `requestedBy` / `actorId` may be omitted or must match (`403`). The organization-key behaviour is unchanged.
+- **`AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY`** (default `false`): every Assurance write requires a reviewer credential.
+- **`AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS=rn.sv@0.1.0`:** registers the exact frozen framework in the packaged Host. An unknown entry refuses boot. Neither variable changes the health checksum unless set.
+- **Compare-and-set for non-terminal assessment writes** (closes the REL-01B §10 last-writer-wins limit).
+  - `saveAssessment` and completion take an optional precondition (stored status + `integrity.assessmentDigest`), checked inside the existing `IMMEDIATE` transaction.
+  - A stale writer writes nothing and gets the new `ASSURANCE_ASSESSMENT_CONFLICT` (`409`, retryable).
+  - A termination re-reads and re-binds on a conflict (bounded).
+- **Audit:** one `enterprise.assurance.operator` log line per operator action (ids and codes only).
+- **SDK (`@aoc-enterprise/enterprise-host-sdk`):** seven additive client methods and type-only types. `requestedBy` is optional in `CreateAssessmentRequest` / `ReassessRequest`. MINOR: to be released as `1.2.0`; the version is not bumped here.
+- **PILOT-01 F04 inverted:** the commercial flow is reachable outside the Assurance module only through the adapter and the SDK client.
+- **Unchanged:** `rn.sv@0.1.0` and its golden digest, `commercialUse: restricted`, evidence policies, report generators v1/v2 and historical fixtures, store schema (no migration). Nothing is deployed.
+- See `docs/security/ASSURE-REL-01D-OPERATOR-INTERFACE.md`.
+
 ### Added — FV-P4C-2B3A Host composition foundations (not composed, unreachable)
 - **`createFvBootstrapAuthorityBoundary`:** splits AUTH-03's `{ service, settlementCapability }`.
   - Authorizers get only bound bootstrap-domain `peek` and `authorize`.

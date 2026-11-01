@@ -276,8 +276,21 @@ route matching: with authentication enabled, an unauthenticated request to
 any path under `/api/assurance/` returns `401` even if the path matches no
 route. All routes share `403 ASSURANCE_ACCESS_SCOPE_VIOLATION` /
 `ASSURANCE_TENANT_SCOPE_REQUIRED`, `500 ASSURANCE_INTEGRITY_FAILED`, and
-`503 ASSURANCE_STORE_UNAVAILABLE`. No Assurance route has idempotency
-semantics.
+`503 ASSURANCE_STORE_UNAVAILABLE`. The v1 routes have no idempotency
+semantics; the ASSURE-REL-01D release and termination replay (below).
+
+**ASSURE-REL-01D -- credentials.** Every route in this section also accepts an
+**Assurance reviewer credential** (governed-action file `assuranceReviewers`),
+tried before the organization-key resolution. Its organization, actor and
+roles are the credential's: on `POST` routes it needs `assure.reviewer`, and a
+body `requestedBy` / `actorId` may be omitted or must equal the reviewer id
+(`403 ASSURANCE_REVIEWER_UNAUTHORIZED` otherwise). With
+`AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY=true` every Assurance write (`POST`
+except `…/verify`) accepts a reviewer credential only (`401` otherwise); reads
+are unchanged. Without the flag the organization-key behaviour below is
+unchanged. `ASSURANCE_ASSESSMENT_CONFLICT` (`409`, `reason:
+concurrent_modification`, `retryable: true`) means another writer changed a
+non-terminal assessment after it was read; nothing was written.
 
 | Method + Path | Purpose | Request fields | Success | Route-specific errors |
 | --- | --- | --- | --- | --- |
@@ -291,6 +304,26 @@ semantics.
 | `POST /api/assurance/signals` | Ingest a continuous-assurance signal. | Required: `organizationId`, `subjectId`, `subjectType`, `signalType` (a supported `AssuranceSignalType`, see `ASSURANCE_SIGNAL_TYPES` in `src/enterprise/assurance/contracts.ts`), `sourceType` (an `AssuranceEvidenceType`, see `ASSURANCE_EVIDENCE_TYPES` there), `sourceId`, `occurredAt`. Optional: `observedAt` (defaults to `occurredAt`), `sourceDigest`, `affectedControlIds[]`, `affectedDomainIds[]`, `payload` (object). | `201` `AssuranceSignalProcessingResult` (`signalId`, `outcomes`, `affectedAssessmentIds`, `detail`, `processedAt`) | `400 ASSURANCE_SIGNAL_INVALID`; `403 ASSURANCE_ACCESS_SCOPE_VIOLATION` for a cross-org `organizationId` |
 | `GET /api/assurance/subjects/{id}/state?frameworkId=&frameworkVersion=` | Derived continuous-assurance state. Both query parameters optional (latest completed assessment used when omitted). | -- | `200` `ContinuousAssuranceState` (`subjectId`, `frameworkId`, `frameworkVersion`, `latestCompletedAssessmentId?`, `state`, `openFindingCounts`, `activeSignalIds`, `eligibilityState?`, `staleReasons`, `updatedAt`) | -- |
 | `POST /api/assurance/subjects/{id}/reassess` | Request a reassessment (creates a new assessment). | Required: `reason`, `requestedBy`. Optional: `assessmentId`, `evidenceCutoffAt`. | `201` `AssuranceAssessment` | `404 ASSURANCE_ASSESSMENT_NOT_FOUND` / `ASSURANCE_SUBJECT_NOT_FOUND` / `ASSURANCE_FRAMEWORK_NOT_FOUND` |
+
+**ASSURE-REL-01D operator routes.** Always mounted. **Authenticated by an
+Assurance reviewer credential only**: no credential, an organization or
+unscoped API key, an operator, administrator or auditor secret, or the
+unauthenticated system context is `401 AUTHENTICATION_FAILED`, before the body
+is read. The role is checked next (`403 ASSURANCE_REVIEWER_UNAUTHORIZED`). A
+`POST` body must be `application/json` (`415 INVALID_REQUEST`) within the 1 MiB
+bound. Every response, error or not, carries `Cache-Control: no-store`. An
+assessment or release of another organization is answered exactly as an absent
+one. See `docs/security/ASSURE-REL-01D-OPERATOR-INTERFACE.md`.
+
+| Method + Path | Purpose | Role | Request fields | Success | Route-specific errors |
+| --- | --- | --- | --- | --- | --- |
+| `POST /api/assurance/assessments/{id}/evidence` | Collect evidence, including manually supplied references (SEC-01C: recorded `verified: false`, offered only to the requirements each names). Only from `created`. | `assure.reviewer` | Required: `manualEvidence[]` (1-500 references; closed field set: `evidenceReferenceId`, `evidenceType`, `externalId`, `organizationId`, `collectedAt`, `verified`, `provenance{sourceSystem, sourceType, collectedBy, collectedAt, ...}`; optional `subjectId`, `digest`, `version`, `occurredAt`, `verificationReference`, `metadata`, `requirementIds[]`). | `200` `AssuranceAssessment` | `400 INVALID_REQUEST` / `ASSURANCE_EVIDENCE_INVALID`; `404 ASSURANCE_ASSESSMENT_NOT_FOUND`; `409 ASSURANCE_ASSESSMENT_IMMUTABLE` / `ASSURANCE_ASSESSMENT_CONFLICT` |
+| `POST /api/assurance/assessments/{id}/terminate` | End a non-terminal attempt as inconclusive (REL-01B). The same end again replays. | `assure.reviewer` | Required: `reasonCode` (`unresolved_contradiction`, `engagement_withdrawn`), `rationale` (1-2000). `terminatedBy` is refused (`400`). | `200` `{ assessment, outcome: 'terminated' \| 'replayed' }` | `400 ASSURANCE_VALIDATION_ERROR`; `404 ASSURANCE_ASSESSMENT_NOT_FOUND`; `409 ASSURANCE_ASSESSMENT_IMMUTABLE` (a different end, or completed) / `ASSURANCE_ASSESSMENT_CONFLICT` |
+| `POST /api/assurance/assessments/{id}/commercial-report/draft` | The `rn.sv@0.1.0` commercial report as `DRAFT` / `READY_FOR_RELEASE`. Writes nothing. | `assure.reviewer` or `assure.report-release` | Required: `engagement` (object), `issue` (`{ issuedOn: 'YYYY-MM-DD', reportVersion }`). | `200` `CommercialReportDraft` (`content`, `markdown`, `manifest.contentDigest`) | `400 ASSURANCE_VALIDATION_ERROR`; `404 ASSURANCE_ASSESSMENT_NOT_FOUND`; `409 ASSURANCE_ASSESSMENT_INCOMPLETE` |
+| `POST /api/assurance/assessments/{id}/commercial-report/release` | Approve and keep a `READY_FOR_RELEASE` report in durable custody. The approver is the credential; it must not have recorded a review of the assessment (separation of duties). | `assure.report-release` | Required: `engagement`, `issue`, `approvedContentDigest`, `acknowledgements{ limitationsReviewed, commercialUseRestrictionAcknowledged }` (both `true`). Optional assertions `approvedBy` / `approverRole`: must equal the credential / `assure.report-release` (`403` / `400` otherwise). | `201` `{ draft, release, custody: { outcome: 'committed' } }`; `200` with `outcome: 'replayed'` and the original release when the same approver repeats the same release | `400 ASSURANCE_VALIDATION_ERROR`; `403 ASSURANCE_REVIEWER_UNAUTHORIZED` (incl. `reason: separation_of_duties`); `404 ASSURANCE_ASSESSMENT_NOT_FOUND`; `409 ASSURANCE_INTEGRITY_FAILED` with `reason: approved_digest_stale`; `409 ASSURANCE_ASSESSMENT_IMMUTABLE` (`reason: commercial_release_conflict`) / `ASSURANCE_ASSESSMENT_INCOMPLETE`; `503 ASSURANCE_STORE_UNAVAILABLE` (no durable custody) |
+| `GET /api/assurance/assessments/{id}/commercial-releases` | Every release kept for the assessment, oldest first. | either | -- | `200` `{ assessmentId, releases }` | `404 ASSURANCE_ASSESSMENT_NOT_FOUND`; `503 ASSURANCE_STORE_UNAVAILABLE` |
+| `GET /api/assurance/commercial-releases/{reportId}` | The release kept for a report version. | either | -- | `200` `CommercialReleaseCustodyRecord` | `404 ASSURANCE_RELEASE_NOT_FOUND` (absent or another organization's) |
+| `POST /api/assurance/commercial-releases/verify` | Verify a delivered package against this Host's custody. Integrity and authority are reported separately; never a signature. | either | Required: `content` (report.json), `markdown` (report.md, string), `manifest` (object). Optional: `release` (object). | `200` `CommercialReleaseAuthorityVerification` (`integrity`, `authority`, `releaseAuthenticated`, `externalSignature: 'EXTERNAL_SIGNATURE_NOT_AVAILABLE'`, ...) -- also when the verdict is negative | `400 INVALID_REQUEST` |
 
 ### 2.6 Governed Actions (capability-gated; added in 1.3.0)
 
@@ -614,7 +647,9 @@ actions are both composed: 58 → **63**. PROD-03-02 added the operator
 resolution command: 63 → **64**. PROD-03-03 added `GET /version`, §2.1:
 64 → **65**. AUTH-04B2 added four passkey enrolment administration routes,
 mounted only when operators are configured and passkey human authority is
-composed: 65 → **69**.)
+composed: 65 → **69**. ASSURE-REL-01D added the seven always-mounted
+Assurance operator routes of §2.5, authenticated by an Assurance reviewer
+credential only: 69 → **76**.)
 
 | Method | Path | Added by |
 | --- | --- | --- |
@@ -691,8 +726,9 @@ Complete `EnterpriseHttpErrorCode` table (from
 | 400 | `INVALID_REQUEST`, `EVIDENCE_VALIDATION_ERROR`, `EVIDENCE_DISCLOSURE_POLICY_UNKNOWN`, `PASSPORT_VALIDATION_ERROR`, `PASSPORT_REFERENCE_INVALID`, `ASSURANCE_SCOPE_INVALID`, `ASSURANCE_FRAMEWORK_INVALID`, `ASSURANCE_FRAMEWORK_VERSION_UNSUPPORTED`, `ASSURANCE_SIGNAL_INVALID`, `ASSURANCE_EVIDENCE_INVALID`, `ASSURANCE_MANUAL_REVIEW_INVALID`, `ASSURANCE_VALIDATION_ERROR` |
 | 401 | `AUTHENTICATION_FAILED` |
 | 403 | `AUTHORIZATION_FAILED`, `GOVERNANCE_ACCESS_SCOPE_VIOLATION`, `EVIDENCE_ACCESS_SCOPE_VIOLATION`, `EVIDENCE_TENANT_SCOPE_REQUIRED`, `PASSPORT_TENANT_SCOPE_REQUIRED`, `PASSPORT_ACCESS_SCOPE_VIOLATION`, `ASSURANCE_TENANT_SCOPE_REQUIRED`, `ASSURANCE_ACCESS_SCOPE_VIOLATION`, `ASSURANCE_EVIDENCE_WRONG_TENANT`, `ASSURANCE_REVIEWER_UNAUTHORIZED` |
-| 404 | `NOT_FOUND`, `AUTHORITY_ADMIN_TARGET_NOT_FOUND`, `AUTHORITY_ADMIN_CAPABILITY_NOT_COMPOSED`, `GOVERNANCE_RECORD_NOT_FOUND`, `EVIDENCE_SOURCE_RECORD_NOT_FOUND`, `EVIDENCE_BUNDLE_NOT_FOUND`, `PASSPORT_NOT_FOUND`, `PASSPORT_EVIDENCE_NOT_FOUND`, `PASSPORT_GOVERNANCE_RECORD_NOT_FOUND`, `ASSURANCE_FRAMEWORK_NOT_FOUND`, `ASSURANCE_ASSESSMENT_NOT_FOUND`, `ASSURANCE_FINDING_NOT_FOUND`, `ASSURANCE_SUBJECT_NOT_FOUND`, `ASSURANCE_CONTROL_NOT_FOUND` |
-| 409 | `CONCURRENCY_CONFLICT`, `AUTHORITY_ADMIN_OPERATION_REFUSED`, `GOVERNANCE_IDEMPOTENCY_CONFLICT`, `EVIDENCE_BUNDLE_ALREADY_EXISTS`, `PASSPORT_ALREADY_EXISTS`, `PASSPORT_IDEMPOTENCY_CONFLICT`, `PASSPORT_INVALID_STATE_TRANSITION`, `PASSPORT_ALREADY_REVOKED`, `PASSPORT_EXPIRED`, `ASSURANCE_ASSESSMENT_IMMUTABLE`, `ASSURANCE_ASSESSMENT_INCOMPLETE`, `ASSURANCE_INVALID_FINDING_TRANSITION` |
+| 404 | `NOT_FOUND`, `AUTHORITY_ADMIN_TARGET_NOT_FOUND`, `AUTHORITY_ADMIN_CAPABILITY_NOT_COMPOSED`, `GOVERNANCE_RECORD_NOT_FOUND`, `EVIDENCE_SOURCE_RECORD_NOT_FOUND`, `EVIDENCE_BUNDLE_NOT_FOUND`, `PASSPORT_NOT_FOUND`, `PASSPORT_EVIDENCE_NOT_FOUND`, `PASSPORT_GOVERNANCE_RECORD_NOT_FOUND`, `ASSURANCE_FRAMEWORK_NOT_FOUND`, `ASSURANCE_ASSESSMENT_NOT_FOUND`, `ASSURANCE_FINDING_NOT_FOUND`, `ASSURANCE_SUBJECT_NOT_FOUND`, `ASSURANCE_CONTROL_NOT_FOUND`, `ASSURANCE_RELEASE_NOT_FOUND` |
+| 409 | `CONCURRENCY_CONFLICT`, `AUTHORITY_ADMIN_OPERATION_REFUSED`, `GOVERNANCE_IDEMPOTENCY_CONFLICT`, `EVIDENCE_BUNDLE_ALREADY_EXISTS`, `PASSPORT_ALREADY_EXISTS`, `PASSPORT_IDEMPOTENCY_CONFLICT`, `PASSPORT_INVALID_STATE_TRANSITION`, `PASSPORT_ALREADY_REVOKED`, `PASSPORT_EXPIRED`, `ASSURANCE_ASSESSMENT_IMMUTABLE`, `ASSURANCE_ASSESSMENT_CONFLICT`, `ASSURANCE_ASSESSMENT_INCOMPLETE`, `ASSURANCE_INVALID_FINDING_TRANSITION`; `ASSURANCE_INTEGRITY_FAILED` **only** with `reason: approved_digest_stale` (ASSURE-REL-01D release route) |
+| 415 | `INVALID_REQUEST` (administration, operator-plane and ASSURE-REL-01D Assurance operator bodies that are not `application/json`) |
 | 413 | `GOVERNANCE_RECORD_TOO_LARGE` |
 | 422 | `PASSPORT_VERSION_UNSUPPORTED`, `ASSURANCE_EVIDENCE_INSUFFICIENT`, `ASSURANCE_EVIDENCE_CONTRADICTORY`, `ASSURANCE_MANUAL_REVIEW_REQUIRED`, `ASSURANCE_ELIGIBILITY_NOT_SATISFIED` |
 | 500 | `INFRASTRUCTURE_FAILURE`, `AUTHORITY_STATE_INTEGRITY_FAILED`, `GOVERNANCE_STORE_TRANSACTION_FAILED`, `GOVERNANCE_STORE_VALIDATION_ERROR`, `GOVERNANCE_RECORD_CORRUPTED`, `PASSPORT_INTEGRITY_FAILED`, `ASSURANCE_INTEGRITY_FAILED`, `ASSURANCE_CONTROL_EVALUATION_FAILED` |

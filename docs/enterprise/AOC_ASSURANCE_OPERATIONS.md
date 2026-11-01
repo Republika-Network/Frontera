@@ -6,6 +6,8 @@
 | --- | --- | --- |
 | `AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH` | `.data/assurance.sqlite` | Assurance Store file when `AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite` (independent of every other store's file) |
 | `AOC_ENTERPRISE_ASSURANCE_REQUIRED` | `false` | `true` makes the Assurance module `required`: an Assurance Store outage blocks Enterprise readiness. Default: Assurance degrades without blocking `POST /api/governance/evaluate` |
+| `AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS` | unset | ASSURE-REL-01D. Comma-separated built-in frameworks registered besides `aoc.saf@1.0.0`. Only `rn.sv@0.1.0` exists, registered exactly as frozen (`commercialUse: restricted`). An unknown entry refuses Host boot |
+| `AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY` | `false` | ASSURE-REL-01D. `true`: every Assurance write over HTTP requires an Assurance reviewer credential; organization keys and the system context are refused (`401`). Reads unchanged. Set it on a Founding Assessment Host |
 
 ## Module
 
@@ -102,3 +104,53 @@ mechanism as governance reads; non-system callers are bound to their
 organization on every surface (evidence resolution, assessments, findings,
 reviews, signals, state, reassessment). System access is explicit
 (`system: true`) and never the default.
+
+## Operator workflow (ASSURE-REL-01D)
+
+The supported way to run an `rn.sv@0.1.0` assessment against a Host. Every step
+is an HTTP call with an **Assurance reviewer credential** as the bearer
+(governed-action file `assuranceReviewers`, one secret per person, never
+shared). The Host derives the organization, the actor and the roles from that
+credential; nothing in a request body names who acted. Run it only on a private
+network or loopback (see `docs/security/ASSURE-REL-01D-OPERATOR-INTERFACE.md`).
+
+Host prerequisites: `AOC_ENTERPRISE_PERSISTENCE_PROVIDER=sqlite` (a release is
+refused without durable custody), `AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS=rn.sv@0.1.0`,
+`AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY=true`, and at least two reviewer
+credentials -- one `assure.reviewer` (the assessor) and one
+`assure.report-release` (the approver), held by different people.
+
+| Step | Who | Call |
+| --- | --- | --- |
+| 1. Create the assessment | reviewer | `POST /api/assurance/assessments` (`requestedBy` omitted: it is the credential) |
+| 2. Submit the evidence set | reviewer | `POST /api/assurance/assessments/{id}/evidence` `{ manualEvidence }` -- once, from `created` |
+| 3. Evaluate (reviews pending) | reviewer | `POST /api/assurance/assessments/{id}/evaluate` `{ "complete": false }` |
+| 4. Review each control | reviewer | `POST /api/assurance/manual-reviews` (SV-01 ... SV-10, evidence-bound) |
+| 5. Evaluate and complete | reviewer | `POST /api/assurance/assessments/{id}/evaluate` |
+| 6. Draft and inspect | approver | `POST /api/assurance/assessments/{id}/commercial-report/draft` -- read `content.readiness` and the rendered `markdown` |
+| 7. Approve the exact digest | approver | `POST /api/assurance/assessments/{id}/commercial-report/release` with `manifest.contentDigest` and both acknowledgements |
+| 8. Retrieve the kept release | either | `GET /api/assurance/commercial-releases/{reportId}` |
+| 9. Verify what is delivered | either | `POST /api/assurance/commercial-releases/verify`, and the independent `scripts/assurance/verify-commercial-package.mjs` |
+
+Rules the Host enforces:
+
+- **Separation of duties.** A credential that recorded any manual review of the
+  assessment cannot release it (`403`, `reason: separation_of_duties`), even if
+  it holds `assure.report-release`.
+- **Exact approval.** The approved digest must be the one the store produces now
+  (`409`, `reason: approved_digest_stale` otherwise: draft again). The approval
+  date may not be after the report's `issuedOn`.
+- **One release per report version.** The same approver repeating the same
+  release gets the original back (`200`, `replayed`); anything else is `409`.
+- **Concurrent writers.** A write computed from a state another writer changed
+  is refused (`409 ASSURANCE_ASSESSMENT_CONFLICT`, nothing written): read the
+  assessment again before retrying.
+- **Inconclusive attempts.** End them with `POST .../terminate`
+  (`assure.reviewer`); an ended attempt yields no report. Continue with
+  `POST /api/assurance/subjects/{subjectId}/reassess`.
+
+Every operator action writes one `enterprise.assurance.operator` log line
+(`operatorId`, `operation`, `assessmentId` / `reportId`, `httpStatus`,
+`errorCode`); no token, body, evidence or rationale is logged. The durable
+attribution is in the store: the assessment's `provenance.requestedBy`, each
+review's `reviewerId`, the termination record and the release record.
