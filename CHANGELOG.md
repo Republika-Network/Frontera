@@ -4,6 +4,27 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2B3A Host composition foundations (not composed, unreachable)
+- **`createFvBootstrapAuthorityBoundary`:** splits AUTH-03's `{ service, settlementCapability }`.
+  - Authorizers get only bound bootstrap-domain `peek` and `authorize`.
+  - `reconcile()` runs inside with the capability; the capability and the raw store are never exposed.
+  - Custody is checked exactly with `isBootstrapSettlementCapabilityOf`. Only decisions the service knows are reconciled, and `dispose()` is explicit.
+- **`createBootstrapOperationRegistry` (F3):** registers the exact binding and request id before decisions can be consumed, until the operation itself settles (no timer).
+  - Duplicates are refused.
+  - The reconciler's `inFlight` resolves the decision's signed target; unknown means in flight.
+  - It is in memory, which is sound under a single-executor precondition (B3B lease).
+- **Continuity records (`captureHistoryContinuity`, `assessHistoryContinuity`, `openRecordedHistory`):** a Host-held checkpoint of a history's durable content, read through the store's validators via the new internal `storeCheckpointOf`.
+  - The checkpoint holds per-row digests and evidence digests; each handle also checks the file's device and inode against the path (at open and on every checkpoint), not stored in the record.
+  - Only `CONTINUOUS` and `ADVANCED` are admitted.
+  - Every other class is quarantined: `UNEXPLAINED_EVIDENCE`, `MOVED`, `ROLLED_BACK`, `DIVERGED`, `FILE_REPLACED`, `NAMESPACE_MISMATCH`, `SCHEMA_MISMATCH`, `MISSING`, `CORRUPT`, `UNAVAILABLE`, `UNREGISTERED`, `RECORD_INVALID`, `NOT_GENUINE`, `INTENT_UNRESOLVED`.
+  - Assessment opens files read-only.
+- **Durable write-ahead intents (`trackBootstrap`):** every own bootstrap records its intent before it runs, and the record is re-captured after it. A pending intent with no evidence (a crash) quarantines its namespace until an operator ceremony (B3C).
+- **Third adversarial review (R3) corrections:** the gated `authorize` consumes one plain snapshot of the response (a switching getter could consume another binding's decision, High); `refresh()` and tracked bootstraps exclude each other; an intent resolves by the file's exact evidence even when the record already holds it. N6 is now tested deterministically; its ABA residual is documented.
+- **AUTH-03:** new `isBootstrapSettlementCapabilityOf(capability, service)`, an exact custody predicate over the module-private instance.
+- **`createHostHistoryInventory`:** explicit readiness, a configuration generation that never decreases, monotonic snapshot generations, re-assessment on every read and per-namespace quarantine.
+- **`assessRestoreCandidate`:** a staged history is promotable only if it holds everything recorded; never automatic.
+- **Not included:** no composition, PROD-02 store definition, schema change, endpoint or operational bootstrap. See `docs/integration/FV_HOST_COMPOSITION_FOUNDATIONS.md` (B3B, B3C, B6, FV-P4D).
+
 ### Changed — FV-P4C-2B2C reconciler liveness and history inventory integrity (not composed)
 - **F2, reconciler starvation, remediated.**
   - Each run examines at most `maxDecisions` unsettled decisions: a page in commitment order after a rotating cursor, wrapping around. The cursor advances past every examined decision before the page is processed.

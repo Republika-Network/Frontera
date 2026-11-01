@@ -612,7 +612,22 @@ export function createHumanIdentityServiceWithBootstrapSettlement(options: Human
     recordBootstrapAuthoritySettlement: (commitment: string, settlement: BootstrapAuthoritySettlement) => record(settlementCapability, commitment, settlement),
   });
   SETTLEMENT_CAPABILITIES.set(settlementCapability, { instance, revoked: false });
+  SERVICE_INSTANCES.set(service, instance);
   return Object.freeze({ service, settlementCapability });
+}
+
+/** FV-P4C-2B3A: each issued service's instance identity, for the custody check below. Module-private. */
+const SERVICE_INSTANCES = new WeakMap<object, object>();
+
+/**
+ * FV-P4C-2B3A — whether `capability` is the live (unrevoked) settlement capability issued together with
+ * exactly this `service`. Exact: by the module-private instance, never by shape or by listing decisions.
+ * A predicate only; it grants nothing.
+ */
+export function isBootstrapSettlementCapabilityOf(capability: unknown, service: unknown): boolean {
+  const held = typeof capability === 'object' && capability !== null ? SETTLEMENT_CAPABILITIES.get(capability) : undefined;
+  const instance = typeof service === 'object' && service !== null ? SERVICE_INSTANCES.get(service) : undefined;
+  return held !== undefined && !held.revoked && instance !== undefined && held.instance === instance;
 }
 
 function constructHumanIdentityService(options: HumanIdentityServiceOptions): { readonly service: HumanIdentityService; readonly instance: object } {

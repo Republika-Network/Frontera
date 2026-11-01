@@ -101,3 +101,20 @@ export type {
   BootstrapEvidenceHistory,
   BootstrapEvidenceInventorySnapshot,
 } from './authority-settlement.js';
+// FV-P4C-2B3A: Host composition foundations (not composed; see FV_HOST_COMPOSITION_FOUNDATIONS.md). `storeCheckpointOf` stays internal.
+export {
+  HISTORY_CONTINUITY_RECORD_FORMAT,
+  HISTORY_CONTINUITY_SCHEMA,
+  assessHistoryContinuity,
+  assessRestoreCandidate,
+  captureHistoryContinuity,
+  openRecordedHistory,
+  readHistoryContinuityRecord,
+} from './history-continuity.js';
+export type { BootstrapIntent, HistoryContinuityAssessment, HistoryContinuityClass, HistoryContinuityRecord, RestoreCandidateAssessment } from './history-continuity.js';
+export { createBootstrapOperationRegistry } from './operation-registry.js';
+export type { BootstrapOperationRecord, BootstrapOperationRefusal, BootstrapOperationRegistry } from './operation-registry.js';
+export { createHostHistoryInventory } from './host-inventory.js';
+export type { HistoryContinuityRecordPort, HostHistoryConfiguration, HostHistoryInventory, HostInventoryReadiness, HostInventoryStatus, TrackedBootstrapRefusal } from './host-inventory.js';
+export { createFvBootstrapAuthorityBoundary } from './authority-boundary.js';
+export type { BootstrapAuthorityServicePort, FvBootstrapAuthorityBoundary, FvBootstrapAuthorityBoundaryOptions } from './authority-boundary.js';

@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-import { STATUS_HISTORY_BOOTSTRAP_EVIDENCE_SCHEMA, parseStatusHistoryBootstrapEvidence, serializeStatusHistoryBootstrapEvidence } from './bootstrap-contract.js';
+import { STATUS_HISTORY_BOOTSTRAP_EVIDENCE_SCHEMA, bootstrapEvidenceDigest, canonicalJson, parseStatusHistoryBootstrapEvidence, serializeStatusHistoryBootstrapEvidence } from './bootstrap-contract.js';
 import type { StatusHistoryBootstrapEvidence, StatusHistoryBootstrapEvidenceDraft } from './bootstrap-contract.js';
 
 /**
@@ -262,6 +263,8 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
   if (!create && !existsSync(file)) refuse('does not exist at its configured path. It is never recreated implicitly: an empty history would forget every status it saw.');
   if (create && !existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
 
+  // FV-P4C-2B3A (re-review N6): the file's identity before the open, compared with it after validation.
+  const identityBeforeOpen = create ? undefined : fileIdentityOf(file);
   const { default: SqliteDatabase } = await import('better-sqlite3');
   let db: InstanceType<typeof SqliteDatabase>;
   try {
@@ -303,6 +306,13 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
     return refuse('could not be opened.');
   }
 
+  // FV-P4C-2B3A: the file this handle opened, by device and inode, so a file swapped at the path is detectable.
+  // Sampled from the path before the open and after validation: a swap in between is refused (re-review N6).
+  const openedIdentity = fileIdentityOf(file);
+  if (!create && (identityBeforeOpen === undefined || identityBeforeOpen !== openedIdentity)) {
+    db.close();
+    refuse('changed while it was being opened; refusing to open it.');
+  }
   const selectRow = db.prepare(`SELECT ${COLUMNS} FROM sovereign_status_history WHERE sovereign_asset_id = ? AND issuer = ?`).safeIntegers(true);
   const selectCounts = db.prepare('SELECT (SELECT COUNT(*) FROM sovereign_status_history) AS rows_now, created_rows FROM sovereign_status_history_meta WHERE id = 1').safeIntegers(true);
   const insertRow = readOnly
@@ -330,6 +340,11 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
     .prepare(
       "SELECT request_id, sovereign_asset_id, issuer, next_revision, anchored_at, record FROM sovereign_status_bootstrap_evidence WHERE json_extract(record, '$.bindingDigest') = ? ORDER BY sovereign_asset_id, issuer, next_revision",
     )
+    .safeIntegers(true);
+  // FV-P4C-2B3A: the whole durable content, for the Host's continuity checkpoint (provenance only).
+  const selectAllKeys = db.prepare('SELECT sovereign_asset_id, issuer FROM sovereign_status_history ORDER BY sovereign_asset_id, issuer');
+  const selectAllEvidence = db
+    .prepare('SELECT request_id, sovereign_asset_id, issuer, next_revision, anchored_at, record FROM sovereign_status_bootstrap_evidence ORDER BY request_id')
     .safeIntegers(true);
   const insertEvidence = readOnly
     ? undefined
@@ -529,6 +544,33 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
         ),
       );
     },
+    checkpoint(): StoreCheckpoint {
+      ensureOpen();
+      // One read transaction: a consistent view of every validated row and evidence record.
+      return guarded(() =>
+        db.transaction((): StoreCheckpoint => {
+          const counts = selectCounts.get() as { rows_now: bigint; created_rows: bigint } | undefined;
+          if (counts === undefined || counts.rows_now !== counts.created_rows) throw new SovereignStatusHistoryStoreError('INTEGRITY', 'The history row count does not match its record; refusing the history.');
+          const revisions: Array<readonly [string, string, number, string]> = [];
+          for (const row of selectAllKeys.all() as Array<{ sovereign_asset_id: string; issuer: string }>) {
+            const entry = readEntry({ sovereignAssetId: row.sovereign_asset_id, issuer: row.issuer });
+            if (entry === undefined) throw new SovereignStatusHistoryStoreError('INTEGRITY', 'A history row does not validate; refusing the history.');
+            // Review M2: the whole validated row, not its revision alone: two forks at one revision differ here.
+            revisions.push([row.sovereign_asset_id, row.issuer, entry.revision, `sha256:${createHash('sha256').update(`${ROW_DIGEST_DOMAIN}${canonicalJson(entry)}`).digest('hex')}`]);
+          }
+          const evidence: Array<readonly [string, string, string]> = [];
+          for (const row of selectAllEvidence.all() as Array<Record<string, unknown>>) {
+            const decoded = decodeEvidence(row, { sovereignAssetId: row['sovereign_asset_id'] as string, issuer: row['issuer'] as string });
+            if (decoded.requestId !== row['request_id']) throw new SovereignStatusHistoryStoreError('INTEGRITY', 'A bootstrap evidence record does not validate; refusing the history.');
+            evidence.push([decoded.requestId, bootstrapEvidenceDigest(decoded), decoded.bindingDigest]);
+          }
+          const now = fileIdentityOf(file);
+          // Review M3: the path must still name the very file this handle reads.
+          const fileIdentityStable = openedIdentity !== undefined && now !== undefined && now === openedIdentity;
+          return { schemaVersion: SOVEREIGN_STATUS_HISTORY_SCHEMA_VERSION, createdRows: Number(counts.created_rows), revisions, evidence, fileIdentityStable };
+        }).deferred(),
+      );
+    },
   });
   return handle;
 }
@@ -538,6 +580,48 @@ interface StoreProvenance {
   readonly namespace: string;
   readonly file: string;
   readForBinding(bindingDigest: string): readonly StatusHistoryBootstrapEvidence[];
+  checkpoint(): StoreCheckpoint;
+}
+
+/**
+ * FV-P4C-2B3A — the durable content of one history, as the store itself validates it: the schema, the
+ * monotonic row counter, every key's revision and every permanent evidence record's digest. Sorted.
+ */
+export interface StoreCheckpoint {
+  readonly schemaVersion: string;
+  readonly createdRows: number;
+  /** `[sovereignAssetId, issuer, revision, rowDigest]`: the row digest covers the whole validated entry. */
+  readonly revisions: ReadonlyArray<readonly [string, string, number, string]>;
+  /** `[requestId, bootstrapEvidenceDigest, bindingDigest]`. */
+  readonly evidence: ReadonlyArray<readonly [string, string, string]>;
+  /** Whether the configured path still names the file (device and inode) this handle opened. */
+  readonly fileIdentityStable: boolean;
+}
+
+/** The domain of a checkpoint row digest: a change of the entry's shape is a new version, never silent divergence. */
+const ROW_DIGEST_DOMAIN = 'frontera:sovereign-status-history-row:v1\n';
+
+/** `dev:ino` of a path, or `undefined` when it cannot be read or the platform reports no inode. */
+function fileIdentityOf(path: string): string | undefined {
+  try {
+    const stat = statSync(path, { bigint: true });
+    return stat.ino === 0n ? undefined : `${stat.dev}:${stat.ino}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * FV-P4C-2B3A — the checkpoint of a genuine, open store handle for the expected namespace and file, read
+ * through the store's own statements and validators; `undefined` for anything else. Throws the store's
+ * `CLOSED`, `INTEGRITY` or `DATABASE` errors. Module-internal: not exported from the module index.
+ */
+export function storeCheckpointOf(handle: unknown, expected: { readonly namespace: string; readonly databasePath: string }): StoreCheckpoint | undefined {
+  const provenance = typeof handle === 'object' && handle !== null ? PROVENANCE.get(handle) : undefined;
+  if (provenance === undefined || typeof expected !== 'object' || expected === null) return undefined;
+  if (typeof expected.namespace !== 'string' || expected.namespace !== provenance.namespace) return undefined;
+  if (typeof expected.databasePath !== 'string' || expected.databasePath.trim() === '' || resolve(expected.databasePath) !== provenance.file) return undefined;
+  return provenance.checkpoint();
 }
 const PROVENANCE = new WeakMap<object, StoreProvenance>();
 
