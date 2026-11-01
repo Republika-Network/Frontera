@@ -16,7 +16,9 @@ import {
 import {
   BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT,
   BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT,
-  BOOTSTRAP_AUTHORITY_REQUEST_PREFIX,
+  RETIRED_BOOTSTRAP_AUTHORITY_FORMATS,
+  bootstrapAuthorityRequestId,
+  parseBootstrapAuthorityRequestId,
   HUMAN_DECISION_CHALLENGE_FORMAT,
   HUMAN_DECISION_CHALLENGE_MAX_LIFETIME_SECONDS,
   HUMAN_DECISION_EVIDENCE_FORMAT,
@@ -232,7 +234,7 @@ export interface HumanIdentityService {
   /** AUTH-04A: every consumed CORE-05 decision with no recorded outcome, oldest first — what reconciliation reads. Never a bootstrap-authority decision. */
   unsettledDecisions(): readonly HumanDecisionRecord[];
   /** FV-P4C-2B2B: issues a challenge in the bootstrap-authority domain, bound to one FV binding digest and one signed role. */
-  beginBootstrapAuthorityDecision(input: { readonly operatorId: string; readonly bindingDigest: string; readonly role: BootstrapAuthorityRole }): IssuedBootstrapAuthorityChallenge;
+  beginBootstrapAuthorityDecision(input: { readonly operatorId: string; readonly namespace: string; readonly bindingDigest: string; readonly role: BootstrapAuthorityRole }): IssuedBootstrapAuthorityChallenge;
   /** FV-P4C-2B2B: the stored bootstrap-authority contract an assertion answers. Verifies nothing about the assertion; refuses every other domain. */
   peekBootstrapAuthorityDecision(response: unknown): { readonly contract: BootstrapAuthorityChallengeContract; readonly commitment: string };
   /** FV-P4C-2B2B: verifies and consumes a bootstrap-authority decision, exactly as `authorizeDecision` does a CORE-05 one. Refuses every other domain. */
@@ -315,12 +317,15 @@ function evidenceOf(payload: Readonly<Record<string, unknown>>): { readonly doma
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new HumanIdentityError('HUMAN_IDENTITY_STORE_CORRUPT', 'A decision row carries no evidence.');
   const e = value as Readonly<Record<string, unknown>>;
   const verdict = text(e, 'verdict');
+  // FV-P4C-2B2C: a retired bootstrap format is never read, as its own domain or as CORE-05's.
+  if (RETIRED_BOOTSTRAP_AUTHORITY_FORMATS.includes(text(e, 'format'))) throw new HumanIdentityError('HUMAN_IDENTITY_STORE_CORRUPT', 'A decision row is of a retired bootstrap-authority format.');
   // FV-P4C-2B2B: the evidence format fixes the domain, and the domain fixes the verdict vocabulary.
   if (text(e, 'format') === BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT) {
     if (verdict !== 'attest' && verdict !== 'approve') throw new HumanIdentityError('HUMAN_IDENTITY_STORE_CORRUPT', 'A bootstrap-authority decision row has an unknown role.');
     const subjectDigest = text(e, 'subjectDigest');
-    if (!SHA256.test(subjectDigest) || text(e, 'approvalRequestId') !== `${BOOTSTRAP_AUTHORITY_REQUEST_PREFIX}${subjectDigest.slice('sha256:'.length)}`) {
-      throw new HumanIdentityError('HUMAN_IDENTITY_STORE_CORRUPT', 'A bootstrap-authority decision row is not bound to its binding digest.');
+    const target = parseBootstrapAuthorityRequestId(text(e, 'approvalRequestId'));
+    if (!SHA256.test(subjectDigest) || target === undefined || target.bindingDigest !== subjectDigest.slice('sha256:'.length)) {
+      throw new HumanIdentityError('HUMAN_IDENTITY_STORE_CORRUPT', 'A bootstrap-authority decision row is not bound to its namespace and binding digest.');
     }
     return { domain: 'bootstrap-authority', evidence: { ...commonEvidenceOf(e), format: BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT, verdict } };
   }
@@ -1165,13 +1170,20 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     },
 
     beginBootstrapAuthorityDecision(input) {
-      const { operatorId, bindingDigest, role } = input ?? ({} as Partial<typeof input>);
+      const { operatorId, namespace, bindingDigest, role } = input ?? ({} as Partial<typeof input>);
       if (typeof bindingDigest !== 'string' || !HEX64.test(bindingDigest)) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'A bootstrap-authority decision names one FV bootstrap binding digest (lowercase hex SHA-256).');
       if (role !== 'attest' && role !== 'approve') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'A bootstrap-authority role is attest or approve.');
+      // FV-P4C-2B2C: the decision names the one history its bootstrap targets, inside the signed contract.
+      let approvalRequestId: string;
+      try {
+        approvalRequestId = bootstrapAuthorityRequestId(namespace as string, bindingDigest);
+      } catch {
+        throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'A bootstrap-authority decision names one status history namespace.');
+      }
       return issue(operatorId, (id): BootstrapAuthorityChallengeContract => ({
         format: BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT,
         organizationId,
-        approvalRequestId: `${BOOTSTRAP_AUTHORITY_REQUEST_PREFIX}${bindingDigest}`,
+        approvalRequestId,
         subjectDigest: `sha256:${bindingDigest}`,
         verdict: role,
         operatorId: id,

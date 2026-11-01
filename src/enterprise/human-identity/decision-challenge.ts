@@ -154,8 +154,8 @@ export function humanDecisionEvidenceDigest(evidence: HumanDecisionEvidence): st
 // decision and is never read as one:
 //
 // - **Its own format and commitment domain.** `format` is
-//   `frontera.sovereign-status-bootstrap-authority.v1`, and the commitment is
-//   SHA-256 over `frontera:sovereign-status-bootstrap-authority:v1\n` plus the
+//   `frontera.sovereign-status-bootstrap-authority.v2`, and the commitment is
+//   SHA-256 over `frontera:sovereign-status-bootstrap-authority:v2\n` plus the
 //   canonical contract, so no bootstrap commitment equals a CORE-05 one, even
 //   for identical fields. AUTH-03's CORE-05 methods (`peekDecision`,
 //   `authorizeDecision`, `decision`, `unsettledDecisions`,
@@ -165,19 +165,58 @@ export function humanDecisionEvidenceDigest(evidence: HumanDecisionEvidence): st
 //   this bootstrap) or `approve` (an independent approver's authorization).
 //   `reject` does not exist here, and neither role can stand for the other,
 //   because the role is inside the commitment the passkey signs.
-// - **The subject is the FV binding.** `approvalRequestId` is
-//   `frontera.sovereign-status-bootstrap:<bindingDigest>` and `subjectDigest`
-//   is `sha256:<bindingDigest>`, where the binding digest is FV-P4C-2B1's own
-//   (`bootstrapBindingDigest`). It commits to the namespace, asset, issuer,
-//   manifest, status sequence and digest, terms, operation, purpose, request
-//   id, requesting operator and request expiry.
+// - **The subject is the FV binding, in its history.** `approvalRequestId`
+//   is `frontera.sovereign-status-bootstrap.v2:<namespace>:<bindingDigest>`
+//   (the namespace percent-encoded, so it never contains `:`) and
+//   `subjectDigest` is `sha256:<bindingDigest>`, where the binding digest is
+//   FV-P4C-2B1's own (`bootstrapBindingDigest`). It commits to the namespace,
+//   asset, issuer, manifest, status sequence and digest, terms, operation,
+//   purpose, request id, requesting operator and request expiry.
+// - **v2 (FV-P4C-2B2C, R5).** The signed request id names the status history
+//   namespace the bootstrap targets, so whether a bootstrap committed can be
+//   decided from that one history, never from an inventory's claim to be
+//   complete. v1 (the pre-release FV-P4C-2B2B format, never composed by any
+//   Host) named only the digest. It is retired: a store holding a v1
+//   bootstrap row is refused as corrupt, never read as another domain.
 
-export const BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT = 'frontera.sovereign-status-bootstrap-authority.v1';
-export const BOOTSTRAP_AUTHORITY_CHALLENGE_DOMAIN = 'frontera:sovereign-status-bootstrap-authority:v1\n';
-export const BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT = 'frontera.sovereign-status-bootstrap-authority-evidence.v1';
-export const BOOTSTRAP_AUTHORITY_EVIDENCE_DOMAIN = 'frontera:sovereign-status-bootstrap-authority-evidence:v1\n';
+export const BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT = 'frontera.sovereign-status-bootstrap-authority.v2';
+export const BOOTSTRAP_AUTHORITY_CHALLENGE_DOMAIN = 'frontera:sovereign-status-bootstrap-authority:v2\n';
+export const BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT = 'frontera.sovereign-status-bootstrap-authority-evidence.v2';
+export const BOOTSTRAP_AUTHORITY_EVIDENCE_DOMAIN = 'frontera:sovereign-status-bootstrap-authority-evidence:v2\n';
 /** The `approvalRequestId` namespace of the bootstrap domain; never a CORE-05 request id. */
-export const BOOTSTRAP_AUTHORITY_REQUEST_PREFIX = 'frontera.sovereign-status-bootstrap:';
+export const BOOTSTRAP_AUTHORITY_REQUEST_PREFIX = 'frontera.sovereign-status-bootstrap.v2:';
+/** FV-P4C-2B2C: the retired v1 challenge and evidence formats. Never issued, never read: a row in either is corrupt. */
+export const RETIRED_BOOTSTRAP_AUTHORITY_FORMATS: readonly string[] = Object.freeze(['frontera.sovereign-status-bootstrap-authority.v1', 'frontera.sovereign-status-bootstrap-authority-evidence.v1']);
+/** The longest status history namespace a bootstrap decision may name (FV's own bound). */
+export const BOOTSTRAP_AUTHORITY_MAX_NAMESPACE_LENGTH = 256;
+
+/** A status history namespace as FV defines one: non-empty, untrimmed-free, no control characters, bounded. */
+function isBootstrapNamespace(value: unknown): value is string {
+  return typeof value === 'string' && value !== '' && value.trim() === value && value.length <= BOOTSTRAP_AUTHORITY_MAX_NAMESPACE_LENGTH && !/[\u0000-\u001f]/.test(value);
+}
+
+/** `frontera.sovereign-status-bootstrap.v2:<encodeURIComponent(namespace)>:<bindingDigest>`. Throws on a malformed namespace or digest. */
+export function bootstrapAuthorityRequestId(namespace: string, bindingDigest: string): string {
+  if (!isBootstrapNamespace(namespace)) throw new TypeError('A bootstrap decision names one status history namespace.');
+  if (typeof bindingDigest !== 'string' || !/^[0-9a-f]{64}$/.test(bindingDigest)) throw new TypeError('A bootstrap binding digest is lowercase hex SHA-256.');
+  return `${BOOTSTRAP_AUTHORITY_REQUEST_PREFIX}${encodeURIComponent(namespace)}:${bindingDigest}`;
+}
+
+/** The namespace and binding digest of a v2 bootstrap request id, only in its one canonical spelling; `undefined` for anything else. */
+export function parseBootstrapAuthorityRequestId(value: unknown): { readonly namespace: string; readonly bindingDigest: string } | undefined {
+  if (typeof value !== 'string' || !value.startsWith(BOOTSTRAP_AUTHORITY_REQUEST_PREFIX)) return undefined;
+  const match = /^([^:]+):([0-9a-f]{64})$/.exec(value.slice(BOOTSTRAP_AUTHORITY_REQUEST_PREFIX.length));
+  if (match === null) return undefined;
+  let namespace: string;
+  try {
+    namespace = decodeURIComponent(match[1]!);
+  } catch {
+    return undefined;
+  }
+  // One spelling per namespace: an alternative encoding of the same namespace is refused, not normalized.
+  if (!isBootstrapNamespace(namespace) || encodeURIComponent(namespace) !== match[1]) return undefined;
+  return { namespace, bindingDigest: match[2]! };
+}
 
 /** The signed role of a bootstrap-authority decision. Closed. */
 export type BootstrapAuthorityRole = 'attest' | 'approve';

@@ -55,6 +55,8 @@ export {
   BOOTSTRAP_HUMAN_DECISION_ROLES,
   bootstrapAuthorityDecisionInput,
   bootstrapHumanDecisionInputs,
+  bootstrapHumanDecisionRequestId,
+  parseBootstrapHumanDecisionRequestId,
   createHumanDecisionBootstrapAuthorizer,
   parseBootstrapAuthorityRef,
 } from './human-decision-authorizer.js';
@@ -84,15 +86,18 @@ export {
   BOOTSTRAP_AUTHORITY_RECONCILER,
   BOOTSTRAP_AUTHORITY_SETTLEMENT_MAX_DECISIONS,
   BOOTSTRAP_AUTHORITY_SETTLEMENT_MAX_GRACE_SECONDS,
+  BOOTSTRAP_EVIDENCE_INVENTORY_MAX_HISTORIES,
   createBootstrapAuthorityReconciler,
 } from './authority-settlement.js';
 export type {
   BootstrapAuthorityConflictReason,
   BootstrapAuthorityReconciler,
   BootstrapAuthorityReconcilerOptions,
+  BootstrapAuthorityReconcilerProgress,
   BootstrapAuthorityReconciliationEntry,
   BootstrapAuthoritySettlementPort,
   BootstrapAuthoritySettlementRecord,
   BootstrapAuthorityUnresolvedReason,
   BootstrapEvidenceHistory,
+  BootstrapEvidenceInventorySnapshot,
 } from './authority-settlement.js';

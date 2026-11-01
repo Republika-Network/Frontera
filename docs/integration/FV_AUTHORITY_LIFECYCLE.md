@@ -37,16 +37,23 @@ A second AUTH-03 decision domain, beside CORE-05's, in `human-identity/decision-
 
 | | CORE-05 domain (unchanged) | Bootstrap-authority domain (new) |
 |---|---|---|
-| `format` | `frontera.human-decision-challenge.v1` | `frontera.sovereign-status-bootstrap-authority.v1` |
-| Commitment domain | `frontera:human-decision-challenge:v1\n` | `frontera:sovereign-status-bootstrap-authority:v1\n` |
-| Evidence format / digest domain | `frontera.human-decision-evidence.v1` / none | `frontera.sovereign-status-bootstrap-authority-evidence.v1` / `frontera:sovereign-status-bootstrap-authority-evidence:v1\n` |
+| `format` | `frontera.human-decision-challenge.v1` | `frontera.sovereign-status-bootstrap-authority.v2` (v1 retired, FV-P4C-2B2C) |
+| Commitment domain | `frontera:human-decision-challenge:v1\n` | `frontera:sovereign-status-bootstrap-authority:v2\n` |
+| Evidence format / digest domain | `frontera.human-decision-evidence.v1` / none | `frontera.sovereign-status-bootstrap-authority-evidence.v2` / `frontera:sovereign-status-bootstrap-authority-evidence:v2\n` |
 | `verdict` | `approve` \| `reject` | the signed **role**: `attest` \| `approve` |
-| `approvalRequestId` | a CORE-05 request id | `frontera.sovereign-status-bootstrap:<bindingDigest>` |
+| `approvalRequestId` | a CORE-05 request id | `frontera.sovereign-status-bootstrap.v2:<percent-encoded namespace>:<bindingDigest>` |
 | `subjectDigest` | a CORE-05 subject digest | `sha256:<bindingDigest>` |
 | AUTH-03 methods | `beginDecision`, `peekDecision`, `authorizeDecision`, `recordDecisionOutcome`, `decision`, `unsettledDecisions` | `beginBootstrapAuthorityDecision`, `peekBootstrapAuthorityDecision`, `authorizeBootstrapAuthorityDecision`, `recordBootstrapAuthoritySettlement`, `bootstrapAuthorityDecision`, `unsettledBootstrapAuthorityDecisions` |
 
-The name follows AUTH-03's `.v1` convention rather than FV's `/1` because it is an AUTH-03 contract
+The name follows AUTH-03's `.vN` convention rather than FV's `/1` because it is an AUTH-03 contract
 format. Identical fields commit to different values in the two domains (tested).
+
+**v2 (FV-P4C-2B2C).** The request id now names the status history namespace the bootstrap targets,
+inside the signed contract, so the reconciler can tell which one history must hold the evidence
+(`FV_RECONCILER_LIVENESS.md` §3). v1 named only the digest. It was never composed by any Host and is
+retired: a signed v1 decision row is store corruption, and an unsigned v1 challenge row is inert; neither is ever read as either domain. The
+`authorityRef` format (`frontera.sovereign-status-bootstrap-authority.v1:…`, an FV evidence field)
+is unchanged.
 
 **What is bound.** The organization (AUTH-03's own, never a caller's), the signed role, the operator,
 a 256-bit nonce, a validity window of at most 120 s, and the FV-P4C-2B1 **binding digest**
@@ -167,14 +174,18 @@ a second provisioner) is a governance decision, not made here.
 | 5 evidence verified | reconciler | the evidence record validates and names this commitment in its role |
 | 6 settled | `decision_outcome` row (bootstrap kind) | `bootstrap-committed`, citing the evidence digest, request id and transition; or `bootstrap-not-committed` with a closed code |
 
-**The reconciler** is `createBootstrapAuthorityReconciler`. For each unsettled bootstrap decision,
-oldest first and at most `maxDecisions` per run:
+**The reconciler** is `createBootstrapAuthorityReconciler`. For each unsettled bootstrap decision
+in the run's page (at most `maxDecisions`, in commitment order after a rotating cursor:
+`FV_RECONCILER_LIVENESS.md` §2):
 
 | Situation | Result | Write |
 |---|---|---|
 | Not a well-formed consumed decision of this domain and organization (another format, an `external: true` record, a role mismatch) | conflict `DECISION_MALFORMED` | none |
 | In flight in this process (Host registry) | unresolved `IN_FLIGHT` | none |
-| Any history store unreadable | unresolved `HISTORY_UNAVAILABLE`; never treated as "no evidence" | none |
+| Inventory not loaded, unavailable, malformed, untrusted, duplicated, stale or changed (FV-P4C-2B2C) | unresolved `INVENTORY_*` | none |
+| Any history store unreadable, or its evidence corrupt | unresolved `HISTORY_UNAVAILABLE` / `HISTORY_CORRUPT`; never treated as "no evidence" | none |
+| No evidence, and the decision's own namespace is not in the inventory (FV-P4C-2B2C) | unresolved `HISTORY_NOT_IN_INVENTORY` | none |
+| The listing names one commitment twice (FV-P4C-2B2C) | conflict `DECISION_DUPLICATE` | none |
 | More than one evidence record for the binding | conflict `MULTIPLE_EVIDENCE` | none |
 | Evidence names this commitment in the **other** role, or another operator for the requester | conflict `EVIDENCE_CONTRADICTS_DECISION` | none |
 | Evidence names this commitment in its role | `bootstrap-committed` | one settlement row |
@@ -340,9 +351,11 @@ against the real AUTH-03 and real SQLite.
   not-committed is still undetected (F3).
 - **R4, Low: an unsafe default.** The reconciler's `inFlight` registry is now required; there is no
   "nothing is in flight" default.
-- **R5, Low, open: the history list is not checked for completeness.** If the Host leaves a
-  namespace's store out of `histories`, that namespace's committed bootstraps settle as not committed
-  (a false failure, never a false success). This is config trust for B3.
+- **R5, Low: the history list is not checked for completeness.** If the Host left a namespace's
+  store out of `histories`, that namespace's committed bootstraps settled as not committed (a false
+  failure, never a false success). **Remediated in FV-P4C-2B2C**: the signed decision names its
+  namespace, and absence is believed only from that namespace's present, genuine history
+  (`FV_RECONCILER_LIVENESS.md` §3).
 - **Info.** Permissions are namespace-wide; the binding digest is format-checked only. Kernel-Authority's
   resolver weighs only an actor's first grant for an action, so a second, wider grant of the same
   action is ignored. That is a pre-existing false deny, and it fails closed.
@@ -356,6 +369,8 @@ with `maxDecisions = 2` blocked a valid one on every run. The effect is availabi
 settlement results. CORE-05 is unaffected.
 - **Remediation:** skip decisions that are known to be stuck, or keep a cursor so that each run makes
   progress past them, and report them for operator investigation.
+- **Remediated in FV-P4C-2B2C** with a rotating commitment-order cursor (`FV_RECONCILER_LIVENESS.md` §2).
+  The original two-stuck-ahead-of-one-valid, `maxDecisions = 2` case is the acceptance test.
 
 **F3 — MEDIUM. Grace race.** A coordinator call that stalls past `graceSeconds` without being
 registered as in flight can be settled `NO_BOOTSTRAP_EVIDENCE` and then commit. It is detected and

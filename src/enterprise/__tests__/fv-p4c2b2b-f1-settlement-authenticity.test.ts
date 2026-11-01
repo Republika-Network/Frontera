@@ -131,12 +131,12 @@ function binding(): { binding: StatusHistoryBootstrapBinding; digest: string } {
   return { binding: b, digest: bootstrapBindingDigest(b) };
 }
 
-const decide = (w: World, operatorId: string, digest: string, role: 'requester' | 'approver'): unknown =>
-  w.devices[operatorId]!.assert(w.service.beginBootstrapAuthorityDecision({ operatorId, ...bootstrapAuthorityDecisionInput(digest, role) }).options);
+const decide = (w: World, operatorId: string, binding: StatusHistoryBootstrapBinding, role: 'requester' | 'approver'): unknown =>
+  w.devices[operatorId]!.assert(w.service.beginBootstrapAuthorityDecision({ operatorId, ...bootstrapAuthorityDecisionInput(binding, role) }).options);
 
 /** Both decisions consumed by the real authorizer: what the coordinator leaves after step 3, whatever follows. */
 async function consumedPair(w: World, b: { binding: StatusHistoryBootstrapBinding; digest: string }, approverId = 'approver-b') {
-  const authorizer = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions: allow, requesterResponse: decide(w, 'requester-a', b.digest, 'requester'), approverResponse: decide(w, approverId, b.digest, 'approver') });
+  const authorizer = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions: allow, requesterResponse: decide(w, 'requester-a', b.binding, 'requester'), approverResponse: decide(w, approverId, b.binding, 'approver') });
   const result = (await authorizer.authorizeStatusHistoryBootstrap(b.binding, b.digest)) as { outcome: string; authorityRef: string };
   assert.equal(result.outcome, 'authorized');
   const ref = parseBootstrapAuthorityRef(result.authorityRef)!;
@@ -296,9 +296,9 @@ describe('FV-P4C-2B2B-F1 path 2 — a reconciler only believes a genuine history
     db.prepare("UPDATE sovereign_status_bootstrap_evidence SET record = json_set(record, '$.next.statusDigest', ?) WHERE request_id = ?").run('d'.repeat(64), b.binding.requestId);
     db.exec("CREATE TRIGGER sovereign_status_bootstrap_evidence_never_updated BEFORE UPDATE ON sovereign_status_bootstrap_evidence BEGIN SELECT RAISE(ABORT, 'bootstrap evidence is permanent'); END;");
     db.close();
-    assert.deepEqual(summary(await reconcilerOf(w).reconcile()), [['unresolved', 'HISTORY_UNAVAILABLE'], ['unresolved', 'HISTORY_UNAVAILABLE']]);
+    assert.deepEqual(summary(await reconcilerOf(w).reconcile()), [['unresolved', 'HISTORY_CORRUPT'], ['unresolved', 'HISTORY_CORRUPT']]);
     w.clock.advance(GRACE + 1);
-    assert.deepEqual(summary(await reconcilerOf(w).reconcile()), [['unresolved', 'HISTORY_UNAVAILABLE'], ['unresolved', 'HISTORY_UNAVAILABLE']], 'corruption is never "no evidence"');
+    assert.deepEqual(summary(await reconcilerOf(w).reconcile()), [['unresolved', 'HISTORY_CORRUPT'], ['unresolved', 'HISTORY_CORRUPT']], 'corruption is never "no evidence"');
     noFalseSuccess(w, pair);
     assert.deepEqual(readdirSync(w.dir).filter((name) => name.startsWith('history') && !name.startsWith('history.sqlite')), [], 'no replacement history was created');
   });
@@ -417,7 +417,7 @@ describe('FV-P4C-2B2B-F1 — the legitimate path, replay, restart, CORE-05 and r
   it('partial failures stay truthful: requester-only and source/commit failures settle as NOT committed, never committed', async () => {
     const w = await world();
     const lone = binding();
-    await w.service.authorizeBootstrapAuthorityDecision(decide(w, 'requester-a', lone.digest, 'requester'));
+    await w.service.authorizeBootstrapAuthorityDecision(decide(w, 'requester-a', lone.binding, 'requester'));
     await consumedPair(w, binding()); // both consumed, the bootstrap then failed (no evidence)
     w.clock.advance(GRACE + 1);
     const entries = await reconcilerOf(w).reconcile();

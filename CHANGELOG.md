@@ -4,6 +4,39 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Changed — FV-P4C-2B2C reconciler liveness and history inventory integrity (not composed)
+- **F2, reconciler starvation, remediated.**
+  - Each run examines at most `maxDecisions` unsettled decisions: a page in commitment order after a rotating cursor, wrapping around. The cursor advances past every examined decision before the page is processed.
+  - A new reconciler with no durable cursor starts at a uniformly random position.
+  - New optional `progress: { load, save }` (B3), a position hint only.
+  - Stuck decisions are re-reported every revolution, never settled, and never hide newer ones.
+  - A listing that names one commitment twice yields conflict `DECISION_DUPLICATE`.
+- **R5, inventory integrity, remediated.**
+  - The AUTH-03 bootstrap-authority format is now **v2**: `approvalRequestId = frontera.sovereign-status-bootstrap.v2:<percent-encoded namespace>:<bindingDigest>`.
+  - `beginBootstrapAuthorityDecision` and `bootstrapAuthorityDecisionInput` take the namespace (FV builds it from the binding), and the FV authorizer requires it.
+  - `NO_BOOTSTRAP_EVIDENCE` is recorded only from the decision's own namespace history, present and genuine in an unchanged inventory snapshot. Otherwise the decision stays unresolved, with a distinct reason (`HISTORY_NOT_IN_INVENTORY`, `INVENTORY_*`, `HISTORY_CORRUPT`).
+  - New `inventory: () => { generation, histories } | undefined` provider, beside the fixed `histories`. The snapshot has a closed shape, so no completeness flag is believed. Generations must not decrease and must not be reused.
+- **Breaking for the non-operational bootstrap domain only.**
+  - The v1 bootstrap formats are retired. A signed v1 decision row is store corruption; an unsigned v1 challenge row is inert. Neither is ever read as a CORE-05 decision.
+  - v1 was never composed by any Host.
+  - CORE-05 formats, commitments and reconciliation are unchanged.
+- **Hardening:** `inFlight` is fail-safe. Only exactly `false` means "not in flight"; any other answer, or a throw, is in flight.
+- **Review fixes** (separate review agent; no human review yet):
+  - an in-process namespace→file pin (`INVENTORY_HISTORY_MOVED`);
+  - only the decision's own history is read;
+  - per-decision fault containment;
+  - a 5 s bound on the progress port;
+  - commitment re-binding;
+  - a bounded inventory copy.
+  - Residual (Medium): a remap across restarts is a B3 precondition.
+- **Re-review fixes:**
+  - a retired-format *challenge* row (unsigned table) is inert, not store corruption;
+  - a namespace move refuses only that namespace, and the pin never follows it;
+  - getter faults are contained at grouping.
+- **Tests:** `fv-p4c2b2c-reconciler-liveness.test.ts` (new): real AUTH-03, real SQLite histories, the real FV authorizer; F2, R5 and the retired format. Existing 2B2B suites were updated for v2 and order-independent results, with no assertion weakened.
+- **Docs:** `docs/integration/FV_RECONCILER_LIVENESS.md` (new); `FV_AUTHORITY_LIFECYCLE.md` and `FV_HOST_AUTHORITY_INTEGRATION.md` updated.
+- **Still open:** F3 (needs B3 in-flight registration), B3, B6, FV-P4D (whole-file rollback). No endpoint, CLI, composition, schema change or operational bootstrap.
+
 ### Added — FV-P4C-2B2B authority lifecycle and permission integration (not composed)
 - **B2, a dedicated AUTH-03 domain.** `frontera.sovereign-status-bootstrap-authority.v1`, with its own commitment and evidence digest domains, bound to the FV-P4C-2B1 binding digest.
   - New AUTH-03 methods: `beginBootstrapAuthorityDecision`, `peekBootstrapAuthorityDecision`, `authorizeBootstrapAuthorityDecision`, `recordBootstrapAuthoritySettlement`, `bootstrapAuthorityDecision`, `unsettledBootstrapAuthorityDecisions`.

@@ -16,7 +16,7 @@ import {
 } from '../authority-state-freshness/session.js';
 import { HUMAN_IDENTITY_RECORD_KINDS, humanIdentityGenesisDigest, humanIdentityRowDigest, nextHumanIdentityChainDigest, type HumanIdentityRecordKind, type HumanIdentityRowContent, type HumanIdentityStateCommitment, type StoredHumanIdentityRow } from './chain.js';
 import { HUMAN_IDENTITY_STORE_SCHEMA_VERSION, HumanIdentityError } from './contracts.js';
-import { BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT, type BootstrapAuthorityChallengeContract, type HumanDecisionChallengeContract } from './decision-challenge.js';
+import { BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT, RETIRED_BOOTSTRAP_AUTHORITY_FORMATS, type BootstrapAuthorityChallengeContract, type HumanDecisionChallengeContract } from './decision-challenge.js';
 
 /**
  * The durable, **authenticated** human identity store (AUTH-02, signed by AUTH-03).
@@ -466,8 +466,11 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
 
   const toDecisionChallenge = (row: DecisionChallengeRow): StoredDecisionChallenge => {
     // FV-P4C-2B2B: `attest` exists only in the bootstrap-authority domain; `reject` only in CORE-05's.
+    // FV-P4C-2B2C: a retired bootstrap format is inert. This table is not chained, so the row is returned as it is and
+    // every reader refuses it by format (no domain issues or recomputes it), rather than one unsigned row failing the store.
+    const retired = RETIRED_BOOTSTRAP_AUTHORITY_FORMATS.includes(row.format);
     const bootstrap = row.format === BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT;
-    if (bootstrap ? row.verdict !== 'attest' && row.verdict !== 'approve' : row.verdict !== 'approve' && row.verdict !== 'reject') corrupt('A decision challenge has an unknown verdict.');
+    if (!retired && (bootstrap ? row.verdict !== 'attest' && row.verdict !== 'approve' : row.verdict !== 'approve' && row.verdict !== 'reject')) corrupt('A decision challenge has an unknown verdict.');
     return {
       challenge: row.challenge,
       contract: {

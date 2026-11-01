@@ -62,7 +62,8 @@ All of the following were read, not changed.
 One authorizer authorizes one bootstrap, from two passkey decisions the Host collected for it.
 - **Binding.** The binding digest must be the coordinator's own SHA-256 over the 2B1 binding
   (`bootstrapBindingDigest`); there is no second algorithm. Each AUTH-03 decision must have:
-  - `approvalRequestId = 'frontera.sovereign-status-bootstrap:<bindingDigest>'`, which is never a
+  - `approvalRequestId = 'frontera.sovereign-status-bootstrap.v2:<percent-encoded namespace>:<bindingDigest>'`
+    (FV-P4C-2B2C; v1 named only the digest and is retired), which is never a
     CORE-05 request id;
   - `subjectDigest = 'sha256:<bindingDigest>'`;
   - `verdict = 'approve'`;
