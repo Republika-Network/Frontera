@@ -65,6 +65,7 @@ import { createAgentPassportModule } from '../modules/passport-module.js';
 import { createAssuranceModule } from '../modules/assurance-module.js';
 import { createAssuranceFrameworkRegistry, type AssuranceFrameworkRegistry } from '../assurance/framework-registry.js';
 import { AOC_SAF_FRAMEWORK_V1 } from '../assurance/saf-framework.js';
+import { RN_SV_FRAMEWORK_V0_1 } from '../assurance/frameworks/rn-sv-framework.js';
 import { createInMemoryAssuranceStore } from '../assurance/in-memory-assurance-store.js';
 import { createSqliteAssuranceStore } from '../assurance/sqlite-assurance-store.js';
 import type { AssuranceStore } from '../assurance/assurance-store.js';
@@ -2579,6 +2580,16 @@ async function composeEnterprise(options: CreateEnterpriseOptions, opened: (() =
   const assuranceFrameworkRegistry = createAssuranceFrameworkRegistry();
   assuranceFrameworkRegistry.register(AOC_SAF_FRAMEWORK_V1);
   for (const framework of options.assuranceFrameworks ?? []) assuranceFrameworkRegistry.register(framework);
+  // ASSURE-REL-01D: built-in frameworks the configuration opts into, registered
+  // exactly as frozen (an embedder that already passed the same definition is
+  // not asked to register it twice).
+  const optionalFrameworks: Readonly<Record<string, AssuranceFramework>> = { 'rn.sv@0.1.0': RN_SV_FRAMEWORK_V0_1 };
+  for (const name of configuration.assurance.frameworks ?? []) {
+    const framework = optionalFrameworks[name];
+    if (framework !== undefined && assuranceFrameworkRegistry.get(framework.frameworkId, framework.frameworkVersion) === undefined) {
+      assuranceFrameworkRegistry.register(framework);
+    }
+  }
   for (const framework of assuranceFrameworkRegistry.list()) {
     const definition = assuranceFrameworkRegistry.get(framework.frameworkId, framework.frameworkVersion);
     if (definition !== undefined) {

@@ -79,6 +79,8 @@ export type EnterpriseHttpErrorCode =
   | 'ASSURANCE_ASSESSMENT_NOT_FOUND'
   | 'ASSURANCE_ASSESSMENT_IMMUTABLE'
   | 'ASSURANCE_ASSESSMENT_CONFLICT'
+  /** ASSURE-REL-01D: no release kept for that report version within the caller's organization (also when it is another organization's). */
+  | 'ASSURANCE_RELEASE_NOT_FOUND'
   | 'ASSURANCE_ASSESSMENT_INCOMPLETE'
   | 'ASSURANCE_FINDING_NOT_FOUND'
   | 'ASSURANCE_INVALID_FINDING_TRANSITION'
@@ -271,6 +273,11 @@ export function mapAssuranceErrorToHttp(error: AssuranceError): EnterpriseHttpEr
     case 'ASSURANCE_ELIGIBILITY_NOT_SATISFIED':
       return new EnterpriseHttpError(422, error.code, error.message, undefined, extra);
     case 'ASSURANCE_INTEGRITY_FAILED':
+      // ASSURE-REL-01D: the one caller-side integrity refusal -- a release that
+      // approves a digest the store no longer produces. The request is stale,
+      // the Host is not failing: 409, so the approver re-reads the draft.
+      if (error.details?.['reason'] === 'approved_digest_stale') return new EnterpriseHttpError(409, error.code, error.message, undefined, extra);
+      return new EnterpriseHttpError(500, error.code, error.message, undefined, extra);
     case 'ASSURANCE_CONTROL_EVALUATION_FAILED':
       return new EnterpriseHttpError(500, error.code, error.message, undefined, extra);
     case 'ASSURANCE_STORE_UNAVAILABLE':

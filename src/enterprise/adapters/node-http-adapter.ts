@@ -21,13 +21,26 @@ import {
 import { isAgentPassportError } from '../passport/errors.js';
 import { isAssuranceError } from '../assurance/errors.js';
 import {
+  validateCommercialReleasePackageBody,
+  validateCommercialReleaseRequestBody,
+  validateCommercialReportRequestBody,
   validateCreateAssessmentRequestBody,
   validateEvaluateAssessmentRequestBody,
+  validateEvidenceSubmissionRequestBody,
   validateFindingEventRequestBody,
   validateManualReviewRequestBody,
   validateReassessRequestBody,
   validateSignalRequestBody,
+  validateTerminationRequestBody,
 } from '../api/assurance-contract.js';
+import {
+  ASSURANCE_OPERATOR_RELEASE_ROLE,
+  ASSURANCE_OPERATOR_REVIEWER_ROLE,
+  requireAssuranceReviewer,
+  resolveAssuranceCaller,
+  type AssuranceCaller,
+} from '../api/assurance-operator-access.js';
+import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
 import { GOVERNANCE_EVALUATE_AMOUNT_LOCATION, GOVERNED_ACTION_AMOUNT_LOCATION, parseJsonWithExactMonetaryNumber } from '../api/exact-monetary-json.js';
 import { ADMIN_MAX_BODY_BYTES } from '../authority-administration/contracts.js';
 import { currentReleaseIdentity } from '../host/release-identity.js';
@@ -95,7 +108,7 @@ function writeJson(res: ServerResponse, statusCode: number, body: unknown, heade
   res.end(payload);
 }
 
-function writeError(res: ServerResponse, error: unknown, enterprise: AocEnterprise, route: string): void {
+function writeError(res: ServerResponse, error: unknown, enterprise: AocEnterprise, route: string, headers: Readonly<Record<string, string>> = {}): void {
   const httpError =
     error instanceof EnterpriseHttpError
       ? error
@@ -107,18 +120,168 @@ function writeError(res: ServerResponse, error: unknown, enterprise: AocEnterpri
             ? mapAssuranceErrorToHttp(error)
             : undefined;
   if (httpError !== undefined) {
-    writeJson(res, httpError.httpStatus, {
-      error: {
-        code: httpError.code,
-        message: httpError.message,
-        ...(httpError.details !== undefined ? { details: httpError.details } : {}),
-        ...(httpError.extra ?? {}),
+    writeJson(
+      res,
+      httpError.httpStatus,
+      {
+        error: {
+          code: httpError.code,
+          message: httpError.message,
+          ...(httpError.details !== undefined ? { details: httpError.details } : {}),
+          ...(httpError.extra ?? {}),
+        },
       },
-    });
+      headers,
+    );
     return;
   }
   enterprise.logger.error('enterprise.http.unhandled_error', { route });
-  writeJson(res, 500, { error: { code: 'INFRASTRUCTURE_FAILURE', message: 'An unexpected Enterprise Host failure occurred.' } });
+  writeJson(res, 500, { error: { code: 'INFRASTRUCTURE_FAILURE', message: 'An unexpected Enterprise Host failure occurred.' } }, headers);
+}
+
+/** ASSURE-REL-01D: every Assurance operator response, success or error, is not to be cached. */
+const NO_STORE: Readonly<Record<string, string>> = { 'cache-control': 'no-store', pragma: 'no-cache' };
+
+/**
+ * ASSURE-REL-01D: the body of an Assurance operator request, read only after
+ * the caller is authenticated and authorized. JSON only (415 otherwise) and
+ * within the general request bound (an evidence set or a delivered package can
+ * exceed the small administration bound).
+ */
+function assuranceJsonBody(req: IncomingMessage): Promise<unknown> {
+  const contentType = req.headers['content-type'];
+  if (typeof contentType !== 'string' || !JSON_CONTENT_TYPE.test(contentType)) {
+    return Promise.reject(new EnterpriseHttpError(415, 'INVALID_REQUEST', 'Assurance operator requests must be sent as application/json.'));
+  }
+  return readRequestBody(req);
+}
+
+type AssuranceOperatorRoute =
+  | { readonly kind: 'evidence' | 'terminate' | 'draft' | 'release' | 'releases'; readonly assessmentId: string }
+  | { readonly kind: 'release-read'; readonly reportId: string }
+  | { readonly kind: 'verify' };
+
+/** ASSURE-REL-01D: the operator routes. Each one requires an Assurance reviewer credential and nothing else. */
+function matchAssuranceOperatorRoute(method: string, url: URL): AssuranceOperatorRoute | undefined {
+  const { pathname } = url;
+  if (method === 'POST') {
+    const lifecycle = /^\/api\/assurance\/assessments\/([^/]+)\/(evidence|terminate)$/.exec(pathname);
+    if (lifecycle?.[1] !== undefined && lifecycle[2] !== undefined) return { kind: lifecycle[2] as 'evidence' | 'terminate', assessmentId: decodeURIComponent(lifecycle[1]) };
+    const report = /^\/api\/assurance\/assessments\/([^/]+)\/commercial-report\/(draft|release)$/.exec(pathname);
+    if (report?.[1] !== undefined && report[2] !== undefined) return { kind: report[2] as 'draft' | 'release', assessmentId: decodeURIComponent(report[1]) };
+    if (url.pathname === '/api/assurance/commercial-releases/verify') return { kind: 'verify' };
+  }
+  if (method === 'GET') {
+    const list = /^\/api\/assurance\/assessments\/([^/]+)\/commercial-releases$/.exec(pathname);
+    if (list?.[1] !== undefined) return { kind: 'releases', assessmentId: decodeURIComponent(list[1]) };
+    const read = /^\/api\/assurance\/commercial-releases\/([^/]+)$/.exec(pathname);
+    if (read?.[1] !== undefined) return { kind: 'release-read', reportId: decodeURIComponent(read[1]) };
+  }
+  return undefined;
+}
+
+/** The roles an operator route admits before its body is read (the service re-checks the roles it owns). */
+function operatorRouteRoles(kind: AssuranceOperatorRoute['kind']): readonly string[] {
+  if (kind === 'release') return [ASSURANCE_OPERATOR_RELEASE_ROLE];
+  if (kind === 'evidence' || kind === 'terminate') return [ASSURANCE_OPERATOR_REVIEWER_ROLE];
+  return [ASSURANCE_OPERATOR_REVIEWER_ROLE, ASSURANCE_OPERATOR_RELEASE_ROLE];
+}
+
+/**
+ * ASSURE-REL-01D: one audit line per authenticated Assurance operator action --
+ * who, what, on which assessment or report, and how it ended. Identifiers and
+ * codes only: never a token, a body, evidence or report content.
+ */
+function auditAssuranceOperation(
+  logger: EnterpriseLogger,
+  fields: { readonly operatorId?: string; readonly operation: string; readonly assessmentId?: string; readonly reportId?: string; readonly httpStatus: number; readonly errorCode?: string },
+): void {
+  logger.info('enterprise.assurance.operator', {
+    ...(fields.operatorId !== undefined ? { operatorId: fields.operatorId } : {}),
+    operation: fields.operation,
+    ...(fields.assessmentId !== undefined ? { assessmentId: fields.assessmentId.slice(0, 128) } : {}),
+    ...(fields.reportId !== undefined ? { reportId: fields.reportId.slice(0, 128) } : {}),
+    httpStatus: fields.httpStatus,
+    ...(fields.errorCode !== undefined ? { errorCode: fields.errorCode } : {}),
+  });
+}
+
+function errorStatus(error: unknown): { readonly httpStatus: number; readonly errorCode: string } {
+  const httpError = error instanceof EnterpriseHttpError ? error : isAssuranceError(error) ? mapAssuranceErrorToHttp(error) : undefined;
+  return httpError !== undefined ? { httpStatus: httpError.httpStatus, errorCode: httpError.code } : { httpStatus: 500, errorCode: 'INFRASTRUCTURE_FAILURE' };
+}
+
+/** ASSURE-REL-01D: an Assurance operator route. Authentication and role first, then the body, then the existing service operation. */
+function handleAssuranceOperatorRoute(route: AssuranceOperatorRoute, req: IncomingMessage, res: ServerResponse, enterprise: AocEnterprise, routeLabel: string): void {
+  const { assurance, logger } = enterprise;
+  const target = { ...('assessmentId' in route ? { assessmentId: route.assessmentId } : {}), ...('reportId' in route ? { reportId: route.reportId } : {}) };
+  let operatorId: string | undefined;
+  const respond = (httpStatus: number, body: unknown): void => {
+    auditAssuranceOperation(logger, { ...(operatorId !== undefined ? { operatorId } : {}), operation: `assurance.${route.kind}`, ...target, httpStatus });
+    writeJson(res, httpStatus, body, NO_STORE);
+  };
+  const fail = (error: unknown): void => {
+    const normalized = normalizePathDecodeError(error);
+    auditAssuranceOperation(logger, { ...(operatorId !== undefined ? { operatorId } : {}), operation: `assurance.${route.kind}`, ...target, ...errorStatus(normalized) });
+    writeError(res, normalized, enterprise, routeLabel, NO_STORE);
+  };
+  let authenticated: ReturnType<typeof requireAssuranceReviewer>;
+  try {
+    authenticated = requireAssuranceReviewer(req.headers.authorization, assurance, operatorRouteRoles(route.kind));
+  } catch (error) {
+    fail(error);
+    return;
+  }
+  const { reviewer, context } = authenticated;
+  operatorId = reviewer.reviewerId;
+  const run = (operation: () => Promise<void>): void => {
+    operation().catch(fail);
+  };
+  switch (route.kind) {
+    case 'evidence':
+      run(async () => {
+        const { manualEvidence } = validateEvidenceSubmissionRequestBody(await assuranceJsonBody(req));
+        respond(200, await assurance.collectEvidence(context, route.assessmentId, { manualEvidence }));
+      });
+      return;
+    case 'terminate':
+      run(async () => {
+        const input = validateTerminationRequestBody(await assuranceJsonBody(req));
+        respond(200, await assurance.terminateAssessment(context, route.assessmentId, input));
+      });
+      return;
+    case 'draft':
+      run(async () => {
+        const request = validateCommercialReportRequestBody(await assuranceJsonBody(req));
+        respond(200, await assurance.buildCommercialReportDraft(context, route.assessmentId, request));
+      });
+      return;
+    case 'release':
+      run(async () => {
+        const request = validateCommercialReleaseRequestBody(await assuranceJsonBody(req), reviewer);
+        const result = await assurance.releaseCommercialReport(context, route.assessmentId, request);
+        respond(result.custody.outcome === 'committed' ? 201 : 200, result);
+      });
+      return;
+    case 'releases':
+      run(async () => {
+        respond(200, { assessmentId: route.assessmentId, releases: await assurance.listCommercialReleases(context, route.assessmentId) });
+      });
+      return;
+    case 'release-read':
+      run(async () => {
+        const record = await assurance.getCommercialRelease(context, route.reportId);
+        if (record === null) throw new EnterpriseHttpError(404, 'ASSURANCE_RELEASE_NOT_FOUND', `No commercial release is kept for reportId '${route.reportId.slice(0, 128)}' within this scope.`);
+        respond(200, record);
+      });
+      return;
+    case 'verify':
+      run(async () => {
+        const delivered = validateCommercialReleasePackageBody(await assuranceJsonBody(req));
+        respond(200, await assurance.verifyCommercialRelease(context, delivered));
+      });
+      return;
+  }
 }
 
 /**
@@ -502,17 +665,21 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
       if (url.pathname.startsWith('/api/assurance/')) {
         const { assurance } = enterprise;
 
+        // ASSURE-REL-01D: the operator routes -- reviewer credential only.
+        const operatorRoute = matchAssuranceOperatorRoute(method, url);
+        if (operatorRoute !== undefined) {
+          handleAssuranceOperatorRoute(operatorRoute, req, res, enterprise, routeLabel);
+          return;
+        }
+
         // ASSURE-SEC-01B: a manual review is authenticated by an Assurance
         // reviewer credential and nothing else -- not an organization key, not
         // the unauthenticated system context, and not body fields. Checked
         // before (and instead of) the organization-key resolution below, and
-        // even when AOC_ENTERPRISE_REQUIRE_AUTH is off.
+        // even when AOC_ENTERPRISE_REQUIRE_AUTH is off. The control's role is
+        // enforced by the service.
         if (method === 'POST' && url.pathname === '/api/assurance/manual-reviews') {
-          const token = extractBearerToken(req.headers.authorization);
-          if (token === undefined) throw EnterpriseHttpErrors.authenticationFailed('An Assurance reviewer credential (Bearer) is required to record a manual review.');
-          const reviewer = assurance.authenticateReviewer(token);
-          if (reviewer === undefined) throw EnterpriseHttpErrors.authenticationFailed('The provided credential is not an Assurance reviewer credential.');
-          const reviewerContext = { system: false, organizationId: reviewer.organizationId, actorId: reviewer.reviewerId, roles: reviewer.roles, reviewer } as const;
+          const { context: reviewerContext } = requireAssuranceReviewer(req.headers.authorization, assurance, []);
           readRequestBody(req)
             .then((rawBody) => assurance.recordManualReview(reviewerContext, validateManualReviewRequestBody(rawBody)))
             .then((review) => writeJson(res, 201, review))
@@ -520,11 +687,41 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
           return;
         }
 
-        const context = resolveGovernanceAccessContext(req.headers.authorization, getInternalEnterpriseConfiguration(enterprise));
+        // ASSURE-REL-01D: the v1 routes accept an Assurance reviewer credential
+        // (tried first; the actor is then the reviewer) or, unchanged, an
+        // organization key / the system context -- except for writes on a
+        // reviewer-only Host (AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY).
+        const configuration = getInternalEnterpriseConfiguration(enterprise);
+        const callerFor = (access: 'read' | 'write'): AssuranceCaller =>
+          resolveAssuranceCaller(req.headers.authorization, assurance, access, configuration.assurance.reviewerOnly === true, () =>
+            resolveGovernanceAccessContext(req.headers.authorization, configuration),
+          );
+        const reviewerOf = (caller: AssuranceCaller) => (caller.kind === 'reviewer' ? caller.reviewer : undefined);
+        /** A reviewer-authenticated v1 write is audited like an operator route. */
+        const audited = <T>(caller: AssuranceCaller, operation: string, assessmentId: string | undefined, httpStatus: number, promise: Promise<T>): Promise<T> => {
+          if (caller.kind !== 'reviewer') return promise;
+          const base = { operatorId: caller.reviewer.reviewerId, operation, ...(assessmentId !== undefined ? { assessmentId } : {}) };
+          return promise.then(
+            (value) => {
+              auditAssuranceOperation(enterprise.logger, { ...base, httpStatus });
+              return value;
+            },
+            (error: unknown) => {
+              auditAssuranceOperation(enterprise.logger, { ...base, ...errorStatus(error) });
+              throw error;
+            },
+          );
+        };
 
         if (method === 'POST' && url.pathname === '/api/assurance/assessments') {
-          readRequestBody(req)
-            .then((rawBody) => assurance.createAssessment(context, validateCreateAssessmentRequestBody(rawBody)))
+          const caller = callerFor('write');
+          audited(
+            caller,
+            'assurance.create',
+            undefined,
+            201,
+            readRequestBody(req).then((rawBody) => assurance.createAssessment(caller.context, validateCreateAssessmentRequestBody(rawBody, reviewerOf(caller)))),
+          )
             .then((assessment) => writeJson(res, 201, assessment))
             .catch(fail);
           return;
@@ -534,20 +731,27 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
         if (assessmentAction?.[1] !== undefined && assessmentAction[2] !== undefined) {
           const assessmentId = decodeURIComponent(assessmentAction[1]);
           if (method === 'POST' && assessmentAction[2] === 'evaluate') {
-            readRequestBody(req)
-              .then(async (rawBody) => {
+            const caller = callerFor('write');
+            audited(
+              caller,
+              'assurance.evaluate',
+              assessmentId,
+              200,
+              readRequestBody(req).then(async (rawBody) => {
                 const body = validateEvaluateAssessmentRequestBody(rawBody);
-                let assessment = await assurance.evaluateAssessment(context, assessmentId);
+                let assessment = await assurance.evaluateAssessment(caller.context, assessmentId);
                 if (body.complete !== false && assessment.status === 'evaluating') {
-                  assessment = await assurance.completeAssessment(context, assessmentId);
+                  assessment = await assurance.completeAssessment(caller.context, assessmentId);
                 }
                 return assessment;
-              })
+              }),
+            )
               .then((assessment) => writeJson(res, 200, assessment))
               .catch(fail);
             return;
           }
           if (method === 'POST' && assessmentAction[2] === 'verify') {
+            const { context } = callerFor('read');
             assurance
               .verifyAssessment(context, assessmentId)
               .then((result) => writeJson(res, result.valid ? 200 : 409, result))
@@ -555,6 +759,7 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
             return;
           }
           if (method === 'GET' && assessmentAction[2] === 'findings') {
+            const { context } = callerFor('read');
             assurance
               .listFindings(context, assessmentId)
               .then((findings) => writeJson(res, 200, { assessmentId, findings }))
@@ -566,6 +771,7 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
         const assessmentMatch = /^\/api\/assurance\/assessments\/([^/]+)$/.exec(url.pathname);
         if (method === 'GET' && assessmentMatch?.[1] !== undefined) {
           const assessmentId = decodeURIComponent(assessmentMatch[1]);
+          const { context } = callerFor('read');
           assurance
             .getAssessment(context, assessmentId)
             .then((assessment) => {
@@ -582,16 +788,22 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
         const findingEventsMatch = /^\/api\/assurance\/findings\/([^/]+)\/events$/.exec(url.pathname);
         if (method === 'POST' && findingEventsMatch?.[1] !== undefined) {
           const findingId = decodeURIComponent(findingEventsMatch[1]);
-          readRequestBody(req)
-            .then((rawBody) => assurance.appendFindingEvent(context, validateFindingEventRequestBody(rawBody, findingId)))
+          const caller = callerFor('write');
+          audited(
+            caller,
+            'assurance.finding-event',
+            undefined,
+            201,
+            readRequestBody(req).then((rawBody) => assurance.appendFindingEvent(caller.context, validateFindingEventRequestBody(rawBody, findingId, reviewerOf(caller)))),
+          )
             .then((event) => writeJson(res, 201, event))
             .catch(fail);
           return;
         }
 
         if (method === 'POST' && url.pathname === '/api/assurance/signals') {
-          readRequestBody(req)
-            .then((rawBody) => assurance.processSignal(context, validateSignalRequestBody(rawBody)))
+          const caller = callerFor('write');
+          audited(caller, 'assurance.signal', undefined, 201, readRequestBody(req).then((rawBody) => assurance.processSignal(caller.context, validateSignalRequestBody(rawBody))))
             .then((result) => writeJson(res, 201, result))
             .catch(fail);
           return;
@@ -601,6 +813,7 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
         if (subjectMatch?.[1] !== undefined && subjectMatch[2] !== undefined) {
           const subjectId = decodeURIComponent(subjectMatch[1]);
           if (method === 'GET' && subjectMatch[2] === 'state') {
+            const { context } = callerFor('read');
             const frameworkId = url.searchParams.get('frameworkId') ?? undefined;
             const frameworkVersion = url.searchParams.get('frameworkVersion') ?? undefined;
             assurance
@@ -610,13 +823,24 @@ export function createEnterpriseRequestListener(enterprise: AocEnterprise): (req
             return;
           }
           if (method === 'POST' && subjectMatch[2] === 'reassess') {
-            readRequestBody(req)
-              .then((rawBody) => assurance.requestReassessment(context, validateReassessRequestBody(rawBody, subjectId)))
+            const caller = callerFor('write');
+            audited(
+              caller,
+              'assurance.reassess',
+              undefined,
+              201,
+              readRequestBody(req).then((rawBody) => assurance.requestReassessment(caller.context, validateReassessRequestBody(rawBody, subjectId, reviewerOf(caller)))),
+            )
               .then((assessment) => writeJson(res, 201, assessment))
               .catch(fail);
             return;
           }
         }
+
+        // An unrouted Assurance path answers as before: the caller is resolved
+        // (401 without a recognized credential when authentication is required)
+        // before the unmounted-route 404 below.
+        resolveGovernanceAccessContext(req.headers.authorization, configuration);
       }
 
       // -- PR-006 Agent Passport Runtime endpoints. Tenant scoping is resolved

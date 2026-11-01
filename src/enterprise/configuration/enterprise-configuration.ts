@@ -456,7 +456,37 @@ export interface EnterpriseConfiguration {
     readonly sqlitePath: string;
     /** When `true`, an Assurance Store outage makes the Enterprise Host not-ready. Defaults to `false`: Assurance degrades gracefully without blocking `POST /api/governance/evaluate`. */
     readonly required: boolean;
+    /**
+     * ASSURE-REL-01D (`AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY`): when `true`,
+     * every Assurance write over HTTP requires an authenticated Assurance
+     * reviewer credential; an organization API key, an unscoped key and the
+     * unauthenticated system context are refused. Reads keep their existing
+     * access. Absent or `false`: the v1 behaviour, unchanged.
+     */
+    readonly reviewerOnly?: boolean;
+    /**
+     * ASSURE-REL-01D (`AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS`): built-in frameworks
+     * registered in addition to `aoc.saf@1.0.0`, as `id@version` from
+     * `ASSURANCE_OPTIONAL_FRAMEWORKS`. Registered exactly as frozen; absent or
+     * empty registers none.
+     */
+    readonly frameworks?: readonly AssuranceOptionalFramework[];
   };
+}
+
+/**
+ * ASSURE-REL-01D: built-in Assurance frameworks a Host may opt into. Only the
+ * exact frozen `rn.sv@0.1.0` exists; its definition and its
+ * `commercialUse: restricted` status are not configurable.
+ */
+export const ASSURANCE_OPTIONAL_FRAMEWORKS = ['rn.sv@0.1.0'] as const;
+export type AssuranceOptionalFramework = (typeof ASSURANCE_OPTIONAL_FRAMEWORKS)[number];
+
+/** Comma-separated framework list; blank entries are ignored. Unknown entries are reported by the strict validator and never registered. */
+function parseAssuranceFrameworks(value: string | undefined): readonly AssuranceOptionalFramework[] {
+  if (value === undefined) return [];
+  const entries = value.split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  return [...new Set(entries)].filter((entry): entry is AssuranceOptionalFramework => (ASSURANCE_OPTIONAL_FRAMEWORKS as readonly string[]).includes(entry));
 }
 
 /**
@@ -756,6 +786,7 @@ const BOOLEAN_VARIABLES = [
   'AOC_ENTERPRISE_TELEMETRY_ENABLED',
   'AOC_ENTERPRISE_PASSPORT_REQUIRED',
   'AOC_ENTERPRISE_ASSURANCE_REQUIRED',
+  'AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY',
   'AOC_ENTERPRISE_KERNEL_AUTHORITY_ENABLED',
   'AOC_ENTERPRISE_KERNEL_AUTHORITY_REQUIRED',
 ] as const;
@@ -790,6 +821,14 @@ export function validateEnterpriseEnvironment(env: Readonly<Record<string, strin
   for (const name of BOOLEAN_VARIABLES) {
     const value = env[name];
     if (value !== undefined && !['true', 'false', '1', '0'].includes(value.toLowerCase())) problems.push(`${name} must be true or false.`);
+  }
+  // ASSURE-REL-01D: an unknown framework is refused, never silently skipped.
+  const frameworks = env.AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS;
+  if (frameworks !== undefined) {
+    const entries = frameworks.split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+    if (entries.some((entry) => !(ASSURANCE_OPTIONAL_FRAMEWORKS as readonly string[]).includes(entry))) {
+      problems.push(`AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS must be a comma-separated list of: ${ASSURANCE_OPTIONAL_FRAMEWORKS.join(', ')}.`);
+    }
   }
   // PROD-03-03: the lifecycle bounds and store limits are whole positive
   // numbers, never a prefix — `30s` is refused rather than read as 30 ms.
@@ -1258,6 +1297,8 @@ export function loadEnterpriseConfiguration(env: Readonly<Record<string, string 
     assurance: {
       sqlitePath: env.AOC_ENTERPRISE_ASSURANCE_SQLITE_PATH ?? '.data/assurance.sqlite',
       required: parseBoolean(env.AOC_ENTERPRISE_ASSURANCE_REQUIRED, false),
+      reviewerOnly: parseBoolean(env.AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY, false),
+      frameworks: parseAssuranceFrameworks(env.AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS),
     },
   };
 }
@@ -1411,6 +1452,9 @@ export function computeConfigurationChecksum(config: EnterpriseConfiguration): s
     requireAuthentication: config.features.requireAuthentication,
     passportRequired: config.passport.required,
     assuranceRequired: config.assurance.required,
+    // ASSURE-REL-01D: present only when set, so the checksum of every existing configuration is unchanged.
+    ...(config.assurance.reviewerOnly === true ? { assuranceReviewerOnly: true } : {}),
+    ...((config.assurance.frameworks ?? []).length > 0 ? { assuranceFrameworks: [...(config.assurance.frameworks ?? [])] } : {}),
     kernelAuthorityEnabled: config.kernelAuthority.enabled,
     kernelAuthorityOrganizationId: config.kernelAuthority.organizationId,
     kernelAuthorityRequired: config.kernelAuthority.required,

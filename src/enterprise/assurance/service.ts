@@ -1288,6 +1288,19 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
       }
       const custody = releaseCustody();
       const approverContext: AssuranceAccessContext = { system: false, organizationId: approver.organizationId, actorId: approver.reviewerId, roles: approver.roles, reviewer: approver };
+      // ASSURE-REL-01D: separation of duties. The approving credential must not
+      // be one that recorded a substantive review of this assessment. Reviews are
+      // append-only and attributed to the credential that recorded them, so this
+      // is decided from the store, never from the request; every recorded review
+      // counts (also one kept from before SEC-01B), and holding both roles is not
+      // in itself an authorization. A store that cannot list reviews fails here.
+      const reviewers = new Set((await store.listManualReviews(approverContext, assessmentId)).map((review) => review.reviewerId));
+      if (reviewers.has(approver.reviewerId)) {
+        logger?.warn('assurance.commercial_report.release_refused', { assessmentId, operatorId: approver.reviewerId, errorCode: 'separation_of_duties' });
+        throw unauthorizedReviewer('The approving credential recorded a substantive review of this assessment; a release must be approved by a different authorized reviewer.', {
+          reason: 'separation_of_duties',
+        });
+      }
       const draft = await commercialDraft(approverContext, assessmentId, request);
       if (draft.content.readiness.status !== 'READY_FOR_RELEASE') {
         throw new AssuranceError('ASSURANCE_ASSESSMENT_INCOMPLETE', `The commercial report for '${assessmentId}' is not ready for release.`, {
@@ -1295,7 +1308,10 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
         });
       }
       if (request.approvedContentDigest !== draft.manifest.contentDigest) {
-        throw new AssuranceError('ASSURANCE_INTEGRITY_FAILED', 'The approved content digest does not match the report the store produces now; review the current draft and approve its digest.');
+        // ASSURE-REL-01D: `reason` lets the HTTP adapter answer this caller-side staleness with 409, not 500.
+        throw new AssuranceError('ASSURANCE_INTEGRITY_FAILED', 'The approved content digest does not match the report the store produces now; review the current draft and approve its digest.', {
+          reason: 'approved_digest_stale',
+        });
       }
       if (request.acknowledgements?.limitationsReviewed !== true || request.acknowledgements?.commercialUseRestrictionAcknowledged !== true) {
         throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', 'A release must acknowledge the reviewed limitations and the framework’s commercial-use restriction.');
