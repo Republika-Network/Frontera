@@ -170,12 +170,12 @@ function binding(overrides: Record<string, unknown> = {}): { binding: StatusHist
   return { binding: b, digest: bootstrapBindingDigest(b) };
 }
 
-const decide = (w: World, operatorId: string, digest: string, role: 'requester' | 'approver'): unknown =>
-  w.devices[operatorId]!.assert(w.service.beginBootstrapAuthorityDecision({ operatorId, ...bootstrapAuthorityDecisionInput(digest, role) }).options);
+const decide = (w: World, operatorId: string, binding: StatusHistoryBootstrapBinding, role: 'requester' | 'approver'): unknown =>
+  w.devices[operatorId]!.assert(w.service.beginBootstrapAuthorityDecision({ operatorId, ...bootstrapAuthorityDecisionInput(binding, role) }).options);
 
 /** A consumed requester/approver pair for `b`, through the real authorizer: what the coordinator's step 3 leaves. */
 async function consumedPair(w: World, b: { binding: StatusHistoryBootstrapBinding; digest: string }, approverId = 'approver-b') {
-  const authorizer = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions: allow, requesterResponse: decide(w, 'requester-a', b.digest, 'requester'), approverResponse: decide(w, approverId, b.digest, 'approver') });
+  const authorizer = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions: allow, requesterResponse: decide(w, 'requester-a', b.binding, 'requester'), approverResponse: decide(w, approverId, b.binding, 'approver') });
   const result = (await authorizer.authorizeStatusHistoryBootstrap(b.binding, b.digest)) as { outcome: string; authorityRef: string };
   assert.equal(result.outcome, 'authorized', String(authorizer.lastDenial()));
   const ref = parseBootstrapAuthorityRef(result.authorityRef)!;
@@ -297,8 +297,8 @@ describe('FV-P4C-2B2B B1 — AUTH-03 records a settlement only when it agrees wi
     const w = await world();
     const b = binding();
     // Both roles signed by one human, consumed directly (the authorizer would refuse them as SAME_PRINCIPAL).
-    const attest = await w.service.authorizeBootstrapAuthorityDecision(decide(w, 'requester-a', b.digest, 'requester'));
-    const approve = await w.service.authorizeBootstrapAuthorityDecision(decide(w, 'requester-a', b.digest, 'approver'));
+    const attest = await w.service.authorizeBootstrapAuthorityDecision(decide(w, 'requester-a', b.binding, 'requester'));
+    const approve = await w.service.authorizeBootstrapAuthorityDecision(decide(w, 'requester-a', b.binding, 'approver'));
     await assert.rejects(w.service.recordBootstrapAuthoritySettlement(w.capability, attest.commitment, committed(b.digest, approve.commitment)), /another human/);
   });
 
@@ -345,7 +345,9 @@ describe('FV-P4C-2B2B B1 — settlement is correlated to the receiver’s own bo
     const pair = await consumedPair(w, binding());
     assert.deepEqual(summary(await reconciler(w).reconcile()), [['unresolved', 'WITHIN_GRACE'], ['unresolved', 'WITHIN_GRACE']]);
     w.clock.advance(GRACE + 1);
-    assert.deepEqual(summary(await reconciler(w, { inFlight: (c) => c === pair.approver }).reconcile()), [['settled', 'bootstrap-not-committed'], ['unresolved', 'IN_FLIGHT']]);
+    const run = await reconciler(w, { inFlight: (c) => c === pair.approver }).reconcile();
+    assert.deepEqual(summary(run.filter((e) => e.commitment === pair.requester)), [['settled', 'bootstrap-not-committed']]);
+    assert.deepEqual(summary(run.filter((e) => e.commitment === pair.approver)), [['unresolved', 'IN_FLIGHT']]);
     assert.equal(outcomeRows(w).length, 1);
     assert.deepEqual(w.service.bootstrapAuthorityDecision(pair.requester)?.settlement, { outcome: 'bootstrap-not-committed', bindingDigest: w.service.bootstrapAuthorityDecision(pair.requester)!.contract.subjectDigest.slice(7), code: 'NO_BOOTSTRAP_EVIDENCE' });
   });
@@ -353,8 +355,8 @@ describe('FV-P4C-2B2B B1 — settlement is correlated to the receiver’s own bo
   it('partial consumption (the approver refused at consumption) settles the requester as not committed', async () => {
     const w = await world();
     const b = binding();
-    const requester = decide(w, 'requester-a', b.digest, 'requester');
-    const approver = decide(w, 'approver-b', b.digest, 'approver');
+    const requester = decide(w, 'requester-a', b.binding, 'requester');
+    const approver = decide(w, 'approver-b', b.binding, 'approver');
     await w.service.revokePrincipal(w.admin, 'approver-b', 'revoked mid-ceremony');
     const a = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions: allow, requesterResponse: requester, approverResponse: approver });
     assert.deepEqual(await a.authorizeStatusHistoryBootstrap(b.binding, b.digest), { outcome: 'denied' });
@@ -424,22 +426,26 @@ describe('FV-P4C-2B2B B1 — settlement is correlated to the receiver’s own bo
     const pair = await consumedPair(w, b);
     w.clock.advance(GRACE + 1);
     // A commit lands right after the not-committed settlement is written (the grace race), in the real store.
-    let landed = false;
+    let landed: string | undefined;
     const racing: BootstrapAuthoritySettlementPort = {
       unsettledBootstrapAuthorityDecisions: () => w.capability.unsettledBootstrapAuthorityDecisions(),
       recordBootstrapAuthoritySettlement: async (commitment, settlement) => {
         const written = await w.capability.recordBootstrapAuthoritySettlement(commitment, settlement);
-        if (!landed) {
-          landed = true;
+        if (landed === undefined) {
+          landed = commitment;
           await anchor(w, b, pair.authorityRef);
         }
         return written;
       },
     };
+    // FV-P4C-2B2C: the page starts at a random position, so whichever decision is settled first is the one the commit races.
     const entries = await reconciler(w, { decisions: racing }).reconcile();
-    assert.deepEqual(summary(entries)[0], ['conflict', 'EVIDENCE_APPEARED_AFTER_NOT_COMMITTED']);
-    // The requester stays recorded as not committed (append-only); the approver can no longer be settled as committed against it.
-    assert.equal(w.service.bootstrapAuthorityDecision(pair.requester)?.settlement?.outcome, 'bootstrap-not-committed');
+    const first = landed!;
+    const other = first === pair.requester ? pair.approver : pair.requester;
+    assert.deepEqual(summary(entries.filter((e) => e.commitment === first)), [['conflict', 'EVIDENCE_APPEARED_AFTER_NOT_COMMITTED']]);
+    // The first stays recorded as not committed (append-only); its counterpart can no longer be settled as committed against it.
+    assert.equal(w.service.bootstrapAuthorityDecision(first)?.settlement?.outcome, 'bootstrap-not-committed');
+    assert.deepEqual(summary(entries.filter((e) => e.commitment === other)), [['conflict', 'SETTLEMENT_CONFLICT']]);
     assert.deepEqual(summary(await reconciler(w).reconcile()), [['conflict', 'SETTLEMENT_CONFLICT']]);
   });
 
@@ -448,18 +454,24 @@ describe('FV-P4C-2B2B B1 — settlement is correlated to the receiver’s own bo
     const pair = await consumedPair(w, binding());
     const real = w.service.unsettledBootstrapAuthorityDecisions()[0]!;
     let writes = 0;
-    const forged: BootstrapAuthoritySettlementPort = {
-      unsettledBootstrapAuthorityDecisions: () => [
-        { ...real, contract: { ...real.contract, format: HUMAN_DECISION_CHALLENGE_FORMAT } },
-        { ...real, contract: { ...real.contract, format: 'frontera.payment-approval.v1' } },
-        { ...real, contract: { ...real.contract, organizationId: 'org-other' } },
-        { ...real, evidence: { ...real.evidence!, verdict: 'approve' } },
-        { commitment: pair.approver, external: true, state: 'consumed' },
-      ],
+    const records: unknown[] = [
+      { ...real, contract: { ...real.contract, format: HUMAN_DECISION_CHALLENGE_FORMAT } },
+      { ...real, contract: { ...real.contract, format: 'frontera.payment-approval.v1' } },
+      // FV-P4C-2B2C: the retired v1 format, and a v1-style request id that names no namespace.
+      { ...real, contract: { ...real.contract, format: 'frontera.sovereign-status-bootstrap-authority.v1' } },
+      { ...real, contract: { ...real.contract, approvalRequestId: `frontera.sovereign-status-bootstrap:${real.contract.subjectDigest.slice('sha256:'.length)}` } },
+      { ...real, contract: { ...real.contract, organizationId: 'org-other' } },
+      { ...real, evidence: { ...real.evidence!, verdict: 'approve' } },
+      { commitment: pair.approver, external: true, state: 'consumed' },
+    ];
+    const forged = (listing: readonly unknown[]): BootstrapAuthoritySettlementPort => ({
+      unsettledBootstrapAuthorityDecisions: () => listing,
       recordBootstrapAuthoritySettlement: async () => ((writes += 1), 'recorded'),
-    };
+    });
     w.clock.advance(GRACE + 1);
-    assert.deepEqual(summary(await reconciler(w, { decisions: forged }).reconcile()), Array.from({ length: 5 }, () => ['conflict', 'DECISION_MALFORMED']));
+    for (const record of records) assert.deepEqual(summary(await reconciler(w, { decisions: forged([record]) }).reconcile()), [['conflict', 'DECISION_MALFORMED']]);
+    // FV-P4C-2B2C: a listing that names one commitment twice is not believed for it, whatever the copies say.
+    assert.deepEqual(summary(await reconciler(w, { decisions: forged([real, real]) }).reconcile()), [['conflict', 'DECISION_DUPLICATE']]);
     assert.equal(writes, 0);
   });
 
@@ -587,17 +599,17 @@ describe('FV-P4C-2B2B B4 — status-history.bootstrap.request / .approve, defaul
     await ka.grant('requester-a', STATUS_HISTORY_BOOTSTRAP_REQUEST_PERMISSION, [statusHistoryResourceScope(NAMESPACE)]);
     const approverGrant = await ka.grant('approver-b', STATUS_HISTORY_BOOTSTRAP_APPROVE_PERMISSION, [statusHistoryResourceScope(NAMESPACE)]);
     const b = binding();
-    const first = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions, requesterResponse: decide(w, 'requester-a', b.digest, 'requester'), approverResponse: decide(w, 'approver-b', b.digest, 'approver') });
+    const first = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions, requesterResponse: decide(w, 'requester-a', b.binding, 'requester'), approverResponse: decide(w, 'approver-b', b.binding, 'approver') });
     assert.equal(((await first.authorizeStatusHistoryBootstrap(b.binding, b.digest)) as { outcome: string }).outcome, 'authorized');
     // admin-x holds the passkey and the CTRL-02 administrator role elsewhere, but no grant: refused.
     const c = binding();
-    const byAdmin = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions, requesterResponse: decide(w, 'requester-a', c.digest, 'requester'), approverResponse: decide(w, 'admin-x', c.digest, 'approver') });
+    const byAdmin = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions, requesterResponse: decide(w, 'requester-a', c.binding, 'requester'), approverResponse: decide(w, 'admin-x', c.binding, 'approver') });
     assert.deepEqual(await byAdmin.authorizeStatusHistoryBootstrap(c.binding, c.digest), { outcome: 'denied' });
     assert.equal(byAdmin.lastDenial(), 'APPROVER_NOT_PERMITTED');
     await ka.provisioning.revoke(PROVISIONER, { entityKind: 'authority-grant', entityId: approverGrant, reason: 'rotation' });
     const d = binding();
-    const approver = decide(w, 'approver-b', d.digest, 'approver');
-    const second = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions, requesterResponse: decide(w, 'requester-a', d.digest, 'requester'), approverResponse: approver });
+    const approver = decide(w, 'approver-b', d.binding, 'approver');
+    const second = createHumanDecisionBootstrapAuthorizer({ decisions: w.service, organizationId: ORG, permissions, requesterResponse: decide(w, 'requester-a', d.binding, 'requester'), approverResponse: approver });
     assert.deepEqual(await second.authorizeStatusHistoryBootstrap(d.binding, d.digest), { outcome: 'denied' });
     assert.equal(second.lastDenial(), 'APPROVER_NOT_PERMITTED');
     assert.deepEqual(second.consumedDecisions(), []);

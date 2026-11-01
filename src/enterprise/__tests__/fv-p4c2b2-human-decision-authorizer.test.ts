@@ -127,8 +127,8 @@ function binding(overrides: Record<string, unknown> = {}): { binding: StatusHist
 type Role = 'requester' | 'approver';
 
 /** A passkey decision by `operatorId` in the bootstrap-authority domain, for `role`, over this binding. */
-function decide(w: World, operatorId: string, digest: string, role: Role, device = w.devices[operatorId]!): unknown {
-  const issued = w.service.beginBootstrapAuthorityDecision({ operatorId, ...bootstrapAuthorityDecisionInput(digest, role) });
+function decide(w: World, operatorId: string, binding: StatusHistoryBootstrapBinding, role: Role, device = w.devices[operatorId]!): unknown {
+  const issued = w.service.beginBootstrapAuthorityDecision({ operatorId, ...bootstrapAuthorityDecisionInput(binding, role) });
   return device.assert(issued.options);
 }
 
@@ -176,8 +176,8 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
   it('1. an attesting requester and a distinct, permitted approver, both passkey-verified over this binding, authorize it once', async () => {
     const w = await world();
     const b = binding();
-    const requester = decide(w, 'requester-a', b.digest, 'requester');
-    const approver = decide(w, 'approver-b', b.digest, 'approver');
+    const requester = decide(w, 'requester-a', b.binding, 'requester');
+    const approver = decide(w, 'approver-b', b.binding, 'approver');
     const a = authorizer(w, requester, approver);
     const result = (await a.authorizeStatusHistoryBootstrap(b.binding, b.digest)) as { outcome: string; bindingDigest: string; authorityRef: string };
     assert.equal(result.outcome, 'authorized');
@@ -195,15 +195,15 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
     await denied(a, b, 'ALREADY_USED');
     // B1 resolved: CORE-05 reconciliation never sees them; they await their own settlement.
     assert.deepEqual(w.service.unsettledDecisions(), []);
-    assert.deepEqual(w.service.unsettledBootstrapAuthorityDecisions().map((d) => [d.contract.verdict, d.contract.approvalRequestId]), [['attest', bootstrapHumanDecisionInputs(b.digest).approvalRequestId], ['approve', bootstrapHumanDecisionInputs(b.digest).approvalRequestId]]);
+    assert.deepEqual(w.service.unsettledBootstrapAuthorityDecisions().map((d) => [d.contract.verdict, d.contract.approvalRequestId]), [['attest', bootstrapHumanDecisionInputs(b.binding).approvalRequestId], ['approve', bootstrapHumanDecisionInputs(b.binding).approvalRequestId]]);
     assert.equal(w.service.decision(ref!.requesterCommitment), undefined, 'not a CORE-05 decision by any read');
   });
 
   it('2. the same principal cannot both request and approve, and nothing is consumed', async () => {
     const w = await world();
     const b = binding();
-    const attest = decide(w, 'requester-a', b.digest, 'requester');
-    const approve = decide(w, 'requester-a', b.digest, 'approver');
+    const attest = decide(w, 'requester-a', b.binding, 'requester');
+    const approve = decide(w, 'requester-a', b.binding, 'approver');
     await denied(authorizer(w, attest, approve, { permissions: { mayRequest: () => true, mayApprove: () => true } }), b, 'SAME_PRINCIPAL');
     assert.equal(await stillUsable(w, attest), true, 'peeked, not consumed');
   });
@@ -211,47 +211,47 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
   it('B5. roles are signed: an approval cannot stand for an attestation, nor the reverse, nor one decision for both', async () => {
     const w = await world();
     const b = binding();
-    const attest = decide(w, 'requester-a', b.digest, 'requester');
-    const approve = decide(w, 'approver-b', b.digest, 'approver');
-    const requesterApproves = decide(w, 'requester-a', b.digest, 'approver');
-    const approverAttests = decide(w, 'approver-b', b.digest, 'requester');
+    const attest = decide(w, 'requester-a', b.binding, 'requester');
+    const approve = decide(w, 'approver-b', b.binding, 'approver');
+    const requesterApproves = decide(w, 'requester-a', b.binding, 'approver');
+    const approverAttests = decide(w, 'approver-b', b.binding, 'requester');
     await denied(authorizer(w, approve, attest), b, 'ROLE_MISMATCH');
     await denied(authorizer(w, requesterApproves, approve), b, 'ROLE_MISMATCH');
     await denied(authorizer(w, attest, approverAttests), b, 'ROLE_MISMATCH');
     await denied(authorizer(w, attest, attest), b, 'ROLE_MISMATCH');
     for (const response of [attest, approve, requesterApproves, approverAttests]) assert.equal(await stillUsable(w, response), true);
-    assert.throws(() => w.service.beginBootstrapAuthorityDecision({ operatorId: 'requester-a', bindingDigest: b.digest, role: 'reject' as never }), /attest or approve/);
+    assert.throws(() => w.service.beginBootstrapAuthorityDecision({ operatorId: 'requester-a', namespace: b.binding.namespace, bindingDigest: b.digest, role: 'reject' as never }), /attest or approve/);
   });
 
   it('3/16. an approver assertion made with another person’s passkey is refused by AUTH-03', async () => {
     const w = await world();
     const b = binding();
-    const forged = decide(w, 'approver-b', b.digest, 'approver', w.devices['approver-c']!);
-    await denied(authorizer(w, decide(w, 'requester-a', b.digest, 'requester'), forged), b, 'DECISION_REFUSED');
+    const forged = decide(w, 'approver-b', b.binding, 'approver', w.devices['approver-c']!);
+    await denied(authorizer(w, decide(w, 'requester-a', b.binding, 'requester'), forged), b, 'DECISION_REFUSED');
   });
 
   it('4. the request’s operator reference must be the requester who attested', async () => {
     const w = await world();
     const b = binding({ operatorRef: 'operator:approver-c' });
-    await denied(authorizer(w, decide(w, 'requester-a', b.digest, 'requester'), decide(w, 'approver-b', b.digest, 'approver')), b, 'OPERATOR_REF_MISMATCH');
+    await denied(authorizer(w, decide(w, 'requester-a', b.binding, 'requester'), decide(w, 'approver-b', b.binding, 'approver')), b, 'OPERATOR_REF_MISMATCH');
     const raw = binding({ operatorRef: 'requester-a' });
-    await denied(authorizer(w, decide(w, 'requester-a', raw.digest, 'requester'), decide(w, 'approver-b', raw.digest, 'approver')), raw, 'OPERATOR_REF_MISMATCH');
+    await denied(authorizer(w, decide(w, 'requester-a', raw.binding, 'requester'), decide(w, 'approver-b', raw.binding, 'approver')), raw, 'OPERATOR_REF_MISMATCH');
   });
 
   it('B2/5. a CORE-05-domain decision — even over this binding’s own request id and subject — is refused and NOT consumed', async () => {
     const w = await world();
     const b = binding();
-    const inputs = bootstrapHumanDecisionInputs(b.digest);
+    const inputs = bootstrapHumanDecisionInputs(b.binding);
     // The 2B2A shape: a CORE-05-format decision that names the bootstrap request id and subject.
     const legacy = core05Decision(w, 'approver-b', { ...inputs, verdict: 'approve' });
-    await denied(authorizer(w, decide(w, 'requester-a', b.digest, 'requester'), legacy), b, 'DECISION_UNREADABLE');
+    await denied(authorizer(w, decide(w, 'requester-a', b.binding, 'requester'), legacy), b, 'DECISION_UNREADABLE');
     const core05 = core05Decision(w, 'approver-b', { approvalRequestId: `approval-request:${'a'.repeat(64)}`, subjectDigest: `sha256:${'d'.repeat(64)}`, verdict: 'approve' });
-    await denied(authorizer(w, decide(w, 'requester-a', b.digest, 'requester'), core05), b, 'DECISION_UNREADABLE');
+    await denied(authorizer(w, decide(w, 'requester-a', b.binding, 'requester'), core05), b, 'DECISION_UNREADABLE');
     // Never consumed: the CORE-05 domain still accepts both.
     assert.equal(await w.service.authorizeDecision(legacy).then(() => true, () => false), true);
     assert.equal(await w.service.authorizeDecision(core05).then(() => true, () => false), true);
     // And the reverse: AUTH-03's CORE-05 methods refuse a bootstrap-authority decision.
-    const bootstrap = decide(w, 'approver-b', b.digest, 'approver');
+    const bootstrap = decide(w, 'approver-b', b.binding, 'approver');
     assert.throws(() => w.service.peekDecision(bootstrap), /does not match its commitment/);
     await assert.rejects(w.service.authorizeDecision(bootstrap), /does not match its commitment/);
     assert.equal(await stillUsable(w, bootstrap), true);
@@ -260,15 +260,15 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
   it('6. a digest that is not the binding’s own is refused', async () => {
     const w = await world();
     const b = binding();
-    await denied(authorizer(w, decide(w, 'requester-a', b.digest, 'requester'), decide(w, 'approver-b', b.digest, 'approver')), { binding: b.binding, digest: 'f'.repeat(64) }, 'BINDING_INVALID');
+    await denied(authorizer(w, decide(w, 'requester-a', b.binding, 'requester'), decide(w, 'approver-b', b.binding, 'approver')), { binding: b.binding, digest: 'f'.repeat(64) }, 'BINDING_INVALID');
     await denied(authorizer(w, null, null), { binding: b.binding, digest: 'not-hex' }, 'BINDING_INVALID');
   });
 
   it('7. an expired decision is refused by AUTH-03', async () => {
     const w = await world();
     const b = binding();
-    const requester = decide(w, 'requester-a', b.digest, 'requester');
-    const approver = decide(w, 'approver-b', b.digest, 'approver');
+    const requester = decide(w, 'requester-a', b.binding, 'requester');
+    const approver = decide(w, 'approver-b', b.binding, 'approver');
     w.clock.advance(121);
     await denied(authorizer(w, requester, approver), b, 'DECISION_REFUSED');
   });
@@ -276,13 +276,13 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
   it('8. a revoked approver, or a revoked passkey, cannot authorize, even with an assertion made before the revocation', async () => {
     const w = await world();
     const b = binding();
-    const requester = decide(w, 'requester-a', b.digest, 'requester');
-    const approver = decide(w, 'approver-b', b.digest, 'approver');
+    const requester = decide(w, 'requester-a', b.binding, 'requester');
+    const approver = decide(w, 'approver-b', b.binding, 'approver');
     await w.service.revokePrincipal(w.admin, 'approver-b', 'left the organization');
     await denied(authorizer(w, requester, approver), b, 'DECISION_REFUSED');
     const c = binding();
-    const requester2 = decide(w, 'requester-a', c.digest, 'requester');
-    const approver2 = decide(w, 'approver-c', c.digest, 'approver');
+    const requester2 = decide(w, 'requester-a', c.binding, 'requester');
+    const approver2 = decide(w, 'approver-c', c.binding, 'approver');
     await w.service.revokeCredential(w.admin, w.service.credentialsOf('approver-c')[0]!.credentialId, 'lost device');
     await denied(authorizer(w, requester2, approver2), c, 'DECISION_REFUSED');
   });
@@ -290,8 +290,8 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
   it('partial consumption is fail-closed and auditable: the requester stays consumed, nothing is authorized', async () => {
     const w = await world();
     const b = binding();
-    const requester = decide(w, 'requester-a', b.digest, 'requester');
-    const approver = decide(w, 'approver-b', b.digest, 'approver');
+    const requester = decide(w, 'requester-a', b.binding, 'requester');
+    const approver = decide(w, 'approver-b', b.binding, 'approver');
     await w.service.revokePrincipal(w.admin, 'approver-b', 'revoked during the ceremony');
     const a = authorizer(w, requester, approver);
     await denied(a, b, 'DECISION_REFUSED');
@@ -299,7 +299,7 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
     assert.deepEqual(a.consumedDecisions(), [requesterCommitment], 'the consumed requester decision is reported');
     assert.equal(await stillUsable(w, requester), false, 'it can never authorize again: a new attempt needs a new decision');
     assert.deepEqual(w.service.unsettledBootstrapAuthorityDecisions().map((d) => d.commitment), [requesterCommitment], 'unsettled, never successful');
-    const untouched = authorizer(w, decide(w, 'requester-a', b.digest, 'requester'), decide(w, 'requester-a', b.digest, 'approver'));
+    const untouched = authorizer(w, decide(w, 'requester-a', b.binding, 'requester'), decide(w, 'requester-a', b.binding, 'approver'));
     await denied(untouched, b, 'SAME_PRINCIPAL');
     assert.deepEqual(untouched.consumedDecisions(), []);
   });
@@ -307,8 +307,8 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
   it('9–13. a pair cannot be replayed onto another request, namespace, asset, issuer or status', async () => {
     const w = await world();
     const b = binding();
-    const requester = decide(w, 'requester-a', b.digest, 'requester');
-    const approver = decide(w, 'approver-b', b.digest, 'approver');
+    const requester = decide(w, 'requester-a', b.binding, 'requester');
+    const approver = decide(w, 'approver-b', b.binding, 'approver');
     for (const other of [binding(), binding({ namespace: 'receiver:other' }), binding({ sovereignAssetId: 'sa:other' }), binding({ issuer: 'did:example:other' }), binding({ status: { sequence: 2, statusDigest: 'b'.repeat(64) } }), binding({ purpose: 'continuity-restoration', operation: 'reanchor' })]) {
       await denied(authorizer(w, requester, approver), other, 'DECISION_NOT_FOR_THIS_BOOTSTRAP');
     }
@@ -319,8 +319,8 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
   it('16. permissions come from the Host, per organization, namespace and binding: not permitted, or failing, refuse', async () => {
     const w = await world();
     const b = binding();
-    const requester = decide(w, 'requester-a', b.digest, 'requester');
-    const approver = decide(w, 'approver-b', b.digest, 'approver');
+    const requester = decide(w, 'requester-a', b.binding, 'requester');
+    const approver = decide(w, 'approver-b', b.binding, 'approver');
     const asked: unknown[] = [];
     const recording: BootstrapHumanPermissions = { mayRequest: (id, scope) => (asked.push(['request', id, scope]), false), mayApprove: () => true };
     await denied(authorizer(w, requester, approver, { permissions: recording }), b, 'REQUESTER_NOT_PERMITTED');
@@ -334,8 +334,8 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
   it('14/15. an unknown format, another organization, a failing service or a substituted decision refuse', async () => {
     const w = await world();
     const b = binding();
-    const requester = decide(w, 'requester-a', b.digest, 'requester');
-    const approver = decide(w, 'approver-b', b.digest, 'approver');
+    const requester = decide(w, 'requester-a', b.binding, 'requester');
+    const approver = decide(w, 'approver-b', b.binding, 'approver');
     const relabel = (patch: Record<string, unknown>): BootstrapHumanDecisionPort => ({
       peekBootstrapAuthorityDecision: (r) => {
         const peeked = w.service.peekBootstrapAuthorityDecision(r);
@@ -344,7 +344,9 @@ describe('FV-P4C-2B2B human-decision bootstrap authorizer — against the real A
       authorizeBootstrapAuthorityDecision: (r) => w.service.authorizeBootstrapAuthorityDecision(r),
     });
     await denied(authorizer(w, requester, approver, { decisions: relabel({ format: HUMAN_DECISION_CHALLENGE_FORMAT }) }), b, 'DECISION_FORMAT_UNSUPPORTED');
-    await denied(authorizer(w, requester, approver, { decisions: relabel({ format: 'frontera.sovereign-status-bootstrap-authority.v2' }) }), b, 'DECISION_FORMAT_UNSUPPORTED');
+    await denied(authorizer(w, requester, approver, { decisions: relabel({ format: 'frontera.sovereign-status-bootstrap-authority.v3' }) }), b, 'DECISION_FORMAT_UNSUPPORTED');
+    // FV-P4C-2B2C: the retired v1 format (no namespace in its request id) is never accepted.
+    await denied(authorizer(w, requester, approver, { decisions: relabel({ format: 'frontera.sovereign-status-bootstrap-authority.v1' }) }), b, 'DECISION_FORMAT_UNSUPPORTED');
     await denied(authorizer(w, requester, approver, { organizationId: 'org-other' }), b, 'ORGANIZATION_MISMATCH');
     await denied(authorizer(w, requester, approver, { decisions: { peekBootstrapAuthorityDecision: () => { throw new Error('down'); }, authorizeBootstrapAuthorityDecision: (r) => w.service.authorizeBootstrapAuthorityDecision(r) } }), b, 'DECISION_UNREADABLE');
     await denied(authorizer(w, 'garbage', approver), b, 'DECISION_UNREADABLE');

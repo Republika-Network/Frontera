@@ -21,7 +21,6 @@ import {
 } from '../dist/src/enterprise/human-identity/index.js';
 import {
   bootstrapAuthorityDecisionInput,
-  bootstrapBindingDigest,
   bootstrapBindingOf,
   bootstrapEvidenceDigest,
   coordinateStatusHistoryBootstrap,
@@ -93,8 +92,8 @@ async function host() {
 
 /** The two humans' passkey decisions over this request's binding, and the authorizer built from them. */
 function humanAuthority(h, request) {
-  const digest = bootstrapBindingDigest(bootstrapBindingOf(parseStatusHistoryBootstrapRequest(request)));
-  const decide = (operatorId, role) => h.devices[operatorId].assert(h.identity.beginBootstrapAuthorityDecision({ operatorId, ...bootstrapAuthorityDecisionInput(digest, role) }).options);
+  const binding = bootstrapBindingOf(parseStatusHistoryBootstrapRequest(request));
+  const decide = (operatorId, role) => h.devices[operatorId].assert(h.identity.beginBootstrapAuthorityDecision({ operatorId, ...bootstrapAuthorityDecisionInput(binding, role) }).options);
   const requesterResponse = decide('requester-a', 'requester');
   const approverResponse = decide('approver-b', 'approver');
   const authorizer = createHumanDecisionBootstrapAuthorizer({ decisions: h.identity, organizationId: ORG, permissions, requesterResponse, approverResponse });
@@ -179,8 +178,8 @@ describe('FV-P4C-2B2 — bootstrap under real AUTH-03 authority (synthetic sourc
   it('the same human cannot request and approve; an unauthorized authority never anchors', async () => {
     const h = await host();
     const request = bootstrapRequest(h.history, S.active1, T, { operatorRef: 'operator:requester-a' });
-    const digest = bootstrapBindingDigest(bootstrapBindingOf(parseStatusHistoryBootstrapRequest(request)));
-    const decide = (role) => h.devices['requester-a'].assert(h.identity.beginBootstrapAuthorityDecision({ operatorId: 'requester-a', ...bootstrapAuthorityDecisionInput(digest, role) }).options);
+    const binding = bootstrapBindingOf(parseStatusHistoryBootstrapRequest(request));
+    const decide = (role) => h.devices['requester-a'].assert(h.identity.beginBootstrapAuthorityDecision({ operatorId: 'requester-a', ...bootstrapAuthorityDecisionInput(binding, role) }).options);
     const authorizer = createHumanDecisionBootstrapAuthorizer({ decisions: h.identity, organizationId: ORG, permissions: { mayRequest: () => true, mayApprove: () => true }, requesterResponse: decide('requester'), approverResponse: decide('approver') });
     const result = await coordinateStatusHistoryBootstrap(request, S.active1.text, bootstrapContext(h.history, T, { authorizer }));
     assert.equal(result.reason, 'OPERATOR_UNAUTHORIZED');

@@ -1,4 +1,4 @@
-import { bootstrapBindingDigest, isDigest } from './bootstrap-contract.js';
+import { bootstrapBindingDigest, isDigest, isIdentifier } from './bootstrap-contract.js';
 import type { StatusHistoryBootstrapAuthorizer, StatusHistoryBootstrapBinding } from './bootstrap-contract.js';
 import type { BootstrapHumanPermissions, BootstrapPermissionScope } from './authority-permissions.js';
 
@@ -15,14 +15,16 @@ import type { BootstrapHumanPermissions, BootstrapPermissionScope } from './auth
  *
  * One authorizer authorizes one bootstrap, from two decisions:
  * - **One domain (B2).** Both decisions must be of AUTH-03's
- *   `frontera.sovereign-status-bootstrap-authority.v1` format, whose
+ *   `frontera.sovereign-status-bootstrap-authority.v2` format, whose
  *   commitment domain is not CORE-05's. A CORE-05 decision, or an
  *   organization-bootstrap approval, cannot be presented: AUTH-03's
  *   bootstrap methods refuse every other format, and this authorizer checks
  *   the format again.
- * - **One subject.** Both are bound to `sha256:<binding digest>` under the
- *   request id `frontera.sovereign-status-bootstrap:<binding digest>`. The
- *   digest is FV-P4C-2B1's own, so it covers namespace, asset, issuer,
+ * - **One subject, in one history.** Both are bound to `sha256:<binding digest>`
+ *   under the request id
+ *   `frontera.sovereign-status-bootstrap.v2:<namespace>:<binding digest>`,
+ *   where the namespace is the binding's own (percent-encoded). The digest
+ *   is FV-P4C-2B1's own, so it covers namespace, asset, issuer,
  *   manifest, status sequence and digest, terms, operation, purpose, request
  *   id, requesting operator and request expiry.
  * - **Two signed roles (B5).** The requester's decision must carry the signed
@@ -55,10 +57,12 @@ import type { BootstrapHumanPermissions, BootstrapPermissionScope } from './auth
  */
 
 /** AUTH-03's bootstrap-authority challenge format (`BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT`); a test pins it to the real constant. */
-export const BOOTSTRAP_HUMAN_DECISION_FORMAT = 'frontera.sovereign-status-bootstrap-authority.v1';
+export const BOOTSTRAP_HUMAN_DECISION_FORMAT = 'frontera.sovereign-status-bootstrap-authority.v2';
 
-/** The AUTH-03 `approvalRequestId` namespace for bootstrap decisions; never a CORE-05 request id. */
-export const BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX = 'frontera.sovereign-status-bootstrap:';
+/** The AUTH-03 `approvalRequestId` namespace for bootstrap decisions (`BOOTSTRAP_AUTHORITY_REQUEST_PREFIX`); never a CORE-05 request id. */
+export const BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX = 'frontera.sovereign-status-bootstrap.v2:';
+
+const MAX_NAMESPACE_LENGTH = 256;
 
 /** The `authorityRef` this authorizer records: `<prefix><requester commitment>:<approver commitment>`, in that order. */
 export const BOOTSTRAP_AUTHORITY_REF_PREFIX = 'frontera.sovereign-status-bootstrap-authority.v1:';
@@ -118,17 +122,50 @@ export interface HumanDecisionBootstrapAuthorizer extends StatusHistoryBootstrap
   consumedDecisions(): readonly string[];
 }
 
-/** The AUTH-03 `beginBootstrapAuthorityDecision` input for one role of this binding. */
-export function bootstrapAuthorityDecisionInput(bindingDigest: string, role: 'requester' | 'approver'): { readonly bindingDigest: string; readonly role: 'attest' | 'approve' } {
+/**
+ * FV-P4C-2B2C — `<prefix><encodeURIComponent(namespace)>:<bindingDigest>`: AUTH-03's
+ * `bootstrapAuthorityRequestId`, restated here so this module never imports the identity service
+ * (a test pins the two to each other).
+ */
+export function bootstrapHumanDecisionRequestId(namespace: string, bindingDigest: string): string {
+  if (!isIdentifier(namespace, MAX_NAMESPACE_LENGTH)) throw new TypeError('A bootstrap decision names one status history namespace.');
   if (!isDigest(bindingDigest)) throw new TypeError('A bootstrap binding digest is lowercase hex SHA-256.');
+  return `${BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX}${encodeURIComponent(namespace)}:${bindingDigest}`;
+}
+
+/** The namespace and binding digest of a bootstrap decision's request id, in its one canonical spelling; `undefined` for anything else. */
+export function parseBootstrapHumanDecisionRequestId(value: unknown): { readonly namespace: string; readonly bindingDigest: string } | undefined {
+  if (typeof value !== 'string' || !value.startsWith(BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX)) return undefined;
+  const match = /^([^:]+):([0-9a-f]{64})$/.exec(value.slice(BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX.length));
+  if (match === null) return undefined;
+  let namespace: string;
+  try {
+    namespace = decodeURIComponent(match[1]!);
+  } catch {
+    return undefined;
+  }
+  if (!isIdentifier(namespace, MAX_NAMESPACE_LENGTH) || encodeURIComponent(namespace) !== match[1]) return undefined;
+  return { namespace, bindingDigest: match[2]! };
+}
+
+/** The AUTH-03 `beginBootstrapAuthorityDecision` input for one role of this binding: its namespace and its own digest. */
+export function bootstrapAuthorityDecisionInput(binding: StatusHistoryBootstrapBinding, role: 'requester' | 'approver'): { readonly namespace: string; readonly bindingDigest: string; readonly role: 'attest' | 'approve' } {
   if (role !== 'requester' && role !== 'approver') throw new TypeError('A bootstrap role is requester or approver.');
-  return { bindingDigest, role: BOOTSTRAP_HUMAN_DECISION_ROLES[role] };
+  const { namespace, bindingDigest } = targetOf(binding);
+  return { namespace, bindingDigest, role: BOOTSTRAP_HUMAN_DECISION_ROLES[role] };
 }
 
 /** The contract fields every decision for this binding must carry. */
-export function bootstrapHumanDecisionInputs(bindingDigest: string): { readonly approvalRequestId: string; readonly subjectDigest: string } {
-  if (!isDigest(bindingDigest)) throw new TypeError('A bootstrap binding digest is lowercase hex SHA-256.');
-  return { approvalRequestId: `${BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX}${bindingDigest}`, subjectDigest: `sha256:${bindingDigest}` };
+export function bootstrapHumanDecisionInputs(binding: StatusHistoryBootstrapBinding): { readonly approvalRequestId: string; readonly subjectDigest: string } {
+  const { namespace, bindingDigest } = targetOf(binding);
+  return { approvalRequestId: bootstrapHumanDecisionRequestId(namespace, bindingDigest), subjectDigest: `sha256:${bindingDigest}` };
+}
+
+function targetOf(binding: StatusHistoryBootstrapBinding): { readonly namespace: string; readonly bindingDigest: string } {
+  if (typeof binding !== 'object' || binding === null) throw new TypeError('A bootstrap decision is for one bootstrap binding.');
+  const bindingDigest = bootstrapBindingDigest(binding);
+  bootstrapHumanDecisionRequestId(binding.namespace, bindingDigest);
+  return { namespace: binding.namespace, bindingDigest };
 }
 
 const COMMITMENT = /^sha256:[0-9a-f]{64}$/;
@@ -166,7 +203,7 @@ export function createHumanDecisionBootstrapAuthorizer(options: HumanDecisionBoo
       try {
         // The digest must be the binding's own: a decision is bound to the digest, the digest to the binding.
         if (!isDigest(bindingDigest) || bootstrapBindingDigest(binding) !== bindingDigest) return deny('BINDING_INVALID');
-        const expected = bootstrapHumanDecisionInputs(bindingDigest);
+        const expected = bootstrapHumanDecisionInputs(binding);
 
         let requester: Peeked;
         let approver: Peeked;
