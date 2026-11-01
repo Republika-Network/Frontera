@@ -214,7 +214,12 @@ export interface CreateAssessmentRequest {
   };
   readonly frameworkId: string;
   readonly frameworkVersion: string;
-  readonly requestedBy: string;
+  /**
+   * Required with an organization API key. With an Assurance reviewer
+   * credential (ASSURE-REL-01D) it may be omitted: the requester is the
+   * credential, and a different value is refused (403).
+   */
+  readonly requestedBy?: string;
   readonly [key: string]: unknown;
 }
 
@@ -256,9 +261,82 @@ export interface ReassessRequest {
   readonly frameworkId: string;
   readonly frameworkVersion: string;
   readonly reason: string;
-  readonly requestedBy: string;
+  /** Required with an organization API key; with an Assurance reviewer credential the requester is the credential (ASSURE-REL-01D). */
+  readonly requestedBy?: string;
   readonly [key: string]: unknown;
 }
+
+// -- assurance operator interface (ASSURE-REL-01D) ------------------------------
+//
+// Every method below requires a client whose `apiKey` is an Assurance reviewer
+// credential; an organization API key is refused (401). The organization, the
+// actor and the roles are that credential's -- no request type carries an
+// actor, approver or terminator field. Responses keep open index signatures.
+
+/** Manually supplied evidence, recorded unverified and offered only to the requirements each reference names (ASSURE-SEC-01C). */
+export interface AssuranceEvidenceSubmission {
+  readonly manualEvidence: readonly Readonly<Record<string, unknown>>[];
+}
+
+/** Ends a non-terminal attempt as inconclusive. Needs `assure.reviewer`. */
+export interface AssessmentTerminationRequest {
+  readonly reasonCode: 'unresolved_contradiction' | 'engagement_withdrawn';
+  readonly rationale: string;
+}
+
+export type AssessmentTerminationResult = Readonly<Record<string, unknown>> & {
+  readonly outcome?: 'terminated' | 'replayed';
+  readonly assessment?: AssuranceAssessment;
+};
+
+/** What a commercial report is drafted from beyond the stored assessment (rn.sv@0.1.0 only). */
+export interface CommercialReportRequest {
+  readonly engagement: Readonly<Record<string, unknown>>;
+  readonly issue: { readonly issuedOn: string; readonly reportVersion: string };
+}
+
+export type CommercialReportDraft = Readonly<Record<string, unknown>> & {
+  readonly content?: Readonly<Record<string, unknown>>;
+  readonly markdown?: string;
+  readonly manifest?: Readonly<Record<string, unknown>> & { readonly contentDigest?: string; readonly reportId?: string };
+};
+
+/**
+ * Approves the exact `approvedContentDigest` of the current draft. Needs
+ * `assure.report-release`, a credential that recorded no review of the
+ * assessment, and a Host with durable release custody. Closed: there is no
+ * approver field to set.
+ */
+export interface CommercialReleaseRequest extends CommercialReportRequest {
+  readonly approvedContentDigest: string;
+  readonly acknowledgements: { readonly limitationsReviewed: true; readonly commercialUseRestrictionAcknowledged: true };
+}
+
+export type CommercialReleaseRecord = Readonly<Record<string, unknown>> & {
+  readonly reportId?: string;
+  readonly release?: Readonly<Record<string, unknown>>;
+};
+
+/** HTTP 201 when this call committed the release, 200 when it was already kept (`replayed`). */
+export type CommercialReleaseResult = Readonly<Record<string, unknown>> & {
+  readonly release?: Readonly<Record<string, unknown>>;
+  readonly custody?: { readonly outcome: 'committed' | 'replayed' };
+};
+
+/** A delivered package: `report.json`, `report.md`, `integrity-manifest.json` and, if present, `release-record.json`. */
+export interface CommercialReleasePackage {
+  readonly content: unknown;
+  readonly markdown: string;
+  readonly manifest: Readonly<Record<string, unknown>>;
+  readonly release?: Readonly<Record<string, unknown>>;
+}
+
+/** Package integrity and the Host's custody answer, separately. Never a signature: `externalSignature` is always `EXTERNAL_SIGNATURE_NOT_AVAILABLE`. */
+export type CommercialReleaseVerification = Readonly<Record<string, unknown>> & {
+  readonly authority?: string;
+  readonly releaseAuthenticated?: boolean;
+  readonly externalSignature?: 'EXTERNAL_SIGNATURE_NOT_AVAILABLE';
+};
 
 // -- client options ------------------------------------------------------------
 

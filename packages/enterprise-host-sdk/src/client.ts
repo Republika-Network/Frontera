@@ -1,6 +1,16 @@
 import { EnterpriseHostApiError, EnterpriseHostNetworkError, EnterpriseHostTimeoutError } from './errors.js';
 import type {
   AgentPassport,
+  AssessmentTerminationRequest,
+  AssessmentTerminationResult,
+  AssuranceEvidenceSubmission,
+  CommercialReleasePackage,
+  CommercialReleaseRecord,
+  CommercialReleaseRequest,
+  CommercialReleaseResult,
+  CommercialReleaseVerification,
+  CommercialReportDraft,
+  CommercialReportRequest,
   AssuranceAssessment,
   AssuranceSignalRequest,
   AssuranceVerificationResult,
@@ -90,6 +100,15 @@ export interface EnterpriseHostClient {
   processSignal(request: AssuranceSignalRequest): Promise<unknown>;
   getContinuousState(subjectId: string, options?: { readonly frameworkId?: string; readonly frameworkVersion?: string }): Promise<unknown>;
   requestReassessment(subjectId: string, request: ReassessRequest): Promise<AssuranceAssessment>;
+
+  // assurance operator interface (ASSURE-REL-01D): an Assurance reviewer credential only
+  submitAssessmentEvidence(assessmentId: string, submission: AssuranceEvidenceSubmission): Promise<AssuranceAssessment>;
+  terminateAssessment(assessmentId: string, request: AssessmentTerminationRequest): Promise<AssessmentTerminationResult>;
+  draftCommercialReport(assessmentId: string, request: CommercialReportRequest): Promise<CommercialReportDraft>;
+  releaseCommercialReport(assessmentId: string, request: CommercialReleaseRequest): Promise<CommercialReleaseResult>;
+  listCommercialReleases(assessmentId: string): Promise<{ readonly assessmentId: string; readonly releases: readonly CommercialReleaseRecord[] }>;
+  getCommercialRelease(reportId: string): Promise<CommercialReleaseRecord>;
+  verifyCommercialRelease(delivered: CommercialReleasePackage): Promise<CommercialReleaseVerification>;
 }
 
 function resolveFetch(options: EnterpriseHostClientOptions): FetchLike {
@@ -343,5 +362,13 @@ export function createEnterpriseHostClient(options: EnterpriseHostClientOptions)
       return request('GET', `/api/assurance/subjects/${encode(subjectId)}/state${query}`);
     },
     requestReassessment: (subjectId, body) => request('POST', `/api/assurance/subjects/${encode(subjectId)}/reassess`, body),
+
+    submitAssessmentEvidence: (assessmentId, submission) => request('POST', `/api/assurance/assessments/${encode(assessmentId)}/evidence`, submission),
+    terminateAssessment: (assessmentId, body) => request('POST', `/api/assurance/assessments/${encode(assessmentId)}/terminate`, body),
+    draftCommercialReport: (assessmentId, body) => request('POST', `/api/assurance/assessments/${encode(assessmentId)}/commercial-report/draft`, body),
+    releaseCommercialReport: (assessmentId, body) => request('POST', `/api/assurance/assessments/${encode(assessmentId)}/commercial-report/release`, body),
+    listCommercialReleases: (assessmentId) => request('GET', `/api/assurance/assessments/${encode(assessmentId)}/commercial-releases`),
+    getCommercialRelease: (reportId) => request('GET', `/api/assurance/commercial-releases/${encode(reportId)}`),
+    verifyCommercialRelease: (delivered) => request('POST', '/api/assurance/commercial-releases/verify', delivered),
   };
 }

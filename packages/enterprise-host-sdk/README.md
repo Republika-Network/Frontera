@@ -197,6 +197,20 @@ The SDK never retries. Guidance for callers:
   `assuranceReviewers`). Organization keys get `401`. The reviewer identity and
   role come from that credential; `reviewerId` / `reviewerRole` are optional and
   a mismatch is refused with `403 ASSURANCE_REVIEWER_UNAUTHORIZED`.
+- **Assurance operator methods** (ASSURE-REL-01D: `submitAssessmentEvidence`,
+  `terminateAssessment`, `draftCommercialReport`, `releaseCommercialReport`,
+  `listCommercialReleases`, `getCommercialRelease`, `verifyCommercialRelease`):
+  an Assurance reviewer credential only; anything else gets `401`. The
+  organization, actor and roles are the credential's; no request type has an
+  actor or approver field. `releaseCommercialReport` is safe to retry with the
+  **same** credential, content digest and acknowledgements: the Host answers
+  `200` with the release it already keeps (`custody.outcome: 'replayed'`); a
+  different approver gets `409`. A `409` with reason `approved_digest_stale`
+  means the draft changed: draft again and approve the new digest.
+  `terminateAssessment` replays the same end (`outcome: 'replayed'`).
+  `submitAssessmentEvidence` is not idempotent; a `409
+  ASSURANCE_ASSESSMENT_CONFLICT` means another writer changed the assessment
+  first — read it before retrying.
 - **Other writes** (`processSignal`, `recordManualReview`, `appendFindingEvent`,
   `createAssessment`, passport lifecycle actions): not idempotent — do not
   retry blindly after a timeout; read the current state first.
@@ -222,3 +236,10 @@ The governed-action types are deliberately different:
 
 `1.1.0` added `governAction()` and its type-only mirrors; the five runtime
 exports are unchanged.
+
+Unreleased (ASSURE-REL-01D) adds seven Assurance operator client methods and
+their type-only request/response types, and makes `requestedBy` optional in
+`CreateAssessmentRequest` / `ReassessRequest` (a reviewer credential is the
+requester). All additive: a MINOR change, to be released as `1.2.0` with the
+next package release. The five runtime exports and the zero-dependency rule
+are unchanged.
