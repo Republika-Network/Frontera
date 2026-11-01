@@ -78,6 +78,7 @@ export type EnterpriseHttpErrorCode =
   | 'ASSURANCE_REVIEWER_UNAUTHORIZED'
   | 'ASSURANCE_ASSESSMENT_NOT_FOUND'
   | 'ASSURANCE_ASSESSMENT_IMMUTABLE'
+  | 'ASSURANCE_ASSESSMENT_CONFLICT'
   | 'ASSURANCE_ASSESSMENT_INCOMPLETE'
   | 'ASSURANCE_FINDING_NOT_FOUND'
   | 'ASSURANCE_INVALID_FINDING_TRANSITION'
@@ -259,6 +260,8 @@ export function mapAssuranceErrorToHttp(error: AssuranceError): EnterpriseHttpEr
     case 'ASSURANCE_CONTROL_NOT_FOUND':
       return new EnterpriseHttpError(404, error.code, error.message, undefined, extra);
     case 'ASSURANCE_ASSESSMENT_IMMUTABLE':
+    // ASSURE-REL-01D: a lost compare-and-set race. Retryable; nothing was written.
+    case 'ASSURANCE_ASSESSMENT_CONFLICT':
     case 'ASSURANCE_ASSESSMENT_INCOMPLETE':
     case 'ASSURANCE_INVALID_FINDING_TRANSITION':
       return new EnterpriseHttpError(409, error.code, error.message, undefined, extra);

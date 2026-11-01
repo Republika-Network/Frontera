@@ -4,6 +4,8 @@ import { applyFindingTransition, foldFindingStatus } from './findings.js';
 import { assertCompletionCommit } from './finding-history.js';
 import { commercialReleaseCustodyViolations, type CommercialReleaseCustodyRecord } from './commercial-release-custody.js';
 import {
+  assertAssessmentWritePrecondition,
+  assessmentWritePrecondition,
   canAccessAssuranceOrganization,
   requireAccessToAssuranceOrganization,
   requireAssuranceTenantScope,
@@ -95,9 +97,10 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
       return [...frameworks.values()];
     },
 
-    async saveAssessment(context, assessment) {
+    async saveAssessment(context, assessment, expected) {
       assertOpen();
       requireAccessToAssuranceOrganization(context, assessment.subject.organizationId);
+      // No `await` between these checks and the map update: in one process that is the write lock.
       const existing = assessments.get(assessment.assessmentId);
       if (existing !== undefined) {
         if (existing.subject.organizationId !== assessment.subject.organizationId) {
@@ -107,6 +110,8 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
           throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Assessment '${assessment.assessmentId}' is '${existing.status}' and immutable; changed evidence or framework versions require a new assessment.`);
         }
       }
+      // ASSURE-REL-01D: same compare-and-set semantics as the SQLite store.
+      assertAssessmentWritePrecondition(assessment.assessmentId, existing === undefined ? undefined : assessmentWritePrecondition(existing), expected);
       assessments.set(assessment.assessmentId, assessment);
       // Findings rows persist only when the assessment completes (re-evaluation
       // before completion replaces the working findings set; only the final set
@@ -181,6 +186,7 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
       if (ASSURANCE_TERMINAL_STATUSES.includes(existing.status)) {
         throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Assessment '${assessment.assessmentId}' is '${existing.status}' and immutable; changed evidence or framework versions require a new assessment.`);
       }
+      assertAssessmentWritePrecondition(assessment.assessmentId, assessmentWritePrecondition(existing), commit.expected);
       for (const event of openingEvents) {
         if (findingEventIds.has(event.findingEventId)) {
           throw new AssuranceError('ASSURANCE_INVALID_FINDING_TRANSITION', `Finding event id '${event.findingEventId}' already exists.`);

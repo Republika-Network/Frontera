@@ -29,7 +29,7 @@ import {
   type CommercialReportDraft,
   type CommercialReportRelease,
 } from './commercial-report.js';
-import { requireAssuranceTenantScope, type AssuranceStore } from './assurance-store.js';
+import { assessmentWritePrecondition, requireAssuranceTenantScope, type AssuranceStore } from './assurance-store.js';
 import { providesDurableReleaseCustody } from './sqlite-assurance-store.js';
 import {
   buildCommercialReleaseCustodyRecord,
@@ -271,6 +271,9 @@ export interface AssuranceServiceDependencies {
   readonly reviewers?: readonly AssuranceReviewerCredential[];
 }
 
+/** ASSURE-REL-01D: how many times an end re-reads after losing a compare-and-set race before it reports the conflict. */
+const TERMINATION_CONFLICT_ATTEMPTS = 3;
+
 export function createAssuranceService(deps: AssuranceServiceDependencies): AssuranceService {
   const { store, registry, telemetry, eventPublisher, logger, now, nextId } = deps;
   const evaluator = createAssuranceControlEvaluator();
@@ -462,9 +465,15 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
     return evaluations;
   }
 
-  async function saveWithIntegrity(context: AssuranceAccessContext, assessment: AssuranceAssessment): Promise<AssuranceAssessment> {
+  /**
+   * Seals and saves a rewrite of a stored assessment. ASSURE-REL-01D: `read` is
+   * the stored state the rewrite was computed from; the store refuses the save
+   * (`ASSURANCE_ASSESSMENT_CONFLICT`) when another writer changed it first, so
+   * no rewrite silently replaces a concurrent one.
+   */
+  async function saveWithIntegrity(context: AssuranceAccessContext, assessment: AssuranceAssessment, read: AssuranceAssessment): Promise<AssuranceAssessment> {
     const sealed = withIntegrity(assessment);
-    await store.saveAssessment(context, sealed);
+    await store.saveAssessment(context, sealed, assessmentWritePrecondition(read));
     return sealed;
   }
 
@@ -489,12 +498,16 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
     publish('AssuranceEvidenceCollectionStarted', { assessmentId, organizationId: assessment.subject.organizationId });
 
     const { resolutions, references } = await resolveEvidence(context, assessment, framework, options);
-    return saveWithIntegrity(context, {
-      ...assessment,
-      status: 'collecting_evidence',
-      evidenceReferences: references,
-      evidenceResolutions: resolutions,
-    });
+    return saveWithIntegrity(
+      context,
+      {
+        ...assessment,
+        status: 'collecting_evidence',
+        evidenceReferences: references,
+        evidenceResolutions: resolutions,
+      },
+      assessment,
+    );
   }
 
   async function createAssessmentInternal(context: AssuranceAccessContext, input: CreateAssuranceAssessmentInput): Promise<AssuranceAssessment> {
@@ -636,12 +649,15 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
 
     async evaluateAssessment(context, assessmentId, options) {
       let assessment = await requireAssessment(context, assessmentId);
+      // ASSURE-REL-01D: the stored state every save below is conditioned on.
+      let stored = assessment;
       const framework = frameworkFor(assessment);
       if (assessment.status === 'created') assertManualEvidenceBindings(framework, options);
 
       try {
         if (assessment.status === 'created') {
           assessment = await collectEvidenceInternal(context, assessmentId, options);
+          stored = assessment;
         }
         assertAssessmentTransition(assessment.status, 'evaluating');
         assessment = { ...assessment, status: 'evaluating' };
@@ -696,22 +712,32 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
         });
 
         const pendingManualReview = evaluations.some((evaluation) => evaluation.status === 'manual_review_required');
-        return await saveWithIntegrity(context, {
-          ...assessment,
-          status: pendingManualReview ? 'manual_review' : 'evaluating',
-          controlEvaluations: evaluations,
-          findings,
-          domainAssessments,
-          score,
-          eligibility,
-        });
+        return await saveWithIntegrity(
+          context,
+          {
+            ...assessment,
+            status: pendingManualReview ? 'manual_review' : 'evaluating',
+            controlEvaluations: evaluations,
+            findings,
+            domainAssessments,
+            score,
+            eligibility,
+          },
+          stored,
+        );
       } catch (error) {
-        if (isAssuranceError(error) && (error.code === 'ASSURANCE_ASSESSMENT_IMMUTABLE' || error.code === 'ASSURANCE_ASSESSMENT_NOT_FOUND')) throw error;
+        // A lifecycle refusal or a lost race (ASSURE-REL-01D) is not an evaluation failure: nothing is recorded.
+        if (
+          isAssuranceError(error) &&
+          (error.code === 'ASSURANCE_ASSESSMENT_IMMUTABLE' || error.code === 'ASSURANCE_ASSESSMENT_NOT_FOUND' || error.code === 'ASSURANCE_ASSESSMENT_CONFLICT')
+        ) {
+          throw error;
+        }
         // Evaluation infrastructure failure: record the failed assessment
         // (best-effort) so the lifecycle is honest, then rethrow.
         telemetry?.recordAssuranceAssessmentFailed();
         publish('AssuranceAssessmentFailed', { assessmentId, organizationId: assessment.subject.organizationId, detail: { reason: error instanceof Error ? error.message : 'unknown' } });
-        await saveWithIntegrity(context, { ...assessment, status: 'failed', failureReason: error instanceof Error ? error.message : 'Unknown evaluation failure.' }).catch(() => {});
+        await saveWithIntegrity(context, { ...assessment, status: 'failed', failureReason: error instanceof Error ? error.message : 'Unknown evaluation failure.' }, stored).catch(() => {});
         throw error;
       }
     },
@@ -756,7 +782,7 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
       // of a replaced assessment persist as one unit, or not at all. A failure
       // is reported, never swallowed, and leaves the assessment completable.
       try {
-        await store.completeAssessment(context, { assessment: completed, findingEvents });
+        await store.completeAssessment(context, { assessment: completed, findingEvents, expected: assessmentWritePrecondition(assessment) });
       } catch (error) {
         const failure =
           error instanceof AssuranceError
@@ -1192,21 +1218,33 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
           reason: kept.termination !== undefined ? 'assessment_already_terminated' : 'assessment_terminal',
         });
       };
-      const assessment = await requireAssessment(reviewerContext, assessmentId);
-      if (ASSURANCE_TERMINAL_STATUSES.includes(assessment.status)) return answerKept(assessment);
-      assertAssessmentTransition(assessment.status, 'failed');
-      if (input.reasonCode === 'unresolved_contradiction' && unresolvedContradictions(assessment).length === 0) {
-        throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `Assessment '${assessmentId}' holds no contradictory evidence; 'unresolved_contradiction' cannot be recorded for it.`);
-      }
-      const termination = buildAssessmentTermination({ assessment, reasonCode: input.reasonCode, rationale, terminatedBy: reviewer.reviewerId, terminatedAt: now() });
-      // Content and its digests are untouched: only the lifecycle status and the termination record change.
-      const terminated: AssuranceAssessment = { ...assessment, status: 'failed', failureReason: `Ended as inconclusive (${input.reasonCode}).`, termination };
-      try {
-        await store.saveAssessment(reviewerContext, terminated);
-      } catch (error) {
-        // Another writer ended or completed it first (the store took the write lock and saw it terminal): answer from what is stored.
-        if (isAssuranceError(error) && error.code === 'ASSURANCE_ASSESSMENT_IMMUTABLE') return answerKept(await requireAssessment(reviewerContext, assessmentId));
-        throw error;
+      // ASSURE-REL-01D: the end is written only over the exact state it was
+      // checked against. A concurrent nonterminal save (an evaluation landing
+      // first) is a conflict, never overwritten: the end is re-read, re-checked
+      // and bound to the newly stored content, a bounded number of times. It
+      // changes only the status and the termination record, so a retry never
+      // writes content this call did not read.
+      let assessment: AssuranceAssessment;
+      let terminated: AssuranceAssessment;
+      for (let attempt = 1; ; attempt += 1) {
+        assessment = await requireAssessment(reviewerContext, assessmentId);
+        if (ASSURANCE_TERMINAL_STATUSES.includes(assessment.status)) return answerKept(assessment);
+        assertAssessmentTransition(assessment.status, 'failed');
+        if (input.reasonCode === 'unresolved_contradiction' && unresolvedContradictions(assessment).length === 0) {
+          throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `Assessment '${assessmentId}' holds no contradictory evidence; 'unresolved_contradiction' cannot be recorded for it.`);
+        }
+        const termination = buildAssessmentTermination({ assessment, reasonCode: input.reasonCode, rationale, terminatedBy: reviewer.reviewerId, terminatedAt: now() });
+        // Content and its digests are untouched: only the lifecycle status and the termination record change.
+        terminated = { ...assessment, status: 'failed', failureReason: `Ended as inconclusive (${input.reasonCode}).`, termination };
+        try {
+          await store.saveAssessment(reviewerContext, terminated, assessmentWritePrecondition(assessment));
+          break;
+        } catch (error) {
+          // Another writer ended or completed it first (the store took the write lock and saw it terminal): answer from what is stored.
+          if (isAssuranceError(error) && error.code === 'ASSURANCE_ASSESSMENT_IMMUTABLE') return answerKept(await requireAssessment(reviewerContext, assessmentId));
+          if (isAssuranceError(error) && error.code === 'ASSURANCE_ASSESSMENT_CONFLICT' && attempt < TERMINATION_CONFLICT_ATTEMPTS) continue;
+          throw error;
+        }
       }
       publish('AssuranceAssessmentFailed', {
         assessmentId,

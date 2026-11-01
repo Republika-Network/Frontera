@@ -6,9 +6,11 @@ import { verifyAssuranceAssessment } from './verification.js';
 import { applyFindingTransition, foldFindingStatus } from './findings.js';
 import { assertCompletionCommit } from './finding-history.js';
 import {
+  assertAssessmentWritePrecondition,
   canAccessAssuranceOrganization,
   requireAccessToAssuranceOrganization,
   requireAssuranceTenantScope,
+  type AssuranceAssessmentWritePrecondition,
   type AssuranceStore,
 } from './assurance-store.js';
 import type {
@@ -528,8 +530,24 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
     return rowToAssessment(row);
   }
 
-  /** The assessment row and, at a terminal status, its findings and queryable projections. Runs inside the caller's transaction. */
-  function writeAssessment(assessment: AssuranceAssessment): void {
+  /** The stored status and assessment digest of a row (ASSURE-REL-01D compare-and-set). An unreadable row matches nothing. */
+  function storedWriteState(row: AssessmentRow | undefined): AssuranceAssessmentWritePrecondition | undefined {
+    if (row === undefined) return undefined;
+    let digest: unknown;
+    try {
+      digest = (JSON.parse(row.assessment_json) as { integrity?: { assessmentDigest?: unknown } }).integrity?.assessmentDigest;
+    } catch {
+      digest = undefined;
+    }
+    return { status: row.status as AssuranceAssessment['status'], assessmentDigest: typeof digest === 'string' ? digest : '\u0000unreadable' };
+  }
+
+  /**
+   * The assessment row and, at a terminal status, its findings and queryable
+   * projections. Runs inside the caller's IMMEDIATE transaction, so the
+   * immutability and compare-and-set checks read the state the write replaces.
+   */
+  function writeAssessment(assessment: AssuranceAssessment, expected?: AssuranceAssessmentWritePrecondition): void {
     const existing = loadAssessmentRow(assessment.assessmentId);
     if (existing !== undefined) {
       if (existing.organization_id !== assessment.subject.organizationId) {
@@ -539,6 +557,8 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
         throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Assessment '${assessment.assessmentId}' is '${existing.status}' and immutable; changed evidence or framework versions require a new assessment.`);
       }
     }
+    // ASSURE-REL-01D: a writer that read an older state writes nothing.
+    assertAssessmentWritePrecondition(assessment.assessmentId, storedWriteState(existing), expected);
     upsertAssessment.run({
       assessmentId: assessment.assessmentId,
       organizationId: assessment.subject.organizationId,
@@ -665,7 +685,7 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
       return rows.map((row) => JSON.parse(row.definition_json) as AssuranceFramework);
     },
 
-    async saveAssessment(context, assessment) {
+    async saveAssessment(context, assessment, expected) {
       assertOpen();
       requireAccessToAssuranceOrganization(context, assessment.subject.organizationId);
       // ASSURE-REL-01B: IMMEDIATE -- the write lock is taken before the stored
@@ -673,7 +693,7 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
       // and an evaluation) cannot both see a non-terminal assessment; the
       // second one sees the first one's terminal status and is refused.
       try {
-        db.transaction(() => writeAssessment(assessment)).immediate();
+        db.transaction(() => writeAssessment(assessment, expected)).immediate();
       } catch (error) {
         if (error instanceof AssuranceError) throw error;
         // The driver's message may name paths or SQL; it never leaves the store.
@@ -708,7 +728,7 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
             throw new AssuranceError('ASSURANCE_ASSESSMENT_IMMUTABLE', `Only a completed assessment can be superseded; '${assessment.supersedesAssessmentId}' is '${previous.status}'.`);
           }
         }
-        writeAssessment(assessment);
+        writeAssessment(assessment, commit.expected);
         for (const event of findingEvents) {
           if (loadFindingEvents(event.findingId).length > 0) {
             throw new AssuranceError('ASSURANCE_INVALID_FINDING_TRANSITION', `Finding '${event.findingId}' already has a history; its opening event cannot be appended again.`);
