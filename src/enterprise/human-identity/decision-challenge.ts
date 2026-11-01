@@ -147,6 +147,95 @@ export function humanDecisionEvidenceDigest(evidence: HumanDecisionEvidence): st
   return `sha256:${sha256Hex(canonicalHumanDecisionEvidence(evidence))}`;
 }
 
+// ── FV-P4C-2B2B: the sovereign-status-bootstrap authority domain ───────────
+//
+// A second, separate decision domain, for the two human decisions that
+// authorize one sovereign status history bootstrap. It is not a CORE-05
+// decision and is never read as one:
+//
+// - **Its own format and commitment domain.** `format` is
+//   `frontera.sovereign-status-bootstrap-authority.v1`, and the commitment is
+//   SHA-256 over `frontera:sovereign-status-bootstrap-authority:v1\n` plus the
+//   canonical contract, so no bootstrap commitment equals a CORE-05 one, even
+//   for identical fields. AUTH-03's CORE-05 methods (`peekDecision`,
+//   `authorizeDecision`, `decision`, `unsettledDecisions`,
+//   `recordDecisionOutcome`) refuse or skip this format.
+// - **A signed role, not a verdict.** In this domain `verdict` names the
+//   signer's role: `attest` (the requester's signed intent to perform exactly
+//   this bootstrap) or `approve` (an independent approver's authorization).
+//   `reject` does not exist here, and neither role can stand for the other,
+//   because the role is inside the commitment the passkey signs.
+// - **The subject is the FV binding.** `approvalRequestId` is
+//   `frontera.sovereign-status-bootstrap:<bindingDigest>` and `subjectDigest`
+//   is `sha256:<bindingDigest>`, where the binding digest is FV-P4C-2B1's own
+//   (`bootstrapBindingDigest`). It commits to the namespace, asset, issuer,
+//   manifest, status sequence and digest, terms, operation, purpose, request
+//   id, requesting operator and request expiry.
+
+export const BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT = 'frontera.sovereign-status-bootstrap-authority.v1';
+export const BOOTSTRAP_AUTHORITY_CHALLENGE_DOMAIN = 'frontera:sovereign-status-bootstrap-authority:v1\n';
+export const BOOTSTRAP_AUTHORITY_EVIDENCE_FORMAT = 'frontera.sovereign-status-bootstrap-authority-evidence.v1';
+export const BOOTSTRAP_AUTHORITY_EVIDENCE_DOMAIN = 'frontera:sovereign-status-bootstrap-authority-evidence:v1\n';
+/** The `approvalRequestId` namespace of the bootstrap domain; never a CORE-05 request id. */
+export const BOOTSTRAP_AUTHORITY_REQUEST_PREFIX = 'frontera.sovereign-status-bootstrap:';
+
+/** The signed role of a bootstrap-authority decision. Closed. */
+export type BootstrapAuthorityRole = 'attest' | 'approve';
+export const BOOTSTRAP_AUTHORITY_ROLES: readonly BootstrapAuthorityRole[] = Object.freeze(['attest', 'approve']);
+
+export interface BootstrapAuthorityChallengeContract {
+  readonly format: typeof BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT;
+  readonly organizationId: string;
+  readonly approvalRequestId: string;
+  readonly subjectDigest: string;
+  readonly verdict: BootstrapAuthorityRole;
+  readonly operatorId: string;
+  readonly nonce: string;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+}
+
+export function isBootstrapAuthorityContract(contract: { readonly format: string }): contract is BootstrapAuthorityChallengeContract {
+  return contract.format === BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT;
+}
+
+/** `sha256:<hex>` — the commitment to one bootstrap-authority decision, under its own domain. */
+export function bootstrapAuthorityChallengeCommitment(contract: BootstrapAuthorityChallengeContract): string {
+  const canonical = canonicalJson({
+    approvalRequestId: contract.approvalRequestId,
+    expiresAt: contract.expiresAt,
+    format: contract.format,
+    issuedAt: contract.issuedAt,
+    nonce: contract.nonce,
+    operatorId: contract.operatorId,
+    organizationId: contract.organizationId,
+    subjectDigest: contract.subjectDigest,
+    verdict: contract.verdict,
+  });
+  return `sha256:${sha256Hex(`${BOOTSTRAP_AUTHORITY_CHALLENGE_DOMAIN}${canonical}`)}`;
+}
+
+/**
+ * The commitment of any stored decision contract, by its format: the CORE-05
+ * domain for `frontera.human-decision-challenge.v1`, the bootstrap domain for
+ * its own format, and `undefined` for anything else (never believed).
+ */
+export function decisionContractCommitment(contract: HumanDecisionChallengeContract | BootstrapAuthorityChallengeContract): string | undefined {
+  if (contract.format === HUMAN_DECISION_CHALLENGE_FORMAT) return humanDecisionChallengeCommitment(contract as HumanDecisionChallengeContract);
+  if (contract.format === BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT) return bootstrapAuthorityChallengeCommitment(contract as BootstrapAuthorityChallengeContract);
+  return undefined;
+}
+
+/** The auditable record of one authorized bootstrap-authority decision. Same public facts as a CORE-05 decision; the verdict is the signed role. */
+export interface BootstrapAuthorityDecisionEvidence extends Omit<HumanDecisionEvidence, 'verdict'> {
+  readonly verdict: BootstrapAuthorityRole;
+}
+
+/** `sha256:<hex>` over the evidence, under the bootstrap evidence domain. */
+export function bootstrapAuthorityEvidenceDigest(evidence: BootstrapAuthorityDecisionEvidence): string {
+  return `sha256:${sha256Hex(`${BOOTSTRAP_AUTHORITY_EVIDENCE_DOMAIN}${canonicalHumanDecisionEvidence(evidence as unknown as HumanDecisionEvidence)}`)}`;
+}
+
 /** A challenge digest as the chained rows name it — never the challenge string itself. */
 export function challengeDigestOf(challenge: string): string {
   return `sha256:${sha256Hex(`frontera:human-identity-challenge:v1\n${challenge}`)}`;

@@ -1,54 +1,70 @@
 import { bootstrapBindingDigest, isDigest } from './bootstrap-contract.js';
 import type { StatusHistoryBootstrapAuthorizer, StatusHistoryBootstrapBinding } from './bootstrap-contract.js';
+import type { BootstrapHumanPermissions, BootstrapPermissionScope } from './authority-permissions.js';
 
 /**
- * FV-P4C-2B2 — a `StatusHistoryBootstrapAuthorizer` over the Host's AUTH-03
- * passkey decisions, with requester/approver separation.
+ * FV-P4C-2B2 / 2B2B — a `StatusHistoryBootstrapAuthorizer` over two AUTH-03
+ * passkey decisions in the dedicated **bootstrap-authority domain**, with
+ * signed requester/approver roles.
  *
- * **Not composed and not operational.** Wiring it into the Host needs
- * decisions this module cannot take: an outcome for non-CORE-05 decisions,
- * the permission vocabulary, a requester verdict, and the AUTH-03 composition
- * pins (`docs/integration/FV_HOST_AUTHORITY_INTEGRATION.md`). Until then it is
- * the tested core of that authorizer. It works against a structural port with
- * the exact shape of AUTH-03's `HumanIdentityService` decision methods, so this
- * module never imports the identity service, and the AUTH-03 composition pin
- * stays intact.
+ * **Not composed and not operational** (B3, B6:
+ * `docs/integration/FV_AUTHORITY_LIFECYCLE.md`). It works against a
+ * structural port with the exact shape of AUTH-03's bootstrap-authority
+ * methods, so this module never imports the identity service and the AUTH-03
+ * composition pin stays intact.
  *
- * One authorizer authorizes one bootstrap, from two passkey decisions the Host
- * collected for it:
- * - **Two decisions, one subject.** Both decisions must be AUTH-03 decision
- *   challenges for exactly this bootstrap. Their subject is `sha256:<binding
- *   digest>`, and their request id is derived from that digest alone, so a
- *   decision can never serve another request, asset, issuer, status or
- *   namespace. Both verdicts must be `approve`.
- * - **The requester.** The requester's decision must belong to the operator
- *   the request names (`operatorRef` = `operator:<operatorId>`).
- * - **The approver.** The approver must be a different principal, and each
- *   must hold the Host permission the injected policy names.
- * - **Peek before consume.** Both decisions are only *peeked* until every
- *   check passes, so a foreign decision (a CORE-05 approval, say) is never
- *   consumed by mistake.
- * - **AUTH-03 checks.** Each is then consumed through AUTH-03 itself, which
- *   checks the passkey assertion, user verification, the credential and
- *   principal being active, expiry (≤ 120 s), and single use.
+ * One authorizer authorizes one bootstrap, from two decisions:
+ * - **One domain (B2).** Both decisions must be of AUTH-03's
+ *   `frontera.sovereign-status-bootstrap-authority.v1` format, whose
+ *   commitment domain is not CORE-05's. A CORE-05 decision, or an
+ *   organization-bootstrap approval, cannot be presented: AUTH-03's
+ *   bootstrap methods refuse every other format, and this authorizer checks
+ *   the format again.
+ * - **One subject.** Both are bound to `sha256:<binding digest>` under the
+ *   request id `frontera.sovereign-status-bootstrap:<binding digest>`. The
+ *   digest is FV-P4C-2B1's own, so it covers namespace, asset, issuer,
+ *   manifest, status sequence and digest, terms, operation, purpose, request
+ *   id, requesting operator and request expiry.
+ * - **Two signed roles (B5).** The requester's decision must carry the signed
+ *   role `attest` (its intent to perform exactly this bootstrap), and must be
+ *   by the operator the request names (`operatorRef`). The approver's must
+ *   carry `approve`, by a different human. The role is inside the passkey's
+ *   commitment, so roles cannot be swapped or one decision reused as both.
+ * - **Two permissions (B4).** The requester must hold
+ *   `status-history.bootstrap.request`, the approver
+ *   `status-history.bootstrap.approve`, each for this organization and
+ *   namespace (grants are namespace-wide), by the injected Host permissions (Kernel-Authority grants:
+ *   `authority-permissions.ts`). A signature alone grants nothing.
+ * - **Peek before consume.** Both are only peeked until every check passes,
+ *   so a foreign decision is never consumed. Each is then consumed by AUTH-03
+ *   itself (passkey assertion, user verification, active credential and
+ *   principal, expiry ≤ 120 s, single use).
  *
- * Any failure denies, with one closed reason (`lastDenial()`). The authorizer
- * is single-use.
+ * Any failure denies, with one closed reason (`lastDenial()`). Single-use.
  *
- * **Consumption is not atomic across the two decisions.** The requester's
- * decision is consumed first, then the approver's. If the second fails
- * (expired, revoked, already used, a bad assertion), the first stays
- * consumed in AUTH-03's chain, and the bootstrap is denied. Nothing is
- * anchored. `consumedDecisions()` names every commitment this authorizer
- * consumed, so the partial consumption is auditable. The requester must
- * decide again for a new attempt; a consumed decision never authorizes twice.
+ * **Consumed is not committed.** The coordinator authorizes before the source
+ * check and the history commit, so a consumed pair may still anchor nothing.
+ * AUTH-03 records consumption only; whether the bootstrap committed is
+ * settled afterwards from the receiver's own evidence
+ * (`authority-settlement.ts`), never inferred from consumption.
+ *
+ * **Consumption is not atomic across the two decisions.** The requester's is
+ * consumed first. If the approver's is then refused, the requester's stays
+ * consumed and the bootstrap is denied; `consumedDecisions()` reports it, and
+ * settlement later records it as not committed.
  */
 
-/** AUTH-03's decision challenge format (`HUMAN_DECISION_CHALLENGE_FORMAT`); a test pins it to the real constant. */
-export const BOOTSTRAP_HUMAN_DECISION_FORMAT = 'frontera.human-decision-challenge.v1';
+/** AUTH-03's bootstrap-authority challenge format (`BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT`); a test pins it to the real constant. */
+export const BOOTSTRAP_HUMAN_DECISION_FORMAT = 'frontera.sovereign-status-bootstrap-authority.v1';
 
 /** The AUTH-03 `approvalRequestId` namespace for bootstrap decisions; never a CORE-05 request id. */
 export const BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX = 'frontera.sovereign-status-bootstrap:';
+
+/** The `authorityRef` this authorizer records: `<prefix><requester commitment>:<approver commitment>`, in that order. */
+export const BOOTSTRAP_AUTHORITY_REF_PREFIX = 'frontera.sovereign-status-bootstrap-authority.v1:';
+
+/** The signed role each decision must carry. */
+export const BOOTSTRAP_HUMAN_DECISION_ROLES = Object.freeze({ requester: 'attest', approver: 'approve' } as const);
 
 export const BOOTSTRAP_HUMAN_DECISION_DENIALS = Object.freeze([
   'BINDING_INVALID',
@@ -56,7 +72,7 @@ export const BOOTSTRAP_HUMAN_DECISION_DENIALS = Object.freeze([
   'DECISION_FORMAT_UNSUPPORTED',
   'ORGANIZATION_MISMATCH',
   'DECISION_NOT_FOR_THIS_BOOTSTRAP',
-  'VERDICT_NOT_APPROVE',
+  'ROLE_MISMATCH',
   'OPERATOR_REF_MISMATCH',
   'SAME_PRINCIPAL',
   'REQUESTER_NOT_PERMITTED',
@@ -68,7 +84,7 @@ export const BOOTSTRAP_HUMAN_DECISION_DENIALS = Object.freeze([
 ] as const);
 export type BootstrapHumanDecisionDenial = (typeof BOOTSTRAP_HUMAN_DECISION_DENIALS)[number];
 
-/** The fields of an AUTH-03 decision challenge contract this authorizer reads. */
+/** The fields of an AUTH-03 bootstrap-authority contract this authorizer reads. `verdict` is the signed role. */
 export interface BootstrapHumanDecisionContract {
   readonly format: string;
   readonly organizationId: string;
@@ -79,29 +95,19 @@ export interface BootstrapHumanDecisionContract {
   readonly expiresAt: string;
 }
 
-/** Structurally, AUTH-03's `HumanIdentityService.peekDecision` and `authorizeDecision`. */
+/** Structurally, AUTH-03's `peekBootstrapAuthorityDecision` and `authorizeBootstrapAuthorityDecision`. */
 export interface BootstrapHumanDecisionPort {
-  peekDecision(response: unknown): { readonly contract: BootstrapHumanDecisionContract; readonly commitment: string };
-  authorizeDecision(response: unknown): Promise<{ readonly contract: BootstrapHumanDecisionContract; readonly commitment: string; readonly evidenceDigest: string }>;
-}
-
-/**
- * Who may request and who may approve a bootstrap, by the Host's own standing.
- * Which permission backs each is an open decision: `authority.bootstrap` means
- * something else today.
- */
-export interface BootstrapHumanPermissions {
-  mayRequest(operatorId: string): boolean;
-  mayApprove(operatorId: string): boolean;
+  peekBootstrapAuthorityDecision(response: unknown): { readonly contract: BootstrapHumanDecisionContract; readonly commitment: string };
+  authorizeBootstrapAuthorityDecision(response: unknown): Promise<{ readonly contract: BootstrapHumanDecisionContract; readonly commitment: string; readonly evidenceDigest: string }>;
 }
 
 export interface HumanDecisionBootstrapAuthorizerOptions {
   readonly decisions: BootstrapHumanDecisionPort;
   readonly organizationId: string;
   readonly permissions: BootstrapHumanPermissions;
-  /** The requester's passkey assertion over a decision challenge for this bootstrap. */
+  /** The requester's passkey assertion over an `attest` challenge for this bootstrap. */
   readonly requesterResponse: unknown;
-  /** A different principal's passkey assertion over a decision challenge for this bootstrap. */
+  /** A different principal's passkey assertion over an `approve` challenge for this bootstrap. */
   readonly approverResponse: unknown;
 }
 
@@ -112,16 +118,34 @@ export interface HumanDecisionBootstrapAuthorizer extends StatusHistoryBootstrap
   consumedDecisions(): readonly string[];
 }
 
-/** The AUTH-03 decision inputs a Host issues for this binding: one per principal, the same subject. */
-export function bootstrapHumanDecisionInputs(bindingDigest: string): { readonly approvalRequestId: string; readonly subjectDigest: string; readonly verdict: 'approve' } {
+/** The AUTH-03 `beginBootstrapAuthorityDecision` input for one role of this binding. */
+export function bootstrapAuthorityDecisionInput(bindingDigest: string, role: 'requester' | 'approver'): { readonly bindingDigest: string; readonly role: 'attest' | 'approve' } {
   if (!isDigest(bindingDigest)) throw new TypeError('A bootstrap binding digest is lowercase hex SHA-256.');
-  return { approvalRequestId: `${BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX}${bindingDigest}`, subjectDigest: `sha256:${bindingDigest}`, verdict: 'approve' };
+  if (role !== 'requester' && role !== 'approver') throw new TypeError('A bootstrap role is requester or approver.');
+  return { bindingDigest, role: BOOTSTRAP_HUMAN_DECISION_ROLES[role] };
+}
+
+/** The contract fields every decision for this binding must carry. */
+export function bootstrapHumanDecisionInputs(bindingDigest: string): { readonly approvalRequestId: string; readonly subjectDigest: string } {
+  if (!isDigest(bindingDigest)) throw new TypeError('A bootstrap binding digest is lowercase hex SHA-256.');
+  return { approvalRequestId: `${BOOTSTRAP_HUMAN_DECISION_REQUEST_PREFIX}${bindingDigest}`, subjectDigest: `sha256:${bindingDigest}` };
+}
+
+const COMMITMENT = /^sha256:[0-9a-f]{64}$/;
+
+/** Reads an `authorityRef` this authorizer produced; `undefined` for anything else. */
+export function parseBootstrapAuthorityRef(authorityRef: unknown): { readonly requesterCommitment: string; readonly approverCommitment: string } | undefined {
+  if (typeof authorityRef !== 'string' || !authorityRef.startsWith(BOOTSTRAP_AUTHORITY_REF_PREFIX)) return undefined;
+  const rest = authorityRef.slice(BOOTSTRAP_AUTHORITY_REF_PREFIX.length);
+  const match = /^(sha256:[0-9a-f]{64}):(sha256:[0-9a-f]{64})$/.exec(rest);
+  if (match === null || match[1] === match[2]) return undefined;
+  return { requesterCommitment: match[1]!, approverCommitment: match[2]! };
 }
 
 export function createHumanDecisionBootstrapAuthorizer(options: HumanDecisionBootstrapAuthorizerOptions): HumanDecisionBootstrapAuthorizer {
   const { decisions, organizationId, permissions, requesterResponse, approverResponse } = options;
-  const peek = decisions.peekDecision.bind(decisions);
-  const authorize = decisions.authorizeDecision.bind(decisions);
+  const peek = decisions.peekBootstrapAuthorityDecision.bind(decisions);
+  const authorize = decisions.authorizeBootstrapAuthorityDecision.bind(decisions);
   const mayRequest = permissions.mayRequest.bind(permissions);
   const mayApprove = permissions.mayApprove.bind(permissions);
   let used = false;
@@ -144,8 +168,8 @@ export function createHumanDecisionBootstrapAuthorizer(options: HumanDecisionBoo
         if (!isDigest(bindingDigest) || bootstrapBindingDigest(binding) !== bindingDigest) return deny('BINDING_INVALID');
         const expected = bootstrapHumanDecisionInputs(bindingDigest);
 
-        let requester: ReturnType<typeof peek>;
-        let approver: ReturnType<typeof peek>;
+        let requester: Peeked;
+        let approver: Peeked;
         try {
           requester = readPeeked(peek(requesterResponse));
           approver = readPeeked(peek(approverResponse));
@@ -156,15 +180,17 @@ export function createHumanDecisionBootstrapAuthorizer(options: HumanDecisionBoo
           if (contract.format !== BOOTSTRAP_HUMAN_DECISION_FORMAT) return deny('DECISION_FORMAT_UNSUPPORTED');
           if (contract.organizationId !== organizationId) return deny('ORGANIZATION_MISMATCH');
           if (contract.approvalRequestId !== expected.approvalRequestId || contract.subjectDigest !== expected.subjectDigest) return deny('DECISION_NOT_FOR_THIS_BOOTSTRAP');
-          if (contract.verdict !== expected.verdict) return deny('VERDICT_NOT_APPROVE');
         }
+        // B5: each decision carries its own signed role; neither can stand for the other.
+        if (requester.contract.verdict !== BOOTSTRAP_HUMAN_DECISION_ROLES.requester || approver.contract.verdict !== BOOTSTRAP_HUMAN_DECISION_ROLES.approver) return deny('ROLE_MISMATCH');
         if (binding.operatorRef !== `operator:${requester.contract.operatorId}`) return deny('OPERATOR_REF_MISMATCH');
         if (requester.contract.operatorId === approver.contract.operatorId || requester.commitment === approver.commitment) return deny('SAME_PRINCIPAL');
+        const scope: BootstrapPermissionScope = Object.freeze({ organizationId, namespace: binding.namespace, bindingDigest });
         let requesterMay: boolean;
         let approverMay: boolean;
         try {
-          requesterMay = mayRequest(requester.contract.operatorId) === true;
-          approverMay = mayApprove(approver.contract.operatorId) === true;
+          requesterMay = mayRequest(requester.contract.operatorId, scope) === true;
+          approverMay = mayApprove(approver.contract.operatorId, scope) === true;
         } catch {
           return deny('PERMISSION_SERVICE_FAILED');
         }
@@ -180,7 +206,7 @@ export function createHumanDecisionBootstrapAuthorizer(options: HumanDecisionBoo
             // Expired, revoked, already consumed, a bad assertion: AUTH-03 refused it.
             return deny('DECISION_REFUSED');
           }
-          let confirmed: ReturnType<typeof readPeeked>;
+          let confirmed: Peeked;
           try {
             confirmed = readPeeked(authorized);
           } catch {
@@ -193,8 +219,8 @@ export function createHumanDecisionBootstrapAuthorizer(options: HumanDecisionBoo
         return Object.freeze({
           outcome: 'authorized',
           bindingDigest,
-          // Both decisions, by commitment: each names a decision_authorized row in the AUTH-03 chain.
-          authorityRef: `frontera.human-decision:${consumed[0]!}:${consumed[1]!}`,
+          // Both decisions, by commitment and in role order: each names a decision_authorized row in the AUTH-03 chain.
+          authorityRef: `${BOOTSTRAP_AUTHORITY_REF_PREFIX}${consumed[0]!}:${consumed[1]!}`,
         });
       } catch {
         return deny('DECISION_UNREADABLE');
@@ -203,13 +229,18 @@ export function createHumanDecisionBootstrapAuthorizer(options: HumanDecisionBoo
   });
 }
 
+interface Peeked {
+  readonly contract: BootstrapHumanDecisionContract;
+  readonly commitment: string;
+}
+
 /** A peeked decision, read as plain data: the fields this authorizer relies on, nothing more. */
-function readPeeked(value: unknown): { readonly contract: BootstrapHumanDecisionContract; readonly commitment: string } {
+function readPeeked(value: unknown): Peeked {
   if (typeof value !== 'object' || value === null) throw new TypeError('not a decision');
   const record = value as { contract?: unknown; commitment?: unknown };
   const contract = record.contract;
   const commitment = record.commitment;
-  if (typeof commitment !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(commitment)) throw new TypeError('not a commitment');
+  if (typeof commitment !== 'string' || !COMMITMENT.test(commitment)) throw new TypeError('not a commitment');
   const fields = typeof contract === 'object' && contract !== null ? (contract as Record<string, unknown>) : undefined;
   if (fields === undefined) throw new TypeError('not a contract');
   const read = (key: keyof BootstrapHumanDecisionContract): string => {
