@@ -268,9 +268,9 @@ A crash at any step leaves nothing written by these foundations, except the reco
 
 | Increment | Scope |
 |---|---|
-| **B3A (this)** | The primitives above, unreachable, with tests |
-| **B3B** | Composition-root wiring behind a disabled flag: the AUTH-03 pair (built with `createHumanIdentityServiceWithBootstrapSettlement` in the AUTH-04A composition), the boundary, and capability revocation at shutdown; protected, durable record and intent storage; the configuration generation; the exclusive-executor lease; startup readiness in posture |
-| **B3C** | A PROD-02 store definition for FV histories, and backup coverage; a restore hook calling `assessRestoreCandidate`, with operator-authorized promotion keeping the old files; operator ceremonies for `MOVED` re-registration and for resolving an `INTENT_UNRESOLVED` namespace |
+| **B3A** | The primitives above, unreachable, with tests |
+| **B3B (done, `FV_PROTECTED_HOST_COMPOSITION.md`)** | An internal FV composition root, unreachable: <ul><li>the AUTH-03 pair issued inside it (not in AUTH-04A, which is unchanged), the boundary, and capability revocation at close</li><li>the protected, durable record and intent store</li><li>the exclusive executor (kernel file locks, fenced on every write)</li><li>coordinator ownership (F4, L1)</li><li>the filesystem policy</li><li>bootstrap execution disabled without a status source</li></ul> |
+| **B3C** | <ul><li>A PROD-02 store definition for FV histories and the protected store, and backup coverage</li><li>A restore hook calling `assessRestoreCandidate`, with operator-authorized promotion keeping the old files</li><li>Operator ceremonies for `MOVED` re-registration, for resolving an `INTENT_UNRESOLVED` namespace and for a lost executor</li><li>Wiring AUTH-04A and the B3B composition onto one identity lifecycle</li></ul> |
 | **B6** | A trusted status-currentness source |
 | **FV-P4D** | An independent witness of history continuity |
 

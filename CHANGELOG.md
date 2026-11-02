@@ -4,6 +4,38 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2B3B protected FV Host composition (internal, not composed, bootstrap execution disabled)
+- **`composeFvProtectedHost` (FV module only, not exported from its index):** the FV composition root.
+  - It issues the AUTH-03 pair, with custody checked by `isBootstrapSettlementCapabilityOf` and the capability revoked at `close()`.
+  - It owns the protected store, every history handle, the boundary, the registry and the inventory.
+  - It invokes the real coordinator itself from data-only input. This closes B3A F4 (no writable-handle callback) and L1 (the decision port goes only to a per-call authorizer).
+  - It refuses a foreign organization's identity store.
+  - Without a status source (B6), every bootstrap is refused before anything is recorded or consumed.
+- **Protected record and intent store (`openProtectedContinuityStore`):**
+  - SQLite in WAL mode with `synchronous = FULL`, opened exclusively.
+  - A durable epoch per acquisition.
+  - Intents are pending, then completed, and never deleted; triggers forbid deletion, reopening, identity changes and lowering the epoch.
+  - Conflicts are refused, and the store is never created implicitly.
+  - Every row is validated on read.
+- **Exclusive executor (`executor-exclusivity.ts`):**
+  - SQLite `locking_mode = EXCLUSIVE` on the protected store and on every history: OS locks on the write path itself, released at process death, with no timestamp lease.
+  - Every write is fenced by a synchronous `/proc/locks` check that this process's PID holds the lock on the inode its path names now.
+  - Linux only; elsewhere startup is refused.
+  - A filesystem policy covers the file, its sidecars and its directory: canonical, owner-only, no links.
+- **History store:** an opt-in `exclusive` open (a non-WAL file is refused, not converted) and a `beforeWrite` fence (`FENCED`). The default behaviour is unchanged.
+- **Inventory and continuity:** an exclusive mode.
+  - One writable exclusive open per history, with no read-only probe first.
+  - All handles are closed before any reopen.
+  - A tracked bootstrap needs the locks at start and before its intent is completed.
+  - Snapshots serve only histories this process still holds.
+  - The new `EXECUTOR_NOT_HELD` refusal.
+- **Closing is fenced too (review C1, Critical):** an exclusive connection is closed only while its lock is confirmed held. Otherwise it is retained, and an exit guard stops the process (`SIGKILL`) before a stale closing checkpoint. A thrown commit counts as "maybe written" (review M2). Exclusive connections are refused in worker threads, whose teardown would bypass the guard (re-check R2-H). Executor authority is re-confirmed immediately before every AUTH-03 settlement write (final review I3). The fail-stop guard makes a **dedicated executor process** a prerequisite for activation. Two Hosts starting at once no longer both refuse: a refused acquisition of an existing protected store is retried a bounded number of times (a store another live Host holds is still refused).
+- **Tests:** 26 end-to-end tests with real AUTH-03, SQLite, the real receiver and coordinator, and real second processes and `SIGKILL` crashes at each durable transition.
+- **Two existing structure tests gain one narrow entry each:**
+  - the B2 import allowlist: the composition root may import `../human-identity/index.js`, and the exclusivity module may import `node:worker_threads`;
+  - the AUTH-03 composer list: the composition root, which must not open a store or compose a channel.
+- **Not included:** no route, CLI, startup wiring, status source, PROD-02 registration, restore ceremony, witness or document use. See `docs/integration/FV_PROTECTED_HOST_COMPOSITION.md`.
+
 ### Added — ASSURE-REL-01D Secure Host operator interface (private pilot; not a commercial authorization)
 - **Operator routes (7, always mounted; 69 → 76 endpoints).** Evidence submission, termination, commercial draft, release, release listing and retrieval, and delivered-package verification, on the existing Host adapter over the existing `AssuranceService`.
   - Authenticated by an Assurance reviewer credential (SEC-01B) only. Organization keys, operator/administrator/auditor secrets, unknown tokens and the system context get `401`, before the body is read, with or without `AOC_ENTERPRISE_REQUIRE_AUTH`.

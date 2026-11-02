@@ -67,6 +67,11 @@ export interface FvBootstrapAuthorityBoundaryOptions {
   readonly graceSeconds: number;
   readonly maxDecisions?: number;
   readonly progress?: BootstrapAuthorityReconcilerProgress;
+  /**
+   * FV-P4C-2B3B (final review I3) — checked synchronously immediately before every settlement write: the
+   * Host's executor-authority check. When it does not hold, nothing is settled (the entry is unresolved).
+   */
+  readonly settlementGuard?: () => boolean;
 }
 
 export interface FvBootstrapAuthorityBoundary {
@@ -82,7 +87,8 @@ export interface FvBootstrapAuthorityBoundary {
 
 
 export function createFvBootstrapAuthorityBoundary(options: FvBootstrapAuthorityBoundaryOptions): FvBootstrapAuthorityBoundary {
-  const { service, settlement, custody, histories, organizationId, now, graceSeconds, maxDecisions, progress } = options ?? ({} as never);
+  const { service, settlement, custody, histories, organizationId, now, graceSeconds, maxDecisions, progress, settlementGuard } = options ?? ({} as never);
+  if (settlementGuard !== undefined && typeof settlementGuard !== 'function') throw new TypeError('settlementGuard is the Host’s executor-authority check.');
   for (const method of ['peekBootstrapAuthorityDecision', 'authorizeBootstrapAuthorityDecision', 'bootstrapAuthorityDecision', 'unsettledBootstrapAuthorityDecisions'] as const) {
     if (typeof (service as unknown as Record<string, unknown> | undefined)?.[method] !== 'function') throw new TypeError('service is AUTH-03’s identity service (its bootstrap-domain methods).');
   }
@@ -108,7 +114,17 @@ export function createFvBootstrapAuthorityBoundary(options: FvBootstrapAuthority
         const commitment = (record as { commitment?: unknown } | null)?.commitment;
         return typeof commitment === 'string' && lookup(commitment) !== undefined;
       }),
-    recordBootstrapAuthoritySettlement: recordSettlement,
+    recordBootstrapAuthoritySettlement: (commitment: string, record: Parameters<BootstrapAuthoritySettlementPort['recordBootstrapAuthoritySettlement']>[1]) => {
+      // Final review I3: a reconciliation that lost the executor's authority mid-run settles nothing more.
+      let allowed = true;
+      try {
+        allowed = settlementGuard === undefined || settlementGuard() === true;
+      } catch {
+        allowed = false;
+      }
+      if (!allowed) return Promise.reject(new TypeError('The executor no longer holds its authority; nothing is settled.'));
+      return recordSettlement(commitment, record);
+    },
   });
   const reconciler = createBootstrapAuthorityReconciler({
     settlement: port,

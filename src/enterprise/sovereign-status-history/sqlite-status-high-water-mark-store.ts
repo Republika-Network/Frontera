@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { exclusiveCloser, exclusivitySupported } from './executor-exclusivity.js';
 import { STATUS_HISTORY_BOOTSTRAP_EVIDENCE_SCHEMA, bootstrapEvidenceDigest, canonicalJson, parseStatusHistoryBootstrapEvidence, serializeStatusHistoryBootstrapEvidence } from './bootstrap-contract.js';
 import type { StatusHistoryBootstrapEvidence, StatusHistoryBootstrapEvidenceDraft } from './bootstrap-contract.js';
 
@@ -113,6 +114,20 @@ export interface SqliteStatusHighWaterMarkStoreOptions {
   readonly busyTimeoutMs?: number;
   /** Open for reading only: every `compareAndSet` throws. */
   readonly readOnly?: boolean;
+  /**
+   * FV-P4C-2B3B — open as the one exclusive executor of this file: SQLite `locking_mode = EXCLUSIVE`
+   * before the first access, then an exclusive lock taken at once, held by this connection until it
+   * closes (or the process dies). No other connection, in any process, can read or write the file
+   * meanwhile. A file not already in WAL mode is refused rather than converted, so opening writes
+   * nothing to it. Never with `create` or `readOnly`.
+   */
+  readonly exclusive?: boolean;
+  /**
+   * FV-P4C-2B3B — the write fence: called synchronously immediately before every write transaction.
+   * If it throws, nothing is written (`FENCED`). The protected composition passes a cross-process
+   * check that this process still holds the exclusive lock.
+   */
+  readonly beforeWrite?: () => void;
 }
 
 /** The `StatusHighWaterMarkStore` contract, plus an explicit lifecycle and the bootstrap evidence ledger. */
@@ -151,7 +166,7 @@ export interface SqliteStatusHighWaterMarkStore {
 /** Every failure of this store. The gate treats any throw as `HISTORY_STORE_UNAVAILABLE`. */
 export class SovereignStatusHistoryStoreError extends Error {
   constructor(
-    readonly code: 'OPEN_REFUSED' | 'INTEGRITY' | 'INVALID_WRITE' | 'DOWNGRADE' | 'READ_ONLY' | 'CLOSED' | 'DATABASE',
+    readonly code: 'OPEN_REFUSED' | 'INTEGRITY' | 'INVALID_WRITE' | 'DOWNGRADE' | 'READ_ONLY' | 'CLOSED' | 'DATABASE' | 'FENCED',
     message: string,
   ) {
     super(message);
@@ -252,12 +267,16 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
   if (!isIdentifier(namespace) || namespace.length > MAX_NAMESPACE_LENGTH) refuse('needs exactly one namespace.');
   const busyTimeoutMs = options.busyTimeoutMs ?? 5_000;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 60_000) refuse('busy timeout is out of bounds.');
-  for (const flag of ['create', 'readOnly'] as const) {
+  for (const flag of ['create', 'readOnly', 'exclusive'] as const) {
     if (options[flag] !== undefined && typeof options[flag] !== 'boolean') refuse(`${flag} option is a boolean.`);
   }
   const create = options.create === true;
   const readOnly = options.readOnly === true;
   if (create && readOnly) refuse('cannot be created read-only.');
+  const exclusive = options.exclusive === true;
+  if (exclusive && (create || readOnly)) refuse('is opened exclusively only as an existing, writable history.');
+  const beforeWrite = options.beforeWrite;
+  if (beforeWrite !== undefined && typeof beforeWrite !== 'function') refuse('write fence is a function.');
   const file = resolve(path);
   if (create && existsSync(file)) refuse('already exists at that path. A history is never re-initialized over itself.');
   if (!create && !existsSync(file)) refuse('does not exist at its configured path. It is never recreated implicitly: an empty history would forget every status it saw.');
@@ -267,6 +286,9 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
   const identityBeforeOpen = create ? undefined : fileIdentityOf(file);
   const { default: SqliteDatabase } = await import('better-sqlite3');
   let db: InstanceType<typeof SqliteDatabase>;
+  // FV-P4C-2B3B (review R2-L): once the exclusive lock is taken, every close goes through the guarded closer.
+  let closeHeld: (() => void) | undefined;
+  if (exclusive && !exclusivitySupported()) refuse('cannot be held exclusively here (Linux /proc/locks, main thread only); refusing to open it exclusively.');
   try {
     db = new SqliteDatabase(file, create ? {} : { fileMustExist: true, readonly: readOnly });
   } catch {
@@ -275,6 +297,8 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
   try {
     // Before WAL: the journal-mode change itself must wait on a busy file rather than fail.
     db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+    // FV-P4C-2B3B: before the first access, so SQLite never maps the shared-memory index and keeps every lock it takes.
+    if (exclusive) db.pragma('locking_mode = EXCLUSIVE');
     if (!create) {
       for (const table of TABLES) if (!objectExists(db, 'table', table)) refuse('file is not an initialized history; refusing to open it.');
       if (db.pragma('quick_check', { simple: true }) !== 'ok') refuse('failed its integrity check; refusing to open it.');
@@ -282,7 +306,19 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
       const triggers = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name").all() as Array<{ name: unknown }>).map((row) => row.name);
       if (JSON.stringify(triggers) !== JSON.stringify([...TRIGGERS].sort())) refuse('does not carry exactly its integrity triggers; refusing to open it.');
     }
-    if (!readOnly) {
+    if (exclusive) {
+      // Read, never set: a history this store created is in WAL mode, and converting another would write to it.
+      if (db.pragma('journal_mode', { simple: true }) !== 'wal') refuse('is not in WAL mode; refusing to open it exclusively.');
+      db.pragma('synchronous = FULL');
+      try {
+        // Takes the exclusive lock now; it is then held until this connection closes.
+        db.exec('BEGIN EXCLUSIVE');
+        db.exec('COMMIT');
+      } catch {
+        refuse('is held by another executor; refusing to open it exclusively.');
+      }
+      closeHeld = exclusiveCloser(file, db);
+    } else if (!readOnly) {
       db.pragma('journal_mode = WAL');
       db.pragma('synchronous = FULL');
     }
@@ -301,7 +337,8 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
     if (meta?.schema_version !== SOVEREIGN_STATUS_HISTORY_SCHEMA_VERSION) refuse('is recorded under another schema version; refusing to open it.');
     if (meta!.namespace !== namespace) refuse('is pinned to another namespace; refusing to open it.');
   } catch (error) {
-    db.close();
+    if (closeHeld !== undefined) closeHeld();
+    else db.close();
     if (error instanceof SovereignStatusHistoryStoreError) throw error;
     return refuse('could not be opened.');
   }
@@ -310,7 +347,8 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
   // Sampled from the path before the open and after validation: a swap in between is refused (re-review N6).
   const openedIdentity = fileIdentityOf(file);
   if (!create && (identityBeforeOpen === undefined || identityBeforeOpen !== openedIdentity)) {
-    db.close();
+    if (closeHeld !== undefined) closeHeld();
+    else db.close();
     refuse('changed while it was being opened; refusing to open it.');
   }
   const selectRow = db.prepare(`SELECT ${COLUMNS} FROM sovereign_status_history WHERE sovereign_asset_id = ? AND issuer = ?`).safeIntegers(true);
@@ -444,8 +482,20 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
     },
   );
 
-  /** Request ids whose evidence this handle itself committed. In memory, per handle. */
+  /** FV-P4C-2B3B: the write fence, run synchronously right before the transaction, so nothing in this process runs between them. */
+  const fence = (): void => {
+    if (beforeWrite === undefined) return;
+    try {
+      beforeWrite();
+    } catch {
+      throw new SovereignStatusHistoryStoreError('FENCED', 'Refused: this process no longer holds exclusive execution of the history.');
+    }
+  };
+  /** Request ids whose evidence this handle itself committed, or may have (a write that failed in the database). In memory, per handle. */
   const committedHere = new Set<string>();
+  const uncertainHere = new Set<string>();
+  // FV-P4C-2B3B (release review C1): an exclusive connection is closed only while its lock is held.
+  const closeConnection = closeHeld ?? (() => void db.close());
   let closed = false;
   const ensureOpen = (): void => {
     if (closed) throw new SovereignStatusHistoryStoreError('CLOSED', 'The sovereign status history is closed.');
@@ -484,6 +534,7 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
       const { key, next } = prepareWrite(rawKey, expectedRevision, rawNext);
       // S1: no history comes into existence without bootstrap evidence.
       if (expectedRevision === null) throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'A history is established only with bootstrap evidence.');
+      fence();
       // One IMMEDIATE transaction: the write lock is taken before the revision is read.
       return guarded(() => casTransaction.immediate(key, expectedRevision, next));
     },
@@ -492,7 +543,15 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
       if (typeof draft !== 'object' || draft === null || (draft as { schemaVersion?: unknown }).schemaVersion !== STATUS_HISTORY_BOOTSTRAP_EVIDENCE_SCHEMA) {
         throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The bootstrap evidence is not well formed.');
       }
-      const recorded = guarded(() => evidenceTransaction.immediate(key, expectedRevision, next, draft));
+      fence();
+      let recorded: StatusHistoryBootstrapEvidence | false;
+      try {
+        recorded = guarded(() => evidenceTransaction.immediate(key, expectedRevision, next, draft));
+      } catch (error) {
+        // Release review M2: a database failure (an I/O error at the sync) may still have reached the disk.
+        if (error instanceof SovereignStatusHistoryStoreError && error.code === 'DATABASE') uncertainHere.add(String((draft as { requestId?: unknown }).requestId));
+        throw error;
+      }
       // FV-P4C-2B3A (release review M1): remembered once committed, so a later rollback under this handle is detectable.
       if (recorded !== false) committedHere.add(recorded.requestId);
       return recorded;
@@ -523,7 +582,7 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
     close() {
       if (!closed) {
         closed = true;
-        db.close();
+        closeConnection();
       }
     },
   });
@@ -532,7 +591,7 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
   PROVENANCE.set(handle, {
     namespace,
     file,
-    committedByThisHandle: (requestId: string) => committedHere.has(requestId),
+    committedByThisHandle: (requestId: string) => committedHere.has(requestId) || uncertainHere.has(requestId),
     readForBinding(bindingDigest: string): readonly StatusHistoryBootstrapEvidence[] {
       ensureOpen();
       if (!isDigest(bindingDigest)) throw new SovereignStatusHistoryStoreError('INVALID_WRITE', 'The binding digest is not lowercase hex SHA-256.');
