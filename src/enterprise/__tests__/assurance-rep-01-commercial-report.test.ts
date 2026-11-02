@@ -11,7 +11,8 @@ import { computeDigest } from '../governance-store/digest.js';
 import { verifyAssuranceAssessment } from '../assurance/verification.js';
 import { buildAssuranceReport } from '../assurance/report.js';
 import { escapeMarkdownText, renderCommercialReportMarkdown } from '../assurance/commercial-report-markdown.js';
-import { COMMERCIAL_REPORT_GENERATOR_V1, RELEASE_STATEMENT_V1 } from '../assurance/commercial-report-format.js';
+import { COMMERCIAL_REPORT_GENERATOR_V1, COMMERCIAL_REPORT_GENERATOR_V2 } from '../assurance/commercial-report-format.js';
+import { asHistoricalContent } from './commercial-report-historical.js';
 import {
   COMMERCIAL_REPORT_RELEASE_ROLE,
   buildCommercialReportDraft,
@@ -558,13 +559,34 @@ describe('ASSURE-REL-01C -- reports drafted before the release wording changed s
     assert.equal(renderCommercialReportMarkdown(content), markdown, 'the renderer reproduces a v1 report exactly');
     assert.match(markdown, /not yet released/, 'the v1 wording is kept, never edited');
 
-    // The only difference between generator versions is the release wording: today's fixture, given the v1 wording, is the v1 report.
+    // The only differences between generator versions are the release and disclosure wording: today's fixture, given the v1 wording, is the v1 report.
     const today = await draftOf(await completedRnSv());
-    const asV1 = { ...today.content, integrity: { ...today.content.integrity, generatorVersion: COMMERCIAL_REPORT_GENERATOR_V1, release: RELEASE_STATEMENT_V1 } };
+    const asV1 = asHistoricalContent(today.content, COMMERCIAL_REPORT_GENERATOR_V1);
     assert.deepEqual(asV1, content);
     assert.equal(renderCommercialReportMarkdown(asV1), markdown);
     assert.equal(computeDigest(asV1), manifest.contentDigest);
-    assert.notEqual(today.manifest.contentDigest, manifest.contentDigest, 'a v2 report is a different report, with its own digests');
+    assert.notEqual(today.manifest.contentDigest, manifest.contentDigest, 'a current report is a different report, with its own digests');
     assert.equal(today.markdown.includes('not yet released'), false);
+  });
+
+  it('ASSURE-CLAIMS-01: the historical v2 example verifies, re-renders to its exact Markdown, and is exactly today’s fixture drafted with the v2 wording', async () => {
+    const directory = join(process.cwd(), 'docs', 'enterprise', 'examples', 'historical');
+    const read = (suffix: string): string => readFileSync(join(directory, `rn-sv-founding-assessment.synthetic.v2.${suffix}`), 'utf8');
+    const content = JSON.parse(read('json')) as CommercialReportDraft['content'];
+    const markdown = read('md');
+    const manifest = JSON.parse(read('manifest.json')) as CommercialReportDraft['manifest'];
+    const release = JSON.parse(read('release.json')) as Parameters<typeof verifyCommercialReport>[0]['release'];
+    assert.equal(content.integrity.generatorVersion, COMMERCIAL_REPORT_GENERATOR_V2);
+    assert.deepEqual(verifyCommercialReport({ content, markdown, manifest, ...(release !== undefined ? { release } : {}) }), { valid: true, checks: { content: true, markdown: true, manifest: true, release: true } });
+    assert.equal(renderCommercialReportMarkdown(content), markdown, 'the renderer reproduces a v2 report exactly');
+    assert.match(markdown, /act as that review/, 'the v2 wording (GF-01) is kept in historical v2 reports, never edited');
+
+    const today = await draftOf(await completedRnSv());
+    const asV2 = asHistoricalContent(today.content, COMMERCIAL_REPORT_GENERATOR_V2);
+    assert.deepEqual(asV2, content);
+    assert.equal(renderCommercialReportMarkdown(asV2), markdown);
+    assert.equal(computeDigest(asV2), manifest.contentDigest);
+    assert.notEqual(today.manifest.contentDigest, manifest.contentDigest, 'a v3 report is a different report, with its own digests');
+    assert.equal(today.markdown.includes('act as that review'), false);
   });
 });

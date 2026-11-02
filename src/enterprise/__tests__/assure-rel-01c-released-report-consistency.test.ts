@@ -10,13 +10,13 @@ import { pathToFileURL } from 'node:url';
 import { AssuranceError } from '../assurance/errors.js';
 import { computeDigest } from '../governance-store/digest.js';
 import { renderCommercialReportMarkdown } from '../assurance/commercial-report-markdown.js';
-import { COMMERCIAL_REPORT_GENERATOR_V1, COMMERCIAL_REPORT_GENERATOR_V2, RELEASE_STATEMENT_V1, RELEASE_STATEMENT_V2 } from '../assurance/commercial-report-format.js';
+import { COMMERCIAL_REPORT_GENERATOR_V1, COMMERCIAL_REPORT_GENERATOR_V3, RELEASE_STATEMENT_V2 } from '../assurance/commercial-report-format.js';
+import { asHistoricalDraft } from './commercial-report-historical.js';
 import {
   COMMERCIAL_REPORT_RELEASE_ROLE,
   buildCommercialReportRelease,
   verifyCommercialReport,
   type CommercialReportDraft,
-  type CommercialReportManifest,
   type CommercialReportRelease,
 } from '../assurance/commercial-report.js';
 import { buildCommercialReleaseCustodyRecord, type CommercialReleasePackage } from '../assurance/commercial-release-custody.js';
@@ -88,16 +88,11 @@ async function ready(): Promise<{ readonly world: PilotWorld; readonly dbPath: s
 
 /**
  * The same draft as generator v1 produced it: identical content but for the
- * generator version and the release statement. REP-01 proves that this equals
- * the historical v1 example byte for byte.
+ * generator version, the release statement and the ASSURE-CLAIMS-01
+ * disclosure wording (`commercial-report-historical.ts`). REP-01 proves that
+ * this equals the historical v1 example byte for byte.
  */
-function asV1(draft: CommercialReportDraft): CommercialReportDraft {
-  const content = { ...draft.content, integrity: { ...draft.content.integrity, generatorVersion: COMMERCIAL_REPORT_GENERATOR_V1, release: RELEASE_STATEMENT_V1 } };
-  const markdown = renderCommercialReportMarkdown(content);
-  const { manifestDigest: _replaced, ...body } = { ...draft.manifest, generatorVersion: COMMERCIAL_REPORT_GENERATOR_V1, contentDigest: computeDigest(content), markdownDigest: sha256(markdown) };
-  const manifest: CommercialReportManifest = { ...body, manifestDigest: computeDigest(body) };
-  return { content, markdown, manifest };
-}
+const asV1 = (draft: CommercialReportDraft): CommercialReportDraft => asHistoricalDraft(draft, COMMERCIAL_REPORT_GENERATOR_V1);
 
 function runVerifier(dir: string, storeCopy?: string): { readonly exit: number | null; readonly output: Record<string, unknown> } {
   const run = spawnSync(process.execPath, [VERIFIER, dir, ...(storeCopy !== undefined ? ['--store-copy', storeCopy] : [])], { encoding: 'utf8', timeout: 60_000, env: {} });
@@ -110,7 +105,7 @@ describe('ASSURE-REL-01C -- preparation, release and authenticity are never conf
   it('C01/C03/C14 a READY report claims neither release nor its absence as a fact, says where release is established, and is not released without a kept record', async () => {
     const { world, draft } = await ready();
     assert.equal(draft.content.readiness.status, 'READY_FOR_RELEASE');
-    assert.equal(draft.manifest.generatorVersion, COMMERCIAL_REPORT_GENERATOR_V2);
+    assert.equal(draft.manifest.generatorVersion, COMMERCIAL_REPORT_GENERATOR_V3, 'ASSURE-CLAIMS-01: today’s generator is v3, which keeps the v2 release statement');
     assert.equal(draft.content.integrity.release, RELEASE_STATEMENT_V2);
     assert.equal(RELEASE_STATUS_CLAIM.test(draft.markdown), false, 'no statement a later release could contradict, and none of release');
     assert.match(draft.markdown, /Readiness is not release/);
@@ -141,7 +136,7 @@ describe('ASSURE-REL-01C -- preparation, release and authenticity are never conf
     assert.deepEqual(first.draft.manifest, draft.manifest);
     assert.equal(first.release.markdownDigest, sha256(draft.markdown));
     const kept = await world.service.getCommercialRelease(PILOT_ORG_CONTEXT, draft.content.reportId);
-    assert.equal(kept?.manifest.generatorVersion, COMMERCIAL_REPORT_GENERATOR_V2);
+    assert.equal(kept?.manifest.generatorVersion, COMMERCIAL_REPORT_GENERATOR_V3);
     const verdict = await world.service.verifyCommercialRelease(PILOT_ORG_CONTEXT, packageOf(first.draft, first.release));
     assert.equal(verdict.releaseAuthenticated, true);
     const again = await releasePilotReport(world, assessmentId);
@@ -212,7 +207,7 @@ describe('ASSURE-REL-01C -- preparation, release and authenticity are never conf
     assert.equal((await commit.call(world.store, PILOT_ORG_CONTEXT, buildCommercialReleaseCustodyRecord({ organizationId: PILOT_ORG, manifest: v1.manifest, release: v1Release }))).outcome, 'committed');
     const verdict = await world.service.verifyCommercialRelease(PILOT_ORG_CONTEXT, packageOf(v1, v1Release));
     assert.equal(verdict.releaseAuthenticated, true, 'the v1 release keeps its identity');
-    // Approving today's v2 draft under the released version is a different report: refused, never a silent reissue.
+    // Approving today's (v3) draft under the released version is a different report: refused, never a silent reissue.
     const request = { engagement: PILOT_ENGAGEMENT, issue: PILOT_ISSUE, acknowledgements: PILOT_ACKNOWLEDGEMENTS };
     await assert.rejects(world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, { ...request, approvedContentDigest: draft.manifest.contentDigest }), isCode('ASSURANCE_ASSESSMENT_IMMUTABLE', 'content'));
     await assert.rejects(world.service.releaseCommercialReport(pilotContext(world, 'approver'), assessmentId, { ...request, approvedContentDigest: v1.manifest.contentDigest }), isCode('ASSURANCE_INTEGRITY_FAILED'), 'the v1 report is not rebuilt; it is read back with getCommercialRelease');
@@ -275,7 +270,7 @@ describe('ASSURE-REL-01C -- preparation, release and authenticity are never conf
     const claiming = draft.markdown.replace('Readiness is not release', 'This report is not yet released');
     const claimingRun = runVerifier(resealedPackage(draft.content, claiming));
     assert.equal(claimingRun.exit, 1);
-    assert.equal((claimingRun.output['reportConsistency'] as Record<string, unknown>)['report makes no claim about its own release (v2)'], false);
+    assert.equal((claimingRun.output['reportConsistency'] as Record<string, unknown>)['report makes no claim about its own release (v3)'], false);
   });
 
   it('determinism: the same inputs give byte-identical content, Markdown, manifest and release record (deterministic clock)', async () => {

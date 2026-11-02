@@ -135,7 +135,7 @@ Harborline Member Services Platform \(fictional\), operated by Meridian Commons 
 - Step 7: Findings derived and classified by rule\-based severity\.
 - Step 8: Assessment integrity and finding histories verified\.
 - Step 9: This report generated deterministically from the verified assessment\.
-- Step 10: Release reviewed and approved by an authenticated human approver before delivery\.
+- Step 10: Before delivery, release approved by a separate authenticated Republika approver holding the release role, whose credential recorded no review of this assessment\. This is internal release approval, not an external review\.
 
 Required reviewer role: assure\.reviewer.
 
@@ -474,6 +474,7 @@ Authenticity: unless marked as verified by a Host mechanism, a reference’s aut
 - Results are point\-in\-time, as of the evidence cutoff, and do not describe the system before or after it\.
 - Conclusions depend on the evidence made available; most evidence was supplied by the assessed organization and was not independently authenticated\.
 - Every rn\.sv control is concluded by an authenticated human reviewer; the conclusions involve professional judgement\.
+- Republika authored the rn\.sv framework, operates the assessment tooling, and performs and approves this assessment through its own authorized personnel or contractors\. The assessment is independent of the assessed organization, not of the framework author or the tooling operator\. No external auditor or independent reviewer has reviewed it\.
 - This report is not a certification, accreditation, attestation of compliance, or seal of any kind\.
 - This report is not a legal opinion and does not state compliance with any law or regulation\.
 - This report does not establish the absence of vulnerabilities, and no security testing was performed against the assessed systems\.
@@ -526,16 +527,16 @@ Not included\. This report describes one point\-in\-time assessment; continuous 
 | Assessment digest | sha256:7346ed20936b70d1f6516772308c4907617661a0ef9cb6f8b7e63a2cc3899127 |
 | Framework | rn\.sv@0\.1\.0 |
 | Framework digest | sha256:e71fafe1a10af95514823e35d43138b1b93cdb72e37765200447a37748c13a58 |
-| Generator | aoc\.assurance\.commercial\-report\.v2 |
+| Generator | aoc\.assurance\.commercial\-report\.v3 |
 | Issued on | 2026\-06\-01 |
 | Evidence cutoff | 2026\-05\-31T00:00:00\.000Z |
 | Authenticated reviewers | reviewer\-1 |
 | Framework commercial use | restricted |
 
-The framework definition records commercial use as restricted pending controlled review\. Release of this report requires an authenticated human approver to acknowledge that restriction and act as that review; the release record states whether this happened\.
+The framework definition records commercial use of rn\.sv@0\.1\.0 as restricted pending controlled external review\. The control conclusions in this report are recorded by authenticated reviewers\. Release of this report requires approval by a separate authorized Republika approver whose credential recorded none of those conclusions; that approval, where given, is recorded in the release record, not in this document\. Internal review and internal release approval do not constitute an independent external review and do not remove the framework’s commercial\-use restriction\. No external review of this assessment is recorded\. Authorizing the framework for commercial use is a separate governance decision; this report does not state that the restriction has been satisfied or lifted\.
 
 This document does not record its own release\. A release is a separate record, kept by the issuer, that binds an authenticated human approval to this report’s digests\. Without a matching release record confirmed by the issuer, this report is not released\.
 
-The digests in the manifest show integrity only\. They are not a digital signature, do not provide non\-repudiation, and do not authenticate the evidence\.
+The digests in the manifest show integrity only: that the content has not changed since it was generated\. They are not a digital signature, and this report carries none\. They do not provide non\-repudiation, do not authenticate the evidence, and do not establish who issued the report\. To corroborate that Republika issued it, confirm the release digest with Republika over a separate, trusted channel\.
 
 The content digest, Markdown digest and manifest digest of this document are recorded in its manifest, not in this text.
