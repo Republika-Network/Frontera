@@ -4,7 +4,8 @@
 >
 > **STATUS: DRAFT (ASSURE-REL-01E; technical rows updated by ASSURE-OPS-01).**
 > This gate was set on baseline `5012246c`, 2026-11-01. ASSURE-OPS-01 closed
-> technical gaps R-02, R-04 and R-05 only. It changes only through §4. A technical
+> technical gaps R-02, R-04 and R-05 only. ASSURE-GOV-01 (2026-11-02) added a
+> governance package and changed **no** gate status (§6). It changes only through §4. A technical
 > PASS never produces a commercial GO. Tests passing are not authorization.
 
 ## 1. Rules
@@ -104,8 +105,8 @@ Owner: LEG. Approval: LEG sign-off on each document; FDR execution authority.
 | `rn.sv@0.1.0` `commercialUse` | `restricted` (frozen; golden digest) | BLOCKED |
 | Blocker technical closure | 8 of 9 VERIFIED; **B7 OPEN** (`FRAMEWORK_RESTRICTION_DISPOSITION.md`) | Not sufficient on its own |
 | Policy acceptance of residuals B1, B3, B7 | None | BLOCKED |
-| "Controlled external review" required by the restriction | No external reviewer identified | BLOCKED (D-02) |
-| Governed framework version for paid use | Recommended `rn.sv@0.2.0`; not created | BLOCKED (D-01, R-06) |
+| "Controlled external review" required by the restriction | No external reviewer identified. Protocol PROPOSED (`governance/INDEPENDENT_REVIEW_PROTOCOL.md`); no review performed | BLOCKED (D-02) |
+| Governed framework version for paid use | Recommended `rn.sv@0.2.0`; candidate spec DRAFT only (`governance/RN_SV_0_2_0_CANDIDATE_SPEC.md`); not created, registered or active | BLOCKED (D-01, R-06) |
 
 Owner: GOV + FDR. Approval: a written framework authorization decision
 naming the version, the accepted residuals and the conditions.
@@ -151,10 +152,25 @@ Owner: FDR. Approval: a signed SOW and authorization for a named customer.
 
 | Gate | Status | Owner | Next action |
 | --- | --- | --- | --- |
-| G-TECH | CONDITIONAL | ENG / SEC | R-02, R-04, R-05 closed (ASSURE-OPS-01); accept B7/A10/static credentials under M2, or R-01/R-03 |
+| G-TECH | CONDITIONAL | ENG / SEC | R-02, R-04, R-05 closed (ASSURE-OPS-01); accept B7/A10/static credentials under M2 (register SR-02–SR-04, all PENDING), or R-01/R-03 |
 | G-OPS | BLOCKED | OPS | Name operators; adopt the register; provision an encrypted engagement Host that passes the OPS-02 preflight; real restore drill |
 | G-INFO | BLOCKED | LEG / OPS | Approve the policy; decide D-04 retention, D-05 evidence option and subprocessors (OPS-02 tooling in place) |
 | G-LEGAL | BLOCKED | LEG | Professional review of drafts |
-| G-FRAMEWORK | BLOCKED | GOV / FDR | D-01, D-02; then mission R-06 |
+| G-FRAMEWORK | BLOCKED | GOV / FDR | D-01, D-02 (`governance/FOUNDER_DECISION_RECORD.md`); independent review R1; then R-06a / R-06b |
 | G-CUST | BLOCKED | FDR | Identify a founding customer; D-06 |
 | **Final** | **NO-GO** | FDR | — |
+
+## 6. Update — ASSURE-GOV-01 (2026-11-02, baseline `2e32eb15`)
+
+ASSURE-GOV-01 prepared the governance package in
+[`governance/`](governance/GOVERNANCE_READINESS.md): updated B1–B9 disposition,
+B7 options, an independent review protocol and evidence pack, the framework
+version strategy and a DRAFT `rn.sv@0.2.0` candidate, a risk register, founder
+decision options, an authorization procedure and a claims review.
+
+Validated progress: the technical evidence was re-run on the new baseline
+(329 focused tests, 0 failures; independent verifier verdict unchanged).
+**No approval, acceptance, independent review or authorization was recorded.**
+Every gate status above is unchanged. Approvals M1–M6: **Missing**.
+
+**FINAL COMMERCIAL DECISION: NO-GO.**
