@@ -30,10 +30,17 @@ describe('FV-P4C-2B2 structure — internal, unreachable, not composed', () => {
     assert.equal(/sovereign-status-history|coordinateStatusHistoryBootstrap/.test(readFileSync(join(SRC, 'composition', 'composition-root.ts'), 'utf8')), false);
   });
 
-  it('50/51/52. the module reaches no execution, capability, payment, ASSURE, CORE-07 or identity code', () => {
+  it('50/51/52. the module reaches no execution, capability, payment, ASSURE, CORE-07 or identity code (B3B: only its composition root imports AUTH-03’s index)', () => {
+    // FV-P4C-2B3B: exactly one file, the protected composition root, issues the AUTH-03 pair, so it alone
+    // may import AUTH-03, through its public index and nothing else; and the exclusivity module alone may ask
+    // whether it runs on the main thread (exclusive connections are refused in workers). Every other file keeps the rule.
+    const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
+      [join(MODULE, 'protected-host-composition.ts')]: ['../human-identity/index.js'],
+      [join(MODULE, 'executor-exclusivity.ts')]: ['node:worker_threads'],
+    };
     for (const file of walk(MODULE)) {
       for (const specifier of specifiers(file)) {
-        const allowed = specifier.startsWith('./') || ['node:crypto', 'node:fs', 'node:path', 'better-sqlite3'].includes(specifier);
+        const allowed = specifier.startsWith('./') || ['node:crypto', 'node:fs', 'node:path', 'better-sqlite3'].includes(specifier) || (EXCEPTIONS[file] ?? []).includes(specifier);
         assert.ok(allowed, `${relative(ROOT, file)} imports ${specifier}`);
       }
     }

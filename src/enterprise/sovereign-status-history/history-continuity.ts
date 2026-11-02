@@ -254,17 +254,25 @@ export function assessHistoryContinuity(
 
 type OpenFailure = Extract<HistoryContinuityClass, 'NAMESPACE_MISMATCH' | 'SCHEMA_MISMATCH' | 'CORRUPT' | 'UNAVAILABLE'>;
 
+/** FV-P4C-2B3B: open as the exclusive executor; `beforeWrite(file)` is the write fence of that file. */
+export interface ExclusiveOpen {
+  readonly beforeWrite: (file: string) => void;
+}
+
 /** Opens an existing history file, never creating one; a closed failure class otherwise. */
-async function openExisting(path: string, namespace: string, readOnly: boolean): Promise<SqliteStatusHighWaterMarkStore | OpenFailure> {
+async function openExisting(path: string, namespace: string, readOnly: boolean, exclusive?: ExclusiveOpen): Promise<SqliteStatusHighWaterMarkStore | OpenFailure> {
+  // A raw read of the header: never of a file this process holds exclusively (it would drop its POSIX locks).
   if (!hasSqliteHeader(path)) return 'CORRUPT';
   try {
-    return await openSqliteStatusHighWaterMarkStore(path, { namespace, readOnly });
+    return await openSqliteStatusHighWaterMarkStore(path, exclusive === undefined ? { namespace, readOnly } : { namespace, exclusive: true, busyTimeoutMs: 0, beforeWrite: () => exclusive.beforeWrite(resolve(path)) });
   } catch (error) {
     if (!(error instanceof SovereignStatusHistoryStoreError)) return 'UNAVAILABLE';
     if (/another namespace/.test(error.message)) return 'NAMESPACE_MISMATCH';
     if (/schema version/.test(error.message)) return 'SCHEMA_MISMATCH';
-    // Every other open refusal names the file itself (not a history, integrity, triggers); "could not be opened" may be transient.
-    return error.code === 'OPEN_REFUSED' && !/could not be opened/.test(error.message) ? 'CORRUPT' : 'UNAVAILABLE';
+    // Held by another executor, or not openable now: transient, never the file's fault.
+    if (/held by another executor|could not be opened/.test(error.message)) return 'UNAVAILABLE';
+    // Every other open refusal names the file itself (not a history, integrity, triggers, not WAL).
+    return error.code === 'OPEN_REFUSED' ? 'CORRUPT' : 'UNAVAILABLE';
   }
 }
 
@@ -275,7 +283,7 @@ async function openExisting(path: string, namespace: string, readOnly: boolean):
  */
 export async function openRecordedHistory(
   rawRecord: unknown,
-  options: { readonly namespace: string; readonly databasePath: string; readonly readOnly?: boolean; readonly pendingIntents?: readonly BootstrapIntent[] },
+  options: { readonly namespace: string; readonly databasePath: string; readonly readOnly?: boolean; readonly pendingIntents?: readonly BootstrapIntent[]; readonly exclusive?: ExclusiveOpen },
 ): Promise<{ readonly assessment: HistoryContinuityAssessment; readonly store?: SqliteStatusHighWaterMarkStore }> {
   const namespace = options?.namespace;
   if (!isIdentifier(namespace, MAX_NAMESPACE_LENGTH) || typeof options.databasePath !== 'string' || options.databasePath.trim() === '') return { assessment: assessment(String(namespace), 'RECORD_INVALID') };
@@ -286,6 +294,19 @@ export async function openRecordedHistory(
   if (resolve(options.databasePath) !== record.databasePath) return { assessment: assessment(namespace, 'MOVED') };
   if (!existsSync(record.databasePath)) return { assessment: assessment(namespace, 'MISSING') };
   const pending = options.pendingIntents ?? [];
+  if (options.exclusive !== undefined) {
+    // FV-P4C-2B3B: one exclusive, writable open (it writes nothing: the file must already be WAL), assessed
+    // on that handle. No read-only probe first: closing it and reopening would leave a window without the lock.
+    if (options.readOnly === true || typeof options.exclusive?.beforeWrite !== 'function') return { assessment: assessment(namespace, 'RECORD_INVALID') };
+    const held = await openExisting(record.databasePath, namespace, false, options.exclusive);
+    if (typeof held === 'string') return { assessment: assessment(namespace, held) };
+    const assessed = assessHistoryContinuity(record, { namespace, databasePath: record.databasePath, store: held }, pending);
+    if (!assessed.admitted) {
+      held.close();
+      return { assessment: assessed };
+    }
+    return { assessment: assessed, store: held };
+  }
   const probe = await openExisting(record.databasePath, namespace, true);
   if (typeof probe === 'string') return { assessment: assessment(namespace, probe) };
   const first = assessHistoryContinuity(record, { namespace, databasePath: record.databasePath, store: probe }, pending);
