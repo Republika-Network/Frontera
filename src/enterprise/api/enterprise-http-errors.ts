@@ -81,6 +81,7 @@ export type EnterpriseHttpErrorCode =
   | 'ASSURANCE_ASSESSMENT_CONFLICT'
   /** ASSURE-REL-01D: no release kept for that report version within the caller's organization (also when it is another organization's). */
   | 'ASSURANCE_RELEASE_NOT_FOUND'
+  | 'ASSURANCE_RELEASE_NOT_EXPORTABLE'
   | 'ASSURANCE_ASSESSMENT_INCOMPLETE'
   | 'ASSURANCE_FINDING_NOT_FOUND'
   | 'ASSURANCE_INVALID_FINDING_TRANSITION'
@@ -262,6 +263,8 @@ export function mapAssuranceErrorToHttp(error: AssuranceError): EnterpriseHttpEr
     case 'ASSURANCE_CONTROL_NOT_FOUND':
       return new EnterpriseHttpError(404, error.code, error.message, undefined, extra);
     case 'ASSURANCE_ASSESSMENT_IMMUTABLE':
+    // ASSURE-OPS-01: the release exists but its package cannot be exported (legacy custody, size bound). Not a Host failure.
+    case 'ASSURANCE_RELEASE_NOT_EXPORTABLE':
     // ASSURE-REL-01D: a lost compare-and-set race. Retryable; nothing was written.
     case 'ASSURANCE_ASSESSMENT_CONFLICT':
     case 'ASSURANCE_ASSESSMENT_INCOMPLETE':

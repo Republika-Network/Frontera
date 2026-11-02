@@ -5,6 +5,7 @@ import type {
   AssessmentTerminationResult,
   AssuranceEvidenceSubmission,
   CommercialReleasePackage,
+  CommercialReleasePackageExport,
   CommercialReleaseRecord,
   CommercialReleaseRequest,
   CommercialReleaseResult,
@@ -109,6 +110,8 @@ export interface EnterpriseHostClient {
   listCommercialReleases(assessmentId: string): Promise<{ readonly assessmentId: string; readonly releases: readonly CommercialReleaseRecord[] }>;
   getCommercialRelease(reportId: string): Promise<CommercialReleaseRecord>;
   verifyCommercialRelease(delivered: CommercialReleasePackage): Promise<CommercialReleaseVerification>;
+  /** ASSURE-OPS-01: `GET /api/assurance/commercial-releases/{reportId}/package` -- the delivery package from custody (`assure.reviewer` or `assure.report-release`). */
+  exportCommercialReleasePackage(reportId: string): Promise<CommercialReleasePackageExport>;
 }
 
 function resolveFetch(options: EnterpriseHostClientOptions): FetchLike {
@@ -370,5 +373,6 @@ export function createEnterpriseHostClient(options: EnterpriseHostClientOptions)
     listCommercialReleases: (assessmentId) => request('GET', `/api/assurance/assessments/${encode(assessmentId)}/commercial-releases`),
     getCommercialRelease: (reportId) => request('GET', `/api/assurance/commercial-releases/${encode(reportId)}`),
     verifyCommercialRelease: (delivered) => request('POST', '/api/assurance/commercial-releases/verify', delivered),
+    exportCommercialReleasePackage: (reportId) => request('GET', `/api/assurance/commercial-releases/${encode(reportId)}/package`),
   };
 }

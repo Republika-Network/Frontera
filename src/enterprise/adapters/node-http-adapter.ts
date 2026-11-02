@@ -159,7 +159,7 @@ function assuranceJsonBody(req: IncomingMessage): Promise<unknown> {
 /** Path segments stay percent-encoded until the caller is authenticated: a malformed one is then a 400 from the authenticated handler, never an answer to an anonymous caller. */
 type AssuranceOperatorRoute =
   | { readonly kind: 'evidence' | 'terminate' | 'draft' | 'release' | 'releases'; readonly encodedAssessmentId: string }
-  | { readonly kind: 'release-read'; readonly encodedReportId: string }
+  | { readonly kind: 'release-read' | 'package'; readonly encodedReportId: string }
   | { readonly kind: 'verify' };
 
 /** ASSURE-REL-01D: the operator routes. Each one requires an Assurance reviewer credential and nothing else. */
@@ -177,6 +177,9 @@ function matchAssuranceOperatorRoute(method: string, url: URL): AssuranceOperato
     if (list?.[1] !== undefined) return { kind: 'releases', encodedAssessmentId: list[1] };
     const read = /^\/api\/assurance\/commercial-releases\/([^/]+)$/.exec(pathname);
     if (read?.[1] !== undefined) return { kind: 'release-read', encodedReportId: read[1] };
+    // ASSURE-OPS-01 (R-05): the delivery package of a kept release, from custody.
+    const exported = /^\/api\/assurance\/commercial-releases\/([^/]+)\/package$/.exec(pathname);
+    if (exported?.[1] !== undefined) return { kind: 'package', encodedReportId: exported[1] };
   }
   return undefined;
 }
@@ -286,6 +289,14 @@ function handleAssuranceOperatorRoute(route: AssuranceOperatorRoute, req: Incomi
         const record = await assurance.getCommercialRelease(context, reportId);
         if (record === null) throw new EnterpriseHttpError(404, 'ASSURANCE_RELEASE_NOT_FOUND', `No commercial release is kept for reportId '${reportId.slice(0, 128)}' within this scope.`);
         respond(200, record);
+      });
+      return;
+    case 'package':
+      run(async () => {
+        const exported = await assurance.exportCommercialReleasePackage(context, reportId);
+        // Absent and another organization's release are answered alike: the foreign one is never named.
+        if (exported === null) throw new EnterpriseHttpError(404, 'ASSURANCE_RELEASE_NOT_FOUND', `No commercial release is kept for reportId '${reportId.slice(0, 128)}' within this scope.`);
+        respond(200, exported);
       });
       return;
     case 'verify':

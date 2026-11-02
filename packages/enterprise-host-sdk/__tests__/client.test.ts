@@ -430,6 +430,7 @@ describe('ASSURE-REL-01D operator interface', () => {
       [() => client.listCommercialReleases('a-1'), 'GET', '/api/assurance/assessments/a-1/commercial-releases', undefined],
       [() => client.getCommercialRelease('r 1'), 'GET', '/api/assurance/commercial-releases/r%201', undefined],
       [() => client.verifyCommercialRelease({ content: {}, markdown: '# r', manifest: { reportId: 'r-1' } }), 'POST', '/api/assurance/commercial-releases/verify', { content: {}, markdown: '# r', manifest: { reportId: 'r-1' } }],
+      [() => client.exportCommercialReleasePackage('r 1'), 'GET', '/api/assurance/commercial-releases/r%201/package', undefined],
     ];
     for (const [invoke, method, url, body] of cases) {
       await invoke();

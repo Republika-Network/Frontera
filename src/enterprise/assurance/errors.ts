@@ -41,7 +41,14 @@ export type AssuranceErrorCode =
   | 'ASSURANCE_STORE_UNAVAILABLE'
   | 'ASSURANCE_TENANT_SCOPE_REQUIRED'
   | 'ASSURANCE_ACCESS_SCOPE_VIOLATION'
-  | 'ASSURANCE_VALIDATION_ERROR';
+  | 'ASSURANCE_VALIDATION_ERROR'
+  /**
+   * ASSURE-OPS-01 (R-05): a kept release whose delivery package cannot be
+   * exported from custody -- it predates artifact custody
+   * (`reason: 'artifacts_not_in_custody'`) or exceeds the delivery bound
+   * (`reason: 'package_too_large'`). Nothing is wrong with the release itself.
+   */
+  | 'ASSURANCE_RELEASE_NOT_EXPORTABLE';
 
 export class AssuranceError extends Error {
   constructor(
@@ -56,4 +63,20 @@ export class AssuranceError extends Error {
 
 export function isAssuranceError(error: unknown): error is AssuranceError {
   return error instanceof AssuranceError;
+}
+
+/**
+ * ASSURE-OPS-01 (R-02): the one refusal for a manual review offered to a
+ * terminal assessment. `ASSURANCE_ASSESSMENT_IMMUTABLE` already means "this
+ * assessment's recorded content can no longer change" (HTTP 409); a review is
+ * part of what a terminal conclusion rests on, so the same code applies, with
+ * `reason: 'terminal_assessment'` to tell it apart from a content rewrite.
+ * Raised by the service and again by every store inside the insert unit.
+ */
+export function terminalReviewRefusal(assessmentId: string, status: string): AssuranceError {
+  return new AssuranceError(
+    'ASSURANCE_ASSESSMENT_IMMUTABLE',
+    `Assessment '${assessmentId}' is '${status}'; a terminal assessment accepts no new manual review. Nothing was recorded. Corrections need a reassessment.`,
+    { reason: 'terminal_assessment', status },
+  );
 }

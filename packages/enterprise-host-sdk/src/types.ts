@@ -331,6 +331,33 @@ export interface CommercialReleasePackage {
   readonly release?: Readonly<Record<string, unknown>>;
 }
 
+/** One file of an exported package: its exact bytes (base64), size, transport digest, and whether a release digest covers it. */
+export interface CommercialReleasePackageFile {
+  readonly path: 'integrity-manifest.json' | 'limitations.md' | 'release-record.json' | 'report.json' | 'report.md' | 'verification-instructions.md';
+  readonly mediaType: string;
+  readonly binding: 'integrity-bound' | 'informational';
+  readonly size: number;
+  readonly sha256: string;
+  readonly contentBase64: string;
+}
+
+/**
+ * ASSURE-OPS-01: a kept release's delivery package, exported from the Host's
+ * custody and verified against it before it was returned. Write each file's
+ * decoded bytes, unchanged, into `directory`. Never a signature:
+ * `externalSignature` is always `EXTERNAL_SIGNATURE_NOT_AVAILABLE`.
+ */
+export type CommercialReleasePackageExport = Readonly<Record<string, unknown>> & {
+  readonly packageVersion: string;
+  readonly directory: string;
+  readonly reportId: string;
+  readonly assessmentId: string;
+  readonly packageDigest: string;
+  readonly files: readonly CommercialReleasePackageFile[];
+  readonly authority: Readonly<Record<string, unknown>> & { readonly status: 'RELEASE_MATCHES_AUTHORITY'; readonly releaseAuthenticated: true };
+  readonly externalSignature: 'EXTERNAL_SIGNATURE_NOT_AVAILABLE';
+};
+
 /** Package integrity and the Host's custody answer, separately. Never a signature: `externalSignature` is always `EXTERNAL_SIGNATURE_NOT_AVAILABLE`. */
 export type CommercialReleaseVerification = Readonly<Record<string, unknown>> & {
   readonly authority?: string;

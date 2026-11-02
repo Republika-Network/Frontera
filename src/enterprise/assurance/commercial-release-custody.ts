@@ -1,5 +1,5 @@
 import { computeDigest } from '../governance-store/digest.js';
-import { COMMERCIAL_REPORT_RELEASE_ROLE, verifyCommercialReport, type CommercialReportManifest, type CommercialReportRelease, type CommercialReportVerification } from './commercial-report.js';
+import { COMMERCIAL_REPORT_RELEASE_ROLE, verifyCommercialReport, type CommercialReportContent, type CommercialReportManifest, type CommercialReportRelease, type CommercialReportVerification } from './commercial-report.js';
 
 /**
  * Durable custody of commercial report releases (ASSURE-REL-01A).
@@ -28,7 +28,23 @@ import { COMMERCIAL_REPORT_RELEASE_ROLE, verifyCommercialReport, type Commercial
  * docs/security/ASSURE-REL-01A-DURABLE-RELEASE-AUTHENTICITY.md.
  */
 
-export const COMMERCIAL_RELEASE_CUSTODY_VERSION = 'aoc.assurance.commercial-release-custody.v1';
+/** ASSURE-REL-01A: manifest and release record only. Records of this version stay valid and verifiable; they cannot be exported (no approved artifacts were kept). */
+export const COMMERCIAL_RELEASE_CUSTODY_VERSION_V1 = 'aoc.assurance.commercial-release-custody.v1';
+/**
+ * ASSURE-OPS-01 (R-05): v1 plus `artifacts` -- the approved report content and
+ * Markdown exactly as the approver approved them, so the delivery package can
+ * be exported from custody instead of being re-drafted. `recordDigest` covers
+ * them; the append-only triggers protect them. Same table, no DDL change.
+ */
+export const COMMERCIAL_RELEASE_CUSTODY_VERSION_V2 = 'aoc.assurance.commercial-release-custody.v2';
+/** The version new releases are kept under. */
+export const COMMERCIAL_RELEASE_CUSTODY_VERSION = COMMERCIAL_RELEASE_CUSTODY_VERSION_V2;
+
+/** The approved artifacts kept with a v2 release. Their digests are the manifest's `contentDigest` and `markdownDigest`. */
+export interface CommercialReleaseArtifacts {
+  readonly content: CommercialReportContent;
+  readonly markdown: string;
+}
 
 export interface CommercialReleaseCustodyRecord {
   readonly custodyVersion: string;
@@ -41,6 +57,8 @@ export interface CommercialReleaseCustodyRecord {
   readonly manifest: CommercialReportManifest;
   /** The release record exactly as returned to the approver and delivered. */
   readonly release: CommercialReportRelease;
+  /** ASSURE-OPS-01: present exactly when `custodyVersion` is v2. */
+  readonly artifacts?: CommercialReleaseArtifacts;
   /** sha256 over the canonical JSON of every other field. */
   readonly recordDigest: string;
 }
@@ -55,14 +73,17 @@ export function buildCommercialReleaseCustodyRecord(input: {
   readonly organizationId: string;
   readonly manifest: CommercialReportManifest;
   readonly release: CommercialReportRelease;
+  /** The approved artifacts. Given: a v2 record (every release since ASSURE-OPS-01). Omitted: a v1 record, as ASSURE-REL-01A built them. */
+  readonly artifacts?: CommercialReleaseArtifacts;
 }): CommercialReleaseCustodyRecord {
   const body = {
-    custodyVersion: COMMERCIAL_RELEASE_CUSTODY_VERSION,
+    custodyVersion: input.artifacts !== undefined ? COMMERCIAL_RELEASE_CUSTODY_VERSION_V2 : COMMERCIAL_RELEASE_CUSTODY_VERSION_V1,
     reportId: input.release.reportId,
     organizationId: input.organizationId,
     assessmentId: input.release.assessmentId,
     manifest: input.manifest,
     release: input.release,
+    ...(input.artifacts !== undefined ? { artifacts: { content: input.artifacts.content, markdown: input.artifacts.markdown } } : {}),
   };
   return { ...body, recordDigest: computeDigest(body) };
 }
@@ -76,7 +97,27 @@ const without = <T extends object, K extends keyof T>(value: T, key: K): Omit<T,
 export function commercialReleaseCustodyViolations(record: CommercialReleaseCustodyRecord): readonly string[] {
   const violations: string[] = [];
   const { manifest, release } = record;
-  if (record.custodyVersion !== COMMERCIAL_RELEASE_CUSTODY_VERSION) violations.push('custodyVersion');
+  if (record.custodyVersion === COMMERCIAL_RELEASE_CUSTODY_VERSION_V1) {
+    if (record.artifacts !== undefined) violations.push('artifacts');
+  } else if (record.custodyVersion === COMMERCIAL_RELEASE_CUSTODY_VERSION_V2) {
+    // ASSURE-OPS-01: the kept artifacts are exactly what the manifest and the
+    // release record name, under the REP-01/REL-01C verification -- one
+    // definition of report integrity, not a second one.
+    const artifacts = record.artifacts;
+    if (artifacts === undefined || artifacts === null || typeof artifacts.markdown !== 'string' || typeof artifacts.content !== 'object' || artifacts.content === null) {
+      violations.push('artifacts');
+    } else {
+      let artifactsValid = false;
+      try {
+        artifactsValid = verifyCommercialReport({ content: artifacts.content, markdown: artifacts.markdown, manifest, release }).valid && artifacts.content.reportId === record.reportId;
+      } catch {
+        artifactsValid = false;
+      }
+      if (!artifactsValid) violations.push('artifacts');
+    }
+  } else {
+    violations.push('custodyVersion');
+  }
   if (typeof record.organizationId !== 'string' || record.organizationId.length === 0) violations.push('organizationId');
   if (computeDigest(without(record, 'recordDigest')) !== record.recordDigest) violations.push('recordDigest');
   if (computeDigest(without(release, 'releaseDigest')) !== release.releaseDigest) violations.push('release.releaseDigest');

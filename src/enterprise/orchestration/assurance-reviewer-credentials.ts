@@ -1,5 +1,6 @@
 import type { EnterpriseConfiguration } from '../configuration/enterprise-configuration.js';
 import { isCanonicalCustomerIdentifier } from '../customer-identity/identifiers.js';
+import { describeReviewerReferenceViolation, reviewerReferenceViolation } from '../assurance/reviewer-reference.js';
 import { AGENT_PRINCIPAL_PREFIX } from '../operator-control/agent-credentials.js';
 import { SERVICE_PRINCIPAL_MIN_SECRET_LENGTH } from './advisory-identity.js';
 
@@ -19,6 +20,8 @@ export class AssuranceReviewerConfigurationError extends Error {
  * * scoped to the one organization this instance serves;
  * * a canonical reviewer id outside the `agent:` namespace, naming no customer
  *   or service principal, auditor, operator, administrator or other reviewer;
+ * * ASSURE-OPS-01 (R-04): a safe public reviewer reference -- it is printed in
+ *   delivered reports (`assurance/reviewer-reference.ts`);
  * * at least one role, each a canonical identifier, listed once -- no wildcard
  *   or implied role exists;
  * * a secret of at least 32 characters without surrounding whitespace, shared
@@ -53,6 +56,11 @@ export function assertAssuranceReviewerConfiguration(configuration: EnterpriseCo
     }
     if (reviewer.reviewerId.startsWith(AGENT_PRINCIPAL_PREFIX)) {
       throw new AssuranceReviewerConfigurationError(`${where}.reviewerId uses the '${AGENT_PRINCIPAL_PREFIX}' prefix, which is reserved for operator-issued agent principals.`);
+    }
+    // ASSURE-OPS-01 (R-04): the reviewer id is printed in delivered reports and release records.
+    const referenceViolation = reviewerReferenceViolation(reviewer.reviewerId);
+    if (referenceViolation !== undefined) {
+      throw new AssuranceReviewerConfigurationError(`${where}.reviewerId ${describeReviewerReferenceViolation(referenceViolation)}; use an opaque, role-style reference such as 'rn-reviewer-01'.`);
     }
     if (reviewerIds.has(reviewer.reviewerId) || takenIds.has(reviewer.reviewerId)) {
       throw new AssuranceReviewerConfigurationError(`${where}.reviewerId already names another reviewer, principal, auditor, operator or administrator; one id names one identity.`);

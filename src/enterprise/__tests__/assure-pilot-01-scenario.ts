@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 
+import { COMMERCIAL_RELEASE_PACKAGE_FILES, assembleCommercialReleasePackageFiles, commercialPackageLimitationsExtract } from '../assurance/commercial-release-package.js';
 import { createAssuranceService, type AssuranceService, type CommercialReportReleaseResult, type RecordManualReviewInput } from '../assurance/service.js';
 import { createSqliteAssuranceStore } from '../assurance/sqlite-assurance-store.js';
 import { createInMemoryAssuranceStore } from '../assurance/in-memory-assurance-store.js';
@@ -306,65 +307,23 @@ export async function runPilotHappyPath(world: PilotWorld): Promise<{ readonly a
 // Delivery package
 // ---------------------------------------------------------------------------
 
-export const PILOT_PACKAGE_FILES = ['integrity-manifest.json', 'limitations.md', 'release-record.json', 'report.json', 'report.md', 'verification-instructions.md'] as const;
+/** ASSURE-OPS-01: the delivery file set is the production one (`commercial-release-package.ts`). */
+export const PILOT_PACKAGE_FILES = COMMERCIAL_RELEASE_PACKAGE_FILES;
 
 /** Must equal `limitationsExtract` in scripts/assurance/verify-commercial-package.mjs, which regenerates and compares it. */
 export function pilotLimitationsExtract(content: CommercialReportDraft['content']): string {
-  return `# Limitations — ${content.reportId}\n\nExtracted from report.json \`limitations\`; report.json is authoritative. This file is not separately digested.\n\n${content.limitations.map((line) => `- ${line}`).join('\n')}\n`;
+  return commercialPackageLimitationsExtract(content);
 }
 
-const VERIFICATION_INSTRUCTIONS = `# How to read and verify this report package
-
-SYNTHETIC DRY RUN (ASSURE-PILOT-01). Every organization, system and piece of
-evidence in this package is fictional. This is not an audit and not a
-certification.
-
-## What each file is
-
-- report.md: the assessment, for people to read. It states the results and
-  does NOT state whether it was released.
-- report.json: the same content, structured. It is authoritative.
-- integrity-manifest.json: the digests of report.json and report.md, the
-  assessment and the framework.
-- release-record.json: the release. It records who approved this exact
-  report (by its digests), when, and what they acknowledged.
-- limitations.md: an extract of report.json \`limitations\`, not separately digested.
-- This file: informational, covered by no digest.
-
-## Three different statements
-
-1. Ready for release (in report.md): the report passed every release check.
-   That is preparation, not approval.
-2. Released (release-record.json): an authenticated approver at the issuer
-   approved these digests. The issuer keeps that approval in its release
-   custody. A report without a matching release record is NOT released.
-3. Authentic: shown only by the issuer confirming that this release record
-   matches its custody. These files alone cannot show it.
-
-## How to verify
-
-1. Run: node scripts/assurance/verify-commercial-package.mjs <this directory>
-   It checks that the files are unchanged and agree with each other: report.md
-   byte for byte (LF), report.json canonically, the manifest, and the release
-   record's digests.
-2. Ask the issuer to verify the package against its release custody, or
-   compare the release record and manifest with the issuer over a separate,
-   trusted channel.
-3. If the issuer cannot be reached, the package is consistent but its
-   approval is not corroborated. Do not treat it as authenticated.
-
-A digest is not a digital signature. Anyone who edits a file and recomputes
-every digest produces a package that verifies offline. Never re-save
-report.md in an editor, since a CRLF conversion changes its digest.
-`;
+/** The dry run's notice, placed in the informational instructions file only. */
+export const PILOT_SYNTHETIC_NOTICE = `SYNTHETIC DRY RUN (ASSURE-PILOT-01). Every organization, system and piece of
+evidence in this package is fictional.`;
 
 /** Writes the generator's and the approval's own output -- nothing composed by hand -- into `dir`. */
 export function writePilotPackage(dir: string, draft: CommercialReportDraft, release: CommercialReportRelease): void {
+  // ASSURE-OPS-01 (R-05): the production assembler, so the dry run delivers exactly what the Host exports.
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'report.md'), draft.markdown, 'utf8');
-  writeFileSync(join(dir, 'report.json'), `${JSON.stringify(draft.content, null, 2)}\n`, 'utf8');
-  writeFileSync(join(dir, 'integrity-manifest.json'), `${JSON.stringify(draft.manifest, null, 2)}\n`, 'utf8');
-  writeFileSync(join(dir, 'release-record.json'), `${JSON.stringify(release, null, 2)}\n`, 'utf8');
-  writeFileSync(join(dir, 'limitations.md'), pilotLimitationsExtract(draft.content), 'utf8');
-  writeFileSync(join(dir, 'verification-instructions.md'), VERIFICATION_INSTRUCTIONS, 'utf8');
+  for (const file of assembleCommercialReleasePackageFiles({ content: draft.content, markdown: draft.markdown, manifest: draft.manifest, release, notice: PILOT_SYNTHETIC_NOTICE })) {
+    writeFileSync(join(dir, file.path), file.bytes);
+  }
 }
