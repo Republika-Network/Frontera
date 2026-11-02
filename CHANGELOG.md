@@ -24,6 +24,7 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - the B3B and B3C-1 suites are updated to the executor-owned store (the B3B child observes the store at its module export, test-only);
   - the AUTH-03 composer structure test now pins one exclusive open of its own store.
 - **Independent review:** an AI agent of the same model family, not a human. M1 is mitigated fail-closed and recorded as a blocker; L1, L2, L3 and one Info item are fixed. See `docs/integration/FV_AUTH03_IDENTITY_OWNERSHIP.md`.
+- **Publication review (PR #255, also AI):** one Low finding fixed. The enrollment refusal checked the caller's `freshness` object and then passed that same object on, so a Proxy or a late mutation could carry an enrollment through. Now the composition snapshots its `identity` option once and passes the store a new `{ boundary }`, and the store refuses `exclusive` together with `enrollment`.
 - **Not included:** B3C-2, B6, FV-P4D, FV-P5, any deployment. **Operational activation: NO-GO.**
 
 ### Added — FV-P4C-2B3C-1 dedicated FV executor and supervised lifecycle (internal, not composed, not operational)

@@ -310,6 +310,11 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
   if (exclusive !== undefined && (typeof exclusive !== 'object' || exclusive === null || typeof exclusive.beforeWrite !== 'function' || typeof exclusive.closer !== 'function')) {
     throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'The exclusive option is the owner’s write fence and guarded closer.');
   }
+  // PR #255 review, finding 1 (defence in depth): an exclusive owner never enrolls a CORE-07 witness slot from an
+  // open. The organization's one 'human-identity-state' slot is AUTH-04A's; binding a slot is an operator ceremony.
+  if (exclusive !== undefined && freshness?.enrollment !== undefined) {
+    throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'An exclusively owned store never enrolls a witness slot when it is opened.');
+  }
   const file = resolve(path);
   if (options.create !== true && !existsSync(file)) throw new HumanIdentityError('HUMAN_IDENTITY_STORE_UNAVAILABLE', `No human identity store exists at ${file}; it is created only by an explicit initialization.`);
   if (options.create === true) mkdirSync(dirname(file), { recursive: true, mode: 0o700 });

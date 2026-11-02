@@ -226,6 +226,17 @@ threat model from the code and reproduced its findings. **It is not a human revi
 | **Info:** `heldByAnotherProcess` counted any byte-range lock | Info | Fixed: SQLite's SHARED range only |
 | **Info:** the identity open has no retry loop, unlike the protected store | Info | Accepted: availability only. Two executors are serialized at the protected store first, and a transient refusal is `IDENTITY_REFUSED`. |
 
+**Publication review (PR #255).** A second, read-only AI review of the published diff (same model family,
+not a human):
+
+| Finding | Severity | Resolution |
+|---|---|---|
+| The M1 refusal checked the caller's `identity.freshness` object, then passed that same object to the store. A Proxy hiding `enrollment`, or an `enrollment` added after the synchronous checks, reached the store, which could then bind the organization's one unbound `human-identity-state` slot to the FV store. Reproduced; reachable only by the trusted composition root. | Low (defence in depth) | Fixed in two layers: the composition reads its `identity` option once into a frozen snapshot and passes the store a new `{ boundary }`; the store refuses `exclusive` together with `enrollment` (`HUMAN_IDENTITY_CONFIGURATION_INVALID`). Covered by an e2e test (Proxy, late mutation, and the Host still binding the slot at genesis) and by structure assertions. |
+| `identity.storeId` was read three times, so a getter could return different values | Info | Fixed by the same snapshot |
+| `journal_mode`/`synchronous` pragmas and the guarded close's WAL checkpoint run before the store-id pin, under the exclusive lock. A misconfigured path naming AUTH-04A's file while AUTH-04A is down would checkpoint its committed WAL frames before refusing. No data changes. | Info | Accepted: no logical change, and the path is trusted configuration |
+| A store held only by a non-exclusive reader reports `IDENTITY_REFUSED`, not the retryable `EXECUTOR_HELD` | Info | Accepted: availability only |
+| The FV identity store has no rollback detection while M1 stands | Info | Part of the M1 activation blocker |
+
 **What the review verified holds:** no capability leak; all five write paths fenced; the
 exclusive-lock ordering; no `-shm` file; the guarded close; separate files by path and `dev:ino`; AUTH-04A
 unchanged; no production reachability; stale executors cannot write.

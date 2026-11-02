@@ -237,6 +237,35 @@ describe('FV-P4C-2B3C-3 settlement — fenced inside the identity owner’s own 
     hostStore.close();
   });
 
+  it('PR #255 review: an enrollment hidden from the composition’s check (a Proxy, or added after validation) never reaches the store; the unbound slot stays AUTH-04A’s to bind', async () => {
+    const w = await world();
+    const witness = await startWitness();
+    const boundary = await boundaryFor(witness, ORG);
+    const enrollment = { operator: true, operatorId: 'ops-admin', attestation: 'verified-local-state-is-current' };
+    // (a) A Proxy that hides `enrollment` from `in` but yields it on read.
+    const hidden = new Proxy({ boundary, enrollment }, { has: (target, key) => key !== 'enrollment' && key in target });
+    assert.equal('enrollment' in hidden, false);
+    await assert.rejects(compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: hidden }) }), (e) => e.code === 'IDENTITY_REFUSED', 'not enrolled: the slot is unbound');
+    // (b) An enrollment added after the synchronous validation, while the composition awaits its stores.
+    const later = { boundary };
+    const composing = compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: later }) });
+    later.enrollment = enrollment;
+    await assert.rejects(composing, (e) => e.code === 'IDENTITY_REFUSED', 'not enrolled: the slot is unbound');
+    // The store layer refuses the combination on its own (defence in depth).
+    const authenticity = { signer: testSigner(AUTHORITY_KEY_A), verifier: testVerifier([AUTHORITY_KEY_A]) };
+    await assert.rejects(
+      openSqliteHumanIdentityStore(w.paths.identity, { organizationId: ORG, now: () => LATER, authenticity, freshness: { boundary, enrollment }, exclusive: { beforeWrite: () => undefined, closer: (_file, connection) => () => void connection.close() } }),
+      (e) => e.code === 'HUMAN_IDENTITY_CONFIGURATION_INVALID',
+    );
+    // The organization's one slot was never bound by FV: AUTH-04A's new store still takes it at genesis (a slot
+    // holding any state beyond genesis would refuse this creation).
+    const hostDir = mkdtempSync(join(tmpdir(), 'fv-p4c2b3c3-host-'));
+    cleanup.push(() => rmSync(hostDir, { recursive: true, force: true }));
+    const hostStore = await openSqliteHumanIdentityStore(join(hostDir, 'human-identity.sqlite'), { organizationId: ORG, now: () => LATER, authenticity, create: true, freshness: { boundary: await boundaryFor(witness, ORG) } });
+    assert.equal(hostStore.head().sequence, 0);
+    hostStore.close();
+  });
+
   it('a CORE-07-anchored identity store restored to an older state is refused at open (rollback); the current state composes', async () => {
     const w = await world();
     const witness = await startWitness();

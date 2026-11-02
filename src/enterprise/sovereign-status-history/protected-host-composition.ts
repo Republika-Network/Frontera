@@ -160,19 +160,32 @@ export async function composeFvProtectedHost(options: FvProtectedHostOptions): P
     throw new FvProtectedHostError('OPTIONS_INVALID', message);
   };
   if (typeof options !== 'object' || options === null) invalid('The protected FV Host needs its options.');
-  const { protectedStorePath, configuration, identity, standing, organizationId, clock, graceSeconds, maxDecisions, receiver, verificationKeyResolver, trustedSubjectOf, statusSource } = options;
+  const { protectedStorePath, configuration, identity: identityOption, standing, organizationId, clock, graceSeconds, maxDecisions, receiver, verificationKeyResolver, trustedSubjectOf, statusSource } = options;
   if (typeof protectedStorePath !== 'string' || protectedStorePath.trim() === '') invalid('protectedStorePath is the protected store file.');
   if (typeof configuration !== 'function' || typeof clock !== 'function' || typeof trustedSubjectOf !== 'function') invalid('configuration, clock and trustedSubjectOf are the Host’s own functions.');
   if (!isIdentifier(organizationId, 256)) invalid('organizationId is the one organization this Host serves.');
-  if (typeof identity !== 'object' || identity === null || typeof identity.storePath !== 'string' || identity.storePath.trim() === '' || identity.storePath.includes('\0')) invalid('identity.storePath is the executor’s own bootstrap identity store file.');
+  if (typeof identityOption !== 'object' || identityOption === null) invalid('identity is the executor’s own bootstrap identity store configuration.');
   // A handed-in store is never accepted (it could be AUTH-04A's, or shared): the executor opens its own.
-  if ('store' in identity) invalid('The executor opens and owns its bootstrap identity store; an already opened store is never accepted.');
+  if ('store' in identityOption) invalid('The executor opens and owns its bootstrap identity store; an already opened store is never accepted.');
+  // PR #255 review, finding 1: every field is read exactly once, into this snapshot. Every check below and every use
+  // after is of the snapshot, never of the caller's object, so no getter, Proxy or later mutation can change what was
+  // checked. The freshness option is rebuilt to carry its boundary only: an enrollment never reaches the store.
+  const rawFreshness = identityOption.freshness;
+  const identity = Object.freeze({
+    storePath: identityOption.storePath,
+    storeId: identityOption.storeId,
+    authenticity: identityOption.authenticity,
+    relyingParty: identityOption.relyingParty,
+    operatorIds: identityOption.operatorIds,
+  });
+  if (typeof identity.storePath !== 'string' || identity.storePath.trim() === '' || identity.storePath.includes('\0')) invalid('identity.storePath is the executor’s own bootstrap identity store file.');
   if (typeof identity.storeId !== 'string' || !/^human-identity-store:[0-9a-f-]{36}$/.test(identity.storeId)) invalid('identity.storeId is the pinned id of the executor’s bootstrap identity store.');
   if (typeof identity.authenticity !== 'object' || identity.authenticity === null) invalid('identity.authenticity is the deployment’s signer and verifier.');
   // Review M1: never a CORE-07 enrollment from here. The witness slot of an AUTH-03 identity store is the
   // organization's one 'human-identity-state' slot (not namespaced), which AUTH-04A's Host store anchors at;
   // binding or rebinding it is an operator ceremony, and the FV store needs a witness of its own (activation blocker).
-  if (identity.freshness !== undefined && (typeof identity.freshness !== 'object' || identity.freshness === null || 'enrollment' in identity.freshness)) invalid('identity.freshness is a boundary only; the composition never enrolls a witness slot.');
+  if (rawFreshness !== undefined && (typeof rawFreshness !== 'object' || rawFreshness === null || 'enrollment' in rawFreshness)) invalid('identity.freshness is a boundary only; the composition never enrolls a witness slot.');
+  const freshnessOption: SqliteHumanIdentityStoreOptions['freshness'] = rawFreshness === undefined ? undefined : Object.freeze({ boundary: rawFreshness.boundary });
   if (typeof receiver?.verifySovereignStatus !== 'function' || typeof receiver.establishStatusHistory !== 'function') invalid('receiver is the receiver package’s functions.');
   if (statusSource !== undefined && (typeof statusSource?.verifier?.attestStatusSource !== 'function' || typeof statusSource.policy !== 'object' || statusSource.policy === null)) invalid('statusSource is a verifier and its policy.');
   if (options.initializeProtectedStore !== undefined && typeof options.initializeProtectedStore !== 'boolean') invalid('initializeProtectedStore is a boolean.');
@@ -279,7 +292,7 @@ export async function composeFvProtectedHost(options: FvProtectedHostOptions): P
       organizationId,
       now: iso,
       authenticity: identity.authenticity,
-      ...(identity.freshness !== undefined ? { freshness: identity.freshness } : {}),
+      ...(freshnessOption !== undefined ? { freshness: freshnessOption } : {}),
       exclusive: { beforeWrite: fence(() => checkProtectedFile(identityPath) === undefined && confirmExclusivelyHeld([identityPath]) && authority()), closer: exclusiveCloser, storeId: identity.storeId },
     });
   } catch (error) {

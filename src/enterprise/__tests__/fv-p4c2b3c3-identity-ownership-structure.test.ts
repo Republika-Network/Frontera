@@ -17,8 +17,14 @@ describe('FV-P4C-2B3C-3 structure — one owner per AUTH-03 identity store', () 
   it('the FV composition opens exactly its own store, as its exclusive owner, and refuses one handed in', () => {
     assert.equal((FV.match(/openSqliteHumanIdentityStore\(/g) ?? []).length, 1);
     assert.match(FV, /openSqliteHumanIdentityStore\(identityPath, \{[\s\S]*?exclusive: \{ beforeWrite: fence\(\(\) => checkProtectedFile\(identityPath\) === undefined && confirmExclusivelyHeld\(\[identityPath\]\) && authority\(\)\), closer: exclusiveCloser, storeId: identity\.storeId \},/, 'exclusive, fenced, guarded, pinned inside the store');
-    assert.match(FV, /if \('store' in identity\) invalid\(/, 'an already opened store is never accepted');
-    assert.match(FV, /'enrollment' in identity\.freshness\)\) invalid\(/, 'never a CORE-07 enrollment from the composition');
+    assert.match(FV, /if \('store' in identityOption\) invalid\(/, 'an already opened store is never accepted');
+    assert.match(FV, /'enrollment' in rawFreshness\)\) invalid\(/, 'never a CORE-07 enrollment from the composition');
+    // PR #255 review, finding 1: the caller's object is read once into a frozen snapshot, and the store receives a
+    // freshness option rebuilt from the boundary alone, never the caller's object.
+    assert.match(FV, /const identity = Object\.freeze\(\{/);
+    assert.match(FV, /Object\.freeze\(\{ boundary: rawFreshness\.boundary \}\)/);
+    assert.match(FV, /\.\.\.\(freshnessOption !== undefined \? \{ freshness: freshnessOption \} : \{\}\)/);
+    assert.equal(/freshness: identity\.freshness\b|freshness: rawFreshness\b/.test(FV), false, 'the caller’s freshness object never reaches the store');
     assert.match(FV, /identityStore\.storeId !== identity\.storeId/, 'the store is pinned by id');
     assert.equal(/identity\.store\b/.test(FV), false, 'no handed-in store is used anywhere');
   });
@@ -37,6 +43,7 @@ describe('FV-P4C-2B3C-3 structure — one owner per AUTH-03 identity store', () 
     assert.match(STORE, /exclusive\?\.storeId !== undefined && opened\.state\.storeId !== exclusive\.storeId/, 'the pin is checked before any open-time write or witness contact');
     assert.match(STORE, /const commitLocal = \(\): void =>\s+db\.transaction\(\(\) => \{[\s\S]{0,400}?\n\s+fence\(\);\n/, 'the append fence is the first statement inside the write transaction');
     assert.match(STORE, /closeConnection = exclusive\.closer\(file, db\);/);
+    assert.match(STORE, /exclusive !== undefined && freshness\?\.enrollment !== undefined\) \{\n\s+throw new HumanIdentityError\('HUMAN_IDENTITY_CONFIGURATION_INVALID'/, 'an exclusive owner never enrolls a witness slot');
     // db.close() only in the plain closer and for a connection that never took the lock.
     assert.equal((STORE.match(/db\.close\(\)/g) ?? []).length, 2);
   });
