@@ -1,7 +1,9 @@
 import {
+  HUMAN_IDENTITY_STATE_KINDS,
   authorityStateBindingProblem,
   bindingOf,
   isBoundedIdentifier,
+  isHumanIdentityStateKind,
   sameBinding,
   sameCheckpoint,
   sameHead,
@@ -389,6 +391,11 @@ export function createAuthorityStateFreshnessBoundary(options: CreateAuthoritySt
       const checkpoint: AuthorityStateCheckpoint = { ...binding, storeId, sequence: 0, stateDigest: genesis.genesisDigest(storeId) };
       const answer = await anchor.enroll('genesis', checkpoint);
       if (answer.outcome === 'enrolled') return storeId;
+      if (answer.state.status === 'unbound') {
+        // CORE-07-FV-WITNESS: the slot is still unbound, so the witness refused this store id itself (one already
+        // anchored in another identity freshness domain of the organization). Never retried as a lost race.
+        throw freshness('AUTHORITY_FRESHNESS_ALREADY_ENROLLED', `The witness refused the ${stateKind} genesis: its store id is already anchored in another freshness domain of this organization. Nothing was created.`);
+      }
     }
     throw freshness('AUTHORITY_FRESHNESS_CONFLICT', `The ${stateKind} genesis could not be enrolled at the freshness witness: another initializer kept winning. Nothing was created.`);
   }
@@ -404,8 +411,24 @@ export function createAuthorityStateFreshnessBoundary(options: CreateAuthoritySt
     }
     let witnessed = await anchor.read(binding);
     if (enrollment !== undefined) {
+      // CORE-07-FV-WITNESS (defence in depth beside the witness's own atomic rule): an identity store already anchored
+      // in another identity domain of this organization is never enrolled in this one.
+      if (isHumanIdentityStateKind(local.stateKind)) {
+        for (const other of HUMAN_IDENTITY_STATE_KINDS) {
+          if (other === local.stateKind) continue;
+          const sibling = await anchor.read({ stateKind: other, organizationId });
+          if (sibling.status === 'bound' && sibling.storeId === local.storeId) {
+            throw freshness('AUTHORITY_FRESHNESS_ALREADY_ENROLLED', `This store is already anchored in the ${other} freshness domain of this organization; it is never enrolled in ${local.stateKind} too.`);
+          }
+        }
+      }
       if (witnessed.status === 'unbound') {
         const answer = await anchor.enroll('baseline', local);
+        if (answer.outcome !== 'enrolled' && answer.state.status === 'unbound') {
+          // CORE-07-FV-WITNESS: the slot is still unbound, so the witness refused the store itself — one already
+          // anchored in another identity freshness domain of this organization.
+          throw freshness('AUTHORITY_FRESHNESS_ALREADY_ENROLLED', `The witness refused to enroll this store in the ${local.stateKind} slot: it is already anchored in another freshness domain of this organization. One store is never anchored twice.`);
+        }
         if (answer.outcome !== 'enrolled') throw freshness('AUTHORITY_FRESHNESS_ALREADY_ENROLLED', `The ${local.stateKind} slot was enrolled concurrently; enrollment never rebinds a slot.`);
         witnessed = answer.state;
       } else if (!(witnessed.storeId === local.storeId && witnessed.pending === undefined && sameHead(witnessed.committed, local))) {

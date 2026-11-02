@@ -96,15 +96,59 @@ export type AuthorityStoreKind = (typeof AUTHORITY_STORE_KINDS)[number];
  * - `human-identity-state` (AUTH-03): the signed history of human approvers,
  *   their passkeys and every consumed ceremony and decision challenge, whose
  *   rollback could resurrect a revoked passkey or a used decision challenge,
- *   and so let a human decision be authorized again.
+ *   and so let a human decision be authorized again. This is the Host's
+ *   identity store (AUTH-04A): its slot is exactly the AUTH-03 slot, unchanged.
+ * - `fv-bootstrap-identity-state` (CORE-07-FV-WITNESS): the same AUTH-03
+ *   history, kept by a **separate** identity store — the dedicated FV
+ *   executor's bootstrap identity store (FV-P4C-2B3C-3) — in the same
+ *   organization. It is its own freshness domain: its own genesis store id,
+ *   its own monotonic position, its own rollback detection, never the Host's
+ *   slot and never readable as it (see `HUMAN_IDENTITY_STATE_KINDS`).
  *
  * The witness treats each exactly like any other slot. This module knows
  * nothing else about them: each store lives in its own payment composition
  * edge, outside CORE, and maps itself onto a checkpoint.
  */
-export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations', 'human-identity-state'] as const;
+export const AUTHORITY_STATE_KINDS = [...AUTHORITY_STORE_KINDS, 'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations', 'human-identity-state', 'fv-bootstrap-identity-state'] as const;
 
 export type AuthorityStateKind = (typeof AUTHORITY_STATE_KINDS)[number];
+
+/**
+ * CORE-07-FV-WITNESS — the **freshness domains** of AUTH-03 human identity
+ * state: one per independently owned identity store in an organization.
+ *
+ * - `human-identity-state` — the Host's store (AUTH-04A). The legacy slot,
+ *   byte-for-byte: same kind, same v1 canonical bytes, same receipts.
+ * - `fv-bootstrap-identity-state` — the dedicated FV executor's own bootstrap
+ *   identity store (FV-P4C-2B3C-3).
+ *
+ * Each domain is a separate state kind, not a namespace of one kind: the
+ * namespace rule is closed per kind (a namespaced kind always names its
+ * namespace, an un-namespaced one never does), and the Host's slot is
+ * un-namespaced, so a namespace could not be added beside it without making
+ * "no namespace" mean the Host — the downgrade a domain must never have. As
+ * kinds, the domains are distinct in every canonical byte a store, a witness
+ * or a receipt carries (`stateKind` is in each), so a Host checkpoint or
+ * receipt can never be read as an FV one, nor the reverse, and an unknown
+ * domain is refused as an unknown kind, never mapped to the Host.
+ *
+ * One store is never anchored in two domains: a witness refuses to enroll a
+ * store id already bound in another domain of the same organization
+ * (`reference-witness-service.ts`).
+ */
+export const HUMAN_IDENTITY_STATE_KINDS = ['human-identity-state', 'fv-bootstrap-identity-state'] as const satisfies readonly AuthorityStateKind[];
+
+export type HumanIdentityStateKind = (typeof HUMAN_IDENTITY_STATE_KINDS)[number];
+
+/** The Host's (AUTH-04A) identity freshness domain: the legacy AUTH-03 slot. */
+export const HOST_IDENTITY_STATE_KIND = 'human-identity-state' satisfies HumanIdentityStateKind;
+
+/** The dedicated FV executor's bootstrap identity freshness domain. */
+export const FV_BOOTSTRAP_IDENTITY_STATE_KIND = 'fv-bootstrap-identity-state' satisfies HumanIdentityStateKind;
+
+export function isHumanIdentityStateKind(value: unknown): value is HumanIdentityStateKind {
+  return typeof value === 'string' && (HUMAN_IDENTITY_STATE_KINDS as readonly string[]).includes(value);
+}
 
 /**
  * The kinds whose slot is namespaced: one organization may hold several
@@ -283,9 +327,13 @@ export function obligationDischargeStateCheckpoint(state: ObligationDischargeSta
 }
 
 /** The approval store's signed chain head (CORE-05). Organization-bound by the head itself. */
-/** AUTH-03: the human identity store's signed head, anchored exactly like an authority store's. */
-export function humanIdentityStateCheckpoint(state: HumanIdentityStateCommitment): AuthorityStateCheckpoint {
-  return { stateKind: 'human-identity-state', organizationId: state.organizationId, storeId: state.storeId, sequence: state.sequence, stateDigest: state.chainDigest };
+/**
+ * AUTH-03: the human identity store's signed head, anchored exactly like an authority store's — in the Host's
+ * domain unless the store's owner names another identity domain (CORE-07-FV-WITNESS). Never any other kind.
+ */
+export function humanIdentityStateCheckpoint(state: HumanIdentityStateCommitment, stateKind: HumanIdentityStateKind = HOST_IDENTITY_STATE_KIND): AuthorityStateCheckpoint {
+  if (!isHumanIdentityStateKind(stateKind)) throw new TypeError('A human identity store is anchored only in a human identity freshness domain.');
+  return { stateKind, organizationId: state.organizationId, storeId: state.storeId, sequence: state.sequence, stateDigest: state.chainDigest };
 }
 
 export function approvalStateCheckpoint(state: ApprovalStateCommitment): AuthorityStateCheckpoint {

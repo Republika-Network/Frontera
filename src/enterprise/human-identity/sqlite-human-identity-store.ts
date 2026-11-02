@@ -5,7 +5,10 @@ import { dirname, resolve } from 'node:path';
 import { bindStoreSignerCustody } from '../authority-authenticity/custody.js';
 import type { AuthorityArtifactSigner } from '../authority-authenticity/signer.js';
 import type { AuthorityArtifactVerifier } from '../authority-authenticity/verifier.js';
-import { humanIdentityStateCheckpoint } from '../authority-state-freshness/checkpoint.js';
+import { FV_BOOTSTRAP_IDENTITY_STATE_KIND, HOST_IDENTITY_STATE_KIND, humanIdentityStateCheckpoint, isHumanIdentityStateKind, type HumanIdentityStateKind } from '../authority-state-freshness/checkpoint.js';
+
+/** CORE-07-FV-WITNESS: the identity freshness domain an exclusive (FV) owner names, re-exported so its owner needs no CORE-07 import. */
+export { FV_BOOTSTRAP_IDENTITY_STATE_KIND } from '../authority-state-freshness/checkpoint.js';
 import { AuthorityStateFreshnessError } from '../authority-state-freshness/errors.js';
 import {
   isAuthorityStateFreshnessBoundary,
@@ -193,8 +196,13 @@ export interface SqliteHumanIdentityStoreOptions {
   readonly busyTimeoutMs?: number;
   /** The deployment's authority signer and verifier. Never optional: there is no unauthenticated durable mode. */
   readonly authenticity: { readonly signer: AuthorityArtifactSigner; readonly verifier: AuthorityArtifactVerifier };
-  /** CORE-07 — cross-restart freshness of the signed head, anchored at an external witness. `enrollment` is the explicit ceremony only. */
-  readonly freshness?: { readonly boundary: AuthorityStateFreshnessBoundary; readonly enrollment?: AuthorityStateEnrollmentContext };
+  /**
+   * CORE-07 — cross-restart freshness of the signed head, anchored at an external witness. `enrollment` is the explicit ceremony only.
+   * `stateKind` (CORE-07-FV-WITNESS) is the store's identity freshness domain: absent, the Host's legacy
+   * `human-identity-state` slot, exactly as before; `fv-bootstrap-identity-state` only for the exclusive owner
+   * (the dedicated FV executor's bootstrap identity store), which must name it — it never defaults to the Host.
+   */
+  readonly freshness?: { readonly boundary: AuthorityStateFreshnessBoundary; readonly enrollment?: AuthorityStateEnrollmentContext; readonly stateKind?: HumanIdentityStateKind };
   /**
    * FV-P4C-2B3C-3 — open as the store's one exclusive owner (the dedicated FV executor's own bootstrap
    * identity store; never AUTH-04A's, which passes nothing here and is unchanged). SQLite
@@ -302,7 +310,12 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
   const verifyState = verifier.verifyHumanIdentityState.bind(verifier);
   const activeKeyId = signer.activeKeyId;
   const organizationId = options.organizationId;
-  const freshness = options.freshness;
+  // CORE-07-FV-WITNESS review M1: each freshness field is read exactly once, here, into a frozen snapshot. Every check
+  // and every use below is of the snapshot, so no getter or Proxy can answer the checks one way and the witness another
+  // (an enrollment hidden from the exclusive owner's refusal, a domain or boundary swapped after validation).
+  const rawFreshness = options.freshness;
+  const freshness: { readonly boundary: AuthorityStateFreshnessBoundary; readonly enrollment: AuthorityStateEnrollmentContext | undefined; readonly stateKind: unknown } | undefined =
+    rawFreshness === undefined ? undefined : Object.freeze({ boundary: rawFreshness.boundary, enrollment: rawFreshness.enrollment, stateKind: rawFreshness.stateKind as unknown });
   if (freshness !== undefined && (!isAuthorityStateFreshnessBoundary(freshness.boundary) || freshness.boundary.organizationId !== organizationId)) {
     throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The human identity store freshness option must carry a boundary built by createAuthorityStateFreshnessBoundary for the same organization.');
   }
@@ -311,10 +324,24 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
     throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'The exclusive option is the owner’s write fence and guarded closer.');
   }
   // PR #255 review, finding 1 (defence in depth): an exclusive owner never enrolls a CORE-07 witness slot from an
-  // open. The organization's one 'human-identity-state' slot is AUTH-04A's; binding a slot is an operator ceremony.
+  // open. Binding a slot to an existing store is an operator ceremony, never an executor's open.
   if (exclusive !== undefined && freshness?.enrollment !== undefined) {
     throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'An exclusively owned store never enrolls a witness slot when it is opened.');
   }
+  // CORE-07-FV-WITNESS: the identity freshness domain, read once. The Host's store (no `exclusive`) keeps the legacy
+  // slot unless it names it; the exclusive owner names the FV bootstrap domain explicitly, and only it may.
+  const requestedDomain: unknown = freshness?.stateKind;
+  if (requestedDomain !== undefined && !isHumanIdentityStateKind(requestedDomain)) {
+    throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'The identity freshness domain is not a human identity state kind.');
+  }
+  const identityDomain: HumanIdentityStateKind = requestedDomain ?? HOST_IDENTITY_STATE_KIND;
+  if (freshness !== undefined && exclusive !== undefined && requestedDomain !== FV_BOOTSTRAP_IDENTITY_STATE_KIND) {
+    throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'An exclusively owned store is anchored only in the FV bootstrap identity freshness domain, named explicitly; never the Host’s slot.');
+  }
+  if (identityDomain === FV_BOOTSTRAP_IDENTITY_STATE_KIND && exclusive === undefined) {
+    throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'The FV bootstrap identity freshness domain belongs to its exclusive owner only.');
+  }
+  const checkpointOf = (state: HumanIdentityStateCommitment) => humanIdentityStateCheckpoint(state, identityDomain);
   const file = resolve(path);
   if (options.create !== true && !existsSync(file)) throw new HumanIdentityError('HUMAN_IDENTITY_STORE_UNAVAILABLE', `No human identity store exists at ${file}; it is created only by an explicit initialization.`);
   if (options.create === true) mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -373,7 +400,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
     const rows = (db.prepare('SELECT * FROM human_identity_records ORDER BY sequence ASC').all() as RecordRow[]).map(toStored);
     verifyHumanIdentityHistory(rows, state);
     // CORE-07: the floor established against the external witness at open. Local, synchronous, no network.
-    session?.observe(humanIdentityStateCheckpoint(state));
+    session?.observe(checkpointOf(state));
     if (witnessed !== undefined) {
       if (state.sequence < witnessed.sequence) corrupt('The human identity store regressed to an earlier committed state while this process was running.');
       if (state.sequence === witnessed.sequence && state.chainDigest !== witnessed.chainDigest) corrupt('The human identity store holds a different committed state at the same sequence while this process was running.');
@@ -392,7 +419,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
       const storeId =
         freshness === undefined
           ? `human-identity-store:${randomUUID()}`
-          : await freshness.boundary.genesisStoreId('human-identity-state', { newStoreId: () => `human-identity-store:${randomUUID()}`, genesisDigest: (id) => humanIdentityGenesisDigest(id, organizationId) });
+          : await freshness.boundary.genesisStoreId(identityDomain, { newStoreId: () => `human-identity-store:${randomUUID()}`, genesisDigest: (id) => humanIdentityGenesisDigest(id, organizationId) });
       const genesis: HumanIdentityStateCommitment = { storeId, organizationId, sequence: 0, chainDigest: humanIdentityGenesisDigest(storeId, organizationId) };
       const signature = await signState(genesis);
       const createdAt = options.now();
@@ -409,7 +436,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
       throw new HumanIdentityError('HUMAN_IDENTITY_STORE_UNSUPPORTED', 'The human identity store at this path is not the owner’s pinned store; nothing was written.');
     }
     if (freshness !== undefined) {
-      session = await freshness.boundary.establish(humanIdentityStateCheckpoint(opened.state), () => humanIdentityStateCheckpoint(verifiedState().state), freshness.enrollment !== undefined ? { enrollment: freshness.enrollment } : {});
+      session = await freshness.boundary.establish(checkpointOf(opened.state), () => checkpointOf(verifiedState().state), freshness.enrollment !== undefined ? { enrollment: freshness.enrollment } : {});
     }
     // Key rotation (the CORE-01 rule, as CORE-05 applies it): a head verified under a trusted non-active key is re-signed unchanged. Best effort.
     if (opened.keyId !== activeKeyId) {
@@ -503,7 +530,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
         // authority already lost never leaves a prepared witness head behind; it runs again inside the commit.
         fence();
         if (session === undefined) commitLocal();
-        else await session.transition(humanIdentityStateCheckpoint(state), humanIdentityStateCheckpoint(next), () => (commitLocal(), { value: undefined, state: humanIdentityStateCheckpoint(next) }));
+        else await session.transition(checkpointOf(state), checkpointOf(next), () => (commitLocal(), { value: undefined, state: checkpointOf(next) }));
       } catch (error) {
         if (error instanceof HumanIdentityError || error instanceof AuthorityStateFreshnessError) throw error;
         throw new HumanIdentityError('HUMAN_IDENTITY_STORE_UNAVAILABLE', `The human identity store could not commit; nothing was recorded. (${(error as Error).message})`);

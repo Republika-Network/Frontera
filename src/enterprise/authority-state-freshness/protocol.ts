@@ -33,7 +33,13 @@ import {
  *   checkpoint and any prepared (pending) successor.
  * - `enroll` — create a binding. `genesis` (sequence 0, used when a new store is
  *   created) or `baseline` (an existing store, only through the explicit
- *   enrollment ceremony). Never rebinds an existing binding.
+ *   enrollment ceremony). Never rebinds an existing binding. And never binds,
+ *   in one identity freshness domain (`HUMAN_IDENTITY_STATE_KINDS`), a store id
+ *   the witness already binds in another identity domain of the same
+ *   organization: that answer is `conflict`, the slot left unbound
+ *   (CORE-07-FV-WITNESS). Every witness implementation must enforce this inside
+ *   the same atomic step as the enrollment; the client checks it too, but only
+ *   the witness can check it atomically.
  * - `prepare` — `expected` must be exactly the committed checkpoint with no
  *   pending successor; `proposed` (its successor, sequence + 1) becomes
  *   pending. From that moment the witness no longer treats `expected` as

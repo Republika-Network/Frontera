@@ -81,16 +81,37 @@ export function openIdentity(dir, clock, create = false) {
   return openSqliteHumanIdentityStore(pathsOf(dir).identity, { organizationId: ORG, now: () => clock.iso(), authenticity: { signer: testSigner(key), verifier: testVerifier([key]) }, create });
 }
 
+/** CORE-07-FV-WITNESS — the FV bootstrap identity freshness domain (the FV store's own witness slot). */
+export const FV_DOMAIN = 'fv-bootstrap-identity-state';
+
+/**
+ * CORE-07-FV-WITNESS — the synthetic, TEST-ONLY registration genesis of an FV bootstrap identity store anchored at
+ * a CORE-07 witness: created as its exclusive owner, in its own freshness domain, its genesis enrolled at the
+ * witness before the local genesis is committed. No production path does this: the composition never creates or
+ * enrolls its store, and the FV registration ceremony is not implemented.
+ */
+export function createAnchoredFvIdentity(path, clock, boundary, key = AUTHORITY_KEY_A) {
+  return openSqliteHumanIdentityStore(path, {
+    organizationId: ORG,
+    now: () => clock.iso(),
+    authenticity: { signer: testSigner(key), verifier: testVerifier([key]) },
+    create: true,
+    freshness: { boundary, stateKind: FV_DOMAIN },
+    exclusive: { beforeWrite: () => undefined, closer: (_file, connection) => () => void connection.close() },
+  });
+}
+
 /**
  * The registration ceremony a B3C operator would perform, done here directly: the identity store with
  * three enrolled passkeys, one history per namespace, and the protected store holding each history's
  * continuity record. Everything is closed afterwards; the devices stay in this process.
  */
-export async function prepareWorld({ namespaces = [NS_A, NS_B], dir = mkdtempSync(join(tmpdir(), 'fv-p4c2b3b-')) } = {}) {
+export async function prepareWorld({ namespaces = [NS_A, NS_B], dir = mkdtempSync(join(tmpdir(), 'fv-p4c2b3b-')), boundary } = {}) {
   const paths = pathsOf(dir);
   const clock = makeClock();
   writeFileSync(keyFile(dir), JSON.stringify(AUTHORITY_KEY_A), { mode: 0o600 });
-  const identityStore = await openIdentity(dir, clock, true);
+  // CORE-07-FV-WITNESS: with a witness boundary, the store is anchored in its own freshness domain from genesis.
+  const identityStore = boundary === undefined ? await openIdentity(dir, clock, true) : await createAnchoredFvIdentity(paths.identity, clock, boundary);
   const identity = createHumanIdentityService({ store: identityStore, relyingParty: RP, operatorIds: OPERATORS, now: () => clock.now() });
   const admin = identityAdministratorFor({ plane: 'operator', operatorId: 'ops-admin', organizationId: ORG, role: 'organization-administrator', credentialClass: 'operator', actorRef: 'operator-plane:ops-admin' });
   const devices = {};

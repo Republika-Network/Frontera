@@ -12,7 +12,8 @@ route, CLI or startup path, reaches this composition. Structure tests pin this. 
 - **Identity ownership: FV-P4C-2B3C-3** (`FV_AUTH03_IDENTITY_OWNERSHIP.md`). The composition opens and
   exclusively holds its own bootstrap identity store (it no longer takes a store handed in), and the
   settlement write is fenced inside that store's transaction, closing the I3 non-atomic window (§11).
-  Activation still needs a CORE-07 witness slot of the FV store's own.
+  Its CORE-07 witness slot of its own exists since CORE-07-FV-WITNESS (`fv-bootstrap-identity-state`,
+  `CORE07_FV_INDEPENDENT_FRESHNESS_DOMAINS.md`); activation still needs the FV registration ceremony.
 - **A compromised filesystem writer running as the same user (or root) is outside current
   protection (§8).**
 - **Whole-system rollback detection remains an FV-P4D dependency (§12).**

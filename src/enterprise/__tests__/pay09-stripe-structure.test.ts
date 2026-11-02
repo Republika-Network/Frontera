@@ -78,8 +78,9 @@ describe('PAY-09 — CORE and generic-port purity', () => {
     const checkpoint = codeOf('src/enterprise/authority-state-freshness/checkpoint.ts');
     const kinds = /AUTHORITY_STATE_KINDS = \[\.\.\.AUTHORITY_STORE_KINDS, ([^\]]*)\]/.exec(checkpoint)?.[1];
     // TRADE-04C (G4) added exactly one kind since, the rail-neutral 'trade-sequence-reservations', before PAY-03's; PAY-09 added none.
-    // AUTH-03 then added one non-rail kind, 'human-identity-state' (the signed human identity store).
-    assert.equal(kinds, "'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations', 'human-identity-state'");
+    // AUTH-03 then added one non-rail kind, 'human-identity-state' (the signed human identity store), and
+    // CORE-07-FV-WITNESS one more, 'fv-bootstrap-identity-state' (the FV executor's own identity store's domain).
+    assert.equal(kinds, "'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'payment-initiation-reservations', 'human-identity-state', 'fv-bootstrap-identity-state'");
     assert.match(codeOf(`${EDGE}/sqlite-stripe-payment-interlock.ts`), /PAYMENT_INITIATION_STATE_KIND = 'payment-initiation-reservations'/);
   });
 

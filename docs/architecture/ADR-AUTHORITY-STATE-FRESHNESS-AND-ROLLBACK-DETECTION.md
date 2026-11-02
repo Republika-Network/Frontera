@@ -608,6 +608,17 @@ refuses it at the handshake rather than risk it ignoring a namespace. A
 pre-hardening Lightning interlock (anchored un-namespaced) is refused until the
 operator rescopes its slot.
 
+**CORE-07-FV-WITNESS identity freshness domains.** The closed kind list gains
+one un-namespaced kind, `fv-bootstrap-identity-state`: the dedicated FV
+executor's own AUTH-03 bootstrap identity store, a separate freshness domain
+beside the Host's `human-identity-state` slot in the same organization. No
+format, signing domain, protocol id or schema changes; the Host slot's bytes,
+records and receipts are unchanged, and AUTH-04A needs no new configuration.
+A witness that predates the kind refuses FV requests as malformed (fail
+closed). The reference witness refuses to enroll a store id already bound in
+the other identity domain of the same organization. Design, tests and limits:
+`docs/integration/CORE07_FV_INDEPENDENT_FRESHNESS_DOMAINS.md`.
+
 ## 6. Evidence
 
 `src/enterprise/__tests__/authority-state-freshness-grants.test.ts` (G1–G12,

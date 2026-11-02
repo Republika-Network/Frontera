@@ -7,7 +7,9 @@ import {
   authorityStateBindingProblem,
   bindingOf,
   isAuthorityStateNamespace,
+  HUMAN_IDENTITY_STATE_KINDS,
   isBoundedIdentifier,
+  isHumanIdentityStateKind,
   isNamespacedAuthorityStateKind,
   sameHead,
   type AuthorityStateBinding,
@@ -304,6 +306,10 @@ export async function createReferenceAuthorityStateWitness(options: ReferenceAut
   const commitPending = db.prepare(
     'UPDATE witness_bindings_v2 SET committed_sequence = pending_sequence, committed_digest = pending_digest, pending_sequence = NULL, pending_digest = NULL, updated_at = ? WHERE state_kind = ? AND organization_id = ? AND namespace = ? AND store_id = ? AND pending_sequence = ? AND pending_digest = ?',
   );
+  // CORE-07-FV-WITNESS: the identity domains of one organization (`HUMAN_IDENTITY_STATE_KINDS`) never share a store.
+  const otherIdentityDomainHolding = db.prepare(
+    `SELECT 1 FROM witness_bindings_v2 WHERE organization_id = ? AND store_id = ? AND state_kind <> ? AND state_kind IN (${HUMAN_IDENTITY_STATE_KINDS.map(() => '?').join(', ')}) LIMIT 1`,
+  );
   const appendHistory = db.prepare('INSERT INTO witness_history (state_kind, organization_id, namespace, store_id, event, sequence, state_digest, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
 
   const read = (binding: AuthorityStateBinding): BindingRow | undefined => selectBinding.get(binding.stateKind, binding.organizationId, namespaceKey(binding)) as BindingRow | undefined;
@@ -325,6 +331,12 @@ export async function createReferenceAuthorityStateWitness(options: ReferenceAut
           // Idempotent only for the exact same state; never a rebind.
           const same = existing.store_id === checkpoint.storeId && existing.pending_sequence === null && sameHead({ sequence: existing.committed_sequence, stateDigest: existing.committed_digest }, checkpoint);
           return { outcome: same ? 'enrolled' : 'conflict', binding, state: stateOf(existing) };
+        }
+        // CORE-07-FV-WITNESS: a store already anchored in another identity freshness domain of this organization
+        // (the Host's identity store offered as the FV bootstrap store's baseline, or the reverse) is never enrolled
+        // in a second one. A conflict, with this slot left unbound.
+        if (isHumanIdentityStateKind(checkpoint.stateKind) && otherIdentityDomainHolding.get(checkpoint.organizationId, checkpoint.storeId, checkpoint.stateKind, ...HUMAN_IDENTITY_STATE_KINDS) !== undefined) {
+          return { outcome: 'conflict', binding, state: stateOf(undefined) };
         }
         insertBinding.run(checkpoint.stateKind, checkpoint.organizationId, namespaceKey(checkpoint), checkpoint.storeId, checkpoint.sequence, checkpoint.stateDigest, now());
         record(checkpoint, request.enrollment === 'genesis' ? 'enrolled-genesis' : 'enrolled-baseline');

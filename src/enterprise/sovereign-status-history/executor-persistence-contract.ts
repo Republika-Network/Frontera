@@ -51,7 +51,7 @@ export const FV_EXECUTOR_PERSISTENCE_CONTRACT = Object.freeze({
     Object.freeze({
       kind: 'bootstrap-identity-store' as const,
       schemaIdentity: 'frontera.human-identity-store (AUTH-03 schema 2), bootstrap-authority domain',
-      holds: Object.freeze(['the FV operators’ principals and passkeys', 'bootstrap-authority challenges, consumed decisions and their settlements (signed chain, CORE-07 head)']),
+      holds: Object.freeze(['the FV operators’ principals and passkeys', 'bootstrap-authority challenges, consumed decisions and their settlements (signed chain, CORE-07 head in its own freshness domain, `fv-bootstrap-identity-state`, never the Host’s `human-identity-state` slot)']),
       sidecars: Object.freeze(['-wal']),
       cardinality: 'one' as const,
     }),

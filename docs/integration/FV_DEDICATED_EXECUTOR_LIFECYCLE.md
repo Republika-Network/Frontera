@@ -278,7 +278,9 @@ So neither is allowed, and the registry names no FV store today (a structure tes
 **Review M2, closed by FV-P4C-2B3C-3** (`FV_AUTH03_IDENTITY_OWNERSHIP.md`). The executor now opens and
 exclusively holds its **own** bootstrap identity store, pinned by store id. AUTH-04A's Host store has
 AUTH-04A as its one owner, and the contract lists it as never opened by the executor. A new blocker
-remains from that increment's review: the FV store needs a CORE-07 witness slot of its own.
+remained from that increment's review: the FV store needed a CORE-07 witness slot of its own. It is closed
+by CORE-07-FV-WITNESS (`CORE07_FV_INDEPENDENT_FRESHNESS_DOMAINS.md`): the FV store's own domain,
+`fv-bootstrap-identity-state`.
 
 ## 10. AUTH-03 identity lifecycle (plan for B3C-3)
 
@@ -388,7 +390,8 @@ state (for example `READY_INACTIVE`) through the backoff. Fixed: the state is cl
   - PROD-02 registration;
   - executor-mediated or cold snapshot, and restore into quarantine;
   - operator ceremonies for quarantined intents and lost executors.
-- **B3C-3: done** (`FV_AUTH03_IDENTITY_OWNERSHIP.md`), except its CORE-07 witness-slot prerequisite.
+- **B3C-3: done** (`FV_AUTH03_IDENTITY_OWNERSHIP.md`); its CORE-07 witness-slot prerequisite is done by
+  CORE-07-FV-WITNESS. The FV registration ceremony that anchors the store remains.
 - **Deployment isolation:** its own container or unit and volume, and the supervisor's platform adapter.
 - **B6:** a trusted issuer-currentness source.
 - **FV-P4D:** an independent continuity witness.

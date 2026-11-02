@@ -1,7 +1,7 @@
 import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { createHumanIdentityServiceWithBootstrapSettlement, isBootstrapSettlementCapabilityOf, openSqliteHumanIdentityStore, revokeBootstrapSettlementCapability } from '../human-identity/index.js';
+import { FV_BOOTSTRAP_IDENTITY_STATE_KIND, createHumanIdentityServiceWithBootstrapSettlement, isBootstrapSettlementCapabilityOf, openSqliteHumanIdentityStore, revokeBootstrapSettlementCapability } from '../human-identity/index.js';
 import type { HumanIdentityStore, IssuedBootstrapAuthorityChallenge, RelyingPartyConfiguration, SqliteHumanIdentityStoreOptions } from '../human-identity/index.js';
 import { createFvBootstrapAuthorityBoundary } from './authority-boundary.js';
 import { createKernelAuthorityBootstrapPermissions } from './authority-permissions.js';
@@ -84,13 +84,15 @@ export interface FvProtectedHostOptions {
    * - `storePath`: the trusted configuration's path, under the same filesystem policy as every FV file.
    * - `storeId`: its durable identity, pinned when it was registered. Another store at that path (AUTH-04A's,
    *   a copy, a replacement), even one signed by the same deployment key, is refused.
-   * - `authenticity` and `freshness` (CORE-07): the deployment's signer and verifier, and the witness.
+   * - `authenticity` and `freshness` (CORE-07): the deployment's signer and verifier, and the witness. The
+   *   freshness option names its domain explicitly, `stateKind: 'fv-bootstrap-identity-state'`
+   *   (CORE-07-FV-WITNESS): the FV store's own slot, never the Host's `human-identity-state`. Never an enrollment.
    */
   readonly identity: {
     readonly storePath: string;
     readonly storeId: string;
     readonly authenticity: SqliteHumanIdentityStoreOptions['authenticity'];
-    readonly freshness?: SqliteHumanIdentityStoreOptions['freshness'];
+    readonly freshness?: { readonly boundary: NonNullable<SqliteHumanIdentityStoreOptions['freshness']>['boundary']; readonly stateKind: typeof FV_BOOTSTRAP_IDENTITY_STATE_KIND };
     readonly relyingParty: RelyingPartyConfiguration;
     readonly operatorIds: readonly string[];
   };
@@ -181,11 +183,14 @@ export async function composeFvProtectedHost(options: FvProtectedHostOptions): P
   if (typeof identity.storePath !== 'string' || identity.storePath.trim() === '' || identity.storePath.includes('\0')) invalid('identity.storePath is the executor’s own bootstrap identity store file.');
   if (typeof identity.storeId !== 'string' || !/^human-identity-store:[0-9a-f-]{36}$/.test(identity.storeId)) invalid('identity.storeId is the pinned id of the executor’s bootstrap identity store.');
   if (typeof identity.authenticity !== 'object' || identity.authenticity === null) invalid('identity.authenticity is the deployment’s signer and verifier.');
-  // Review M1: never a CORE-07 enrollment from here. The witness slot of an AUTH-03 identity store is the
-  // organization's one 'human-identity-state' slot (not namespaced), which AUTH-04A's Host store anchors at;
-  // binding or rebinding it is an operator ceremony, and the FV store needs a witness of its own (activation blocker).
+  // Review M1: never a CORE-07 enrollment from here; binding a witness slot is an operator ceremony.
+  // CORE-07-FV-WITNESS: the FV store's own freshness domain, named explicitly ('fv-bootstrap-identity-state'), never
+  // the Host's 'human-identity-state' slot and never a default. Each field is read once; the store receives a fresh
+  // option holding the boundary and the domain constant, never the caller's object.
   if (rawFreshness !== undefined && (typeof rawFreshness !== 'object' || rawFreshness === null || 'enrollment' in rawFreshness)) invalid('identity.freshness is a boundary only; the composition never enrolls a witness slot.');
-  const freshnessOption: SqliteHumanIdentityStoreOptions['freshness'] = rawFreshness === undefined ? undefined : Object.freeze({ boundary: rawFreshness.boundary });
+  const rawFreshnessDomain: unknown = rawFreshness?.stateKind;
+  if (rawFreshness !== undefined && rawFreshnessDomain !== FV_BOOTSTRAP_IDENTITY_STATE_KIND) invalid('identity.freshness names the FV bootstrap identity freshness domain explicitly (fv-bootstrap-identity-state); never the Host’s slot, another domain or none.');
+  const freshnessOption: SqliteHumanIdentityStoreOptions['freshness'] = rawFreshness === undefined ? undefined : Object.freeze({ boundary: rawFreshness.boundary, stateKind: FV_BOOTSTRAP_IDENTITY_STATE_KIND });
   if (typeof receiver?.verifySovereignStatus !== 'function' || typeof receiver.establishStatusHistory !== 'function') invalid('receiver is the receiver package’s functions.');
   if (statusSource !== undefined && (typeof statusSource?.verifier?.attestStatusSource !== 'function' || typeof statusSource.policy !== 'object' || statusSource.policy === null)) invalid('statusSource is a verifier and its policy.');
   if (options.initializeProtectedStore !== undefined && typeof options.initializeProtectedStore !== 'boolean') invalid('initializeProtectedStore is a boolean.');

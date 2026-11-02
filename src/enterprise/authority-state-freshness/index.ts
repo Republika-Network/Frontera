@@ -17,9 +17,13 @@ export {
   AUTHORITY_STATE_NAMESPACE_MAX,
   AUTHORITY_STATE_NAMESPACED_CHECKPOINT_FORMAT,
   AUTHORITY_STORE_KINDS,
+  FV_BOOTSTRAP_IDENTITY_STATE_KIND,
+  HOST_IDENTITY_STATE_KIND,
+  HUMAN_IDENTITY_STATE_KINDS,
   NAMESPACED_AUTHORITY_STATE_KINDS,
   approvalStateCheckpoint,
   humanIdentityStateCheckpoint,
+  isHumanIdentityStateKind,
   authorityStateBindingProblem,
   authorityStateCheckpointProblem,
   isAuthorityStateKind,
@@ -31,7 +35,7 @@ export {
   sameCheckpoint,
   serializeAuthorityStateCheckpoint,
 } from './checkpoint.js';
-export type { AuthorityStateBinding, AuthorityStateCheckpoint, AuthorityStateHead, AuthorityStateKind, AuthorityStateSlot, AuthorityStoreKind } from './checkpoint.js';
+export type { AuthorityStateBinding, AuthorityStateCheckpoint, AuthorityStateHead, AuthorityStateKind, AuthorityStateSlot, AuthorityStoreKind, HumanIdentityStateKind } from './checkpoint.js';
 
 export { AUTHORITY_STATE_FRESHNESS_ERROR_CODES, AuthorityStateFreshnessError, isAuthorityStateFreshnessError, isRetryableAuthorityStateFreshnessFailure } from './errors.js';
 export type { AuthorityStateFreshnessErrorCode } from './errors.js';

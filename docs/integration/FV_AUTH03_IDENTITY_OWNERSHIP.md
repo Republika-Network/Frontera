@@ -81,8 +81,11 @@ flowchart LR
   key: AUTH-04A's store, a copy or a replacement. The pin is checked inside the store too, right after it
   is verified and **before** any open-time write (key re-signing) or CORE-07 contact (review L2), and again
   by the composition.
-- **No CORE-07 enrollment from here** (review M1): `identity.freshness` is a boundary only, and an
-  `enrollment` is refused (`OPTIONS_INVALID`). See §11 for why the FV store needs its own witness.
+- **No CORE-07 enrollment from here** (review M1): `identity.freshness` is a boundary and the FV domain
+  only, and an `enrollment` is refused (`OPTIONS_INVALID`).
+- **Its own freshness domain** (CORE-07-FV-WITNESS, `CORE07_FV_INDEPENDENT_FRESHNESS_DOMAINS.md`):
+  `identity.freshness` must name `stateKind: 'fv-bootstrap-identity-state'`, the FV store's own CORE-07
+  slot, never the Host's `human-identity-state`. A missing or other domain is `OPTIONS_INVALID`.
 - **The identity lock is executor authority** (review L3): once the store is open, `authority()` confirms
   the identity store's lock together with the protected store's, so losing either one marks the composition
   `executor-lost`.
@@ -255,9 +258,13 @@ unchanged; no production reachability; stale executors cannot write.
 - B3B's settlement check-then-write gap, within the supported synchronous single-threaded execution model:
   the authority check now runs inside the identity store's own write transaction.
 
+**Closed by CORE-07-FV-WITNESS** (a separate increment, `CORE07_FV_INDEPENDENT_FRESHNESS_DOMAINS.md`):
+- The FV-specific CORE-07 freshness anchor (M1): the FV store has its own domain,
+  `fv-bootstrap-identity-state`, at the API, persistence and verification levels.
+
 **Still open (each blocks operational activation):**
-- An FV-specific CORE-07 freshness anchor: a witness of the FV store's own, or a namespaced slot. This needs
-  a separate, independently reviewed CORE-07 change; B3C-3 does not modify CORE-07.
+- The FV registration ceremony that creates the FV store and anchors its genesis in that domain at the
+  deployment's witness (only a test-only genesis exists).
 - The FV credential enrolment and revocation ceremonies. Revoking a Host credential does not revoke an FV
   credential.
 - B3C-2 backup and restore.
@@ -268,10 +275,10 @@ unchanged; no production reachability; stale executors cannot write.
 - **Not atomic between threads:** the fence and the write are atomic only on the main thread; another
   thread of the process could still close a descriptor (§5). The dedicated executor runs nothing else.
 - **Rollback without freshness:** an older signed copy of the FV identity store verifies, so CORE-07
-  freshness must be composed before activation.
-- **CORE-07 slot sharing (review M1):** the FV identity store must be anchored at a **witness of its own**,
-  or at a namespaced CORE-07 slot (a CORE-07 change), never at the Host's `human-identity-state` slot. Its
-  registration ceremony must not create it under the Host's witness. **This is an activation blocker.**
+  freshness (in the FV domain) must be composed before activation.
+- **CORE-07 slot sharing (review M1): closed by CORE-07-FV-WITNESS.** The FV store anchors in its own
+  domain, `fv-bootstrap-identity-state`. Both domains still trust the same witness when they share one;
+  coordinated restoration of the witness with the stores stays undetectable (FV-P4D).
 - **Separate enrolment:** FV operators' passkeys are separate from their Host credentials. The ceremonies
   are B3C-2 / operations; Kernel standing is the shared control.
 - **Same-user or root writer:** outside the trust boundary. A raw write breaks the signed chain, and the
