@@ -70,7 +70,7 @@ export const FV_EXECUTOR_PERSISTENCE_CONTRACT = Object.freeze({
     }),
   ]),
   lock: Object.freeze({
-    mechanism: 'sqlite-locking-mode-exclusive (POSIX write lock on the SHARED range), confirmed in /proc/locks before every write',
+    mechanism: 'sqlite-locking-mode-exclusive (POSIX write lock on the SHARED range), confirmed in this process’s /proc/self/fdinfo lock view before every write',
     holder: 'the executor process only, for its whole lifetime',
   }),
   /** What no other component may do while an executor runs. */

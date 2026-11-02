@@ -34,36 +34,47 @@ import { bootstrapAuthorityDecisionInput } from '../dist/src/enterprise/sovereig
 import { bindingOf, compose, makeClock, pathsOf } from './fv-p4c2b3b-support.mjs';
 
 const job = JSON.parse(process.argv[2]);
+// FV-EXEC-LOCK-01: every observation is attributed to its durable write by its call stack (`writeOf`), so the stack
+// must be deep enough to reach the write's frame from every observation a fence makes (V8's default is 10 frames).
+Error.stackTraceLimit = 64;
 const paths = pathsOf(job.dir);
 const dropProtectedLock = () => closeSync(openSync(paths.protectedStore, 'r'));
 /** Which fenced durable write a fence read belongs to, from its call stack. */
 const writeOf = (stack) => (/\bbeginIntent\b/.test(stack) ? 'beginIntent' : /\bcompareAndSetWithEvidence\b/.test(stack) ? 'commit' : /\bcompleteIntent\b/.test(stack) ? 'completeIntent' : /\.save\b|\bsave \(/.test(stack) ? 'save' : undefined);
 let armedReconcile = false;
-if (job.mode === 'drop-at' || job.mode === 'reconcile-loss' || job.mode === 'settle-race') {
-  const fs = createRequire(import.meta.url)('node:fs');
-  const read = fs.readFileSync;
-  let dropped = false;
-  fs.readFileSync = function (...args) {
-    if (args[0] === '/proc/locks' && !dropped) {
-      if (job.mode === 'drop-at' && writeOf(new Error().stack ?? '') === job.dropAt) {
-        dropped = true;
-        dropProtectedLock();
-      } else if (job.mode === 'settle-race' && armedReconcile && /\bsettlementGuard\b/.test(new Error().stack ?? '')) {
-        // B3C-3: the FV settlement guard reads, and passes; the lock is lost right after, before the AUTH-03 write.
-        const out = read.apply(this, args);
-        dropped = true;
-        dropProtectedLock();
-        return out;
-      } else if (job.mode === 'reconcile-loss' && armedReconcile) {
-        // The authority check at reconcile() start reads first, and passes; the lock is lost right after.
-        const out = read.apply(this, args);
-        dropped = true;
-        dropProtectedLock();
-        return out;
-      }
-    }
-    return read.apply(this, args);
+// FV-EXEC-LOCK-01: the fault points are the fence's kernel observation itself — one `confirmExclusivelyHeld` call,
+// which no longer reads /proc/locks (it reads /proc/self/fdinfo). The composition calls it through the module's
+// exports, so the test wraps that export: a "before" fault acts before the observation, an "after" one right after
+// it returned (the check has passed), exactly where the /proc/locks read used to be.
+const exclusivity = createRequire(import.meta.url)('../dist/src/enterprise/sovereign-status-history/executor-exclusivity.js');
+const observe = exclusivity.confirmExclusivelyHeld;
+/** `around(stack)` runs before each observation; a function it returns runs right after it. */
+const aroundObservation = (around) => {
+  exclusivity.confirmExclusivelyHeld = function (...args) {
+    const afterwards = around(new Error().stack ?? '');
+    const out = observe.apply(this, args);
+    if (typeof afterwards === 'function') afterwards();
+    return out;
   };
+};
+if (job.mode === 'drop-at' || job.mode === 'reconcile-loss' || job.mode === 'settle-race') {
+  let dropped = false;
+  aroundObservation((stack) => {
+    if (dropped) return undefined;
+    if (job.mode === 'drop-at' && writeOf(stack) === job.dropAt) {
+      dropped = true;
+      dropProtectedLock();
+    } else if (job.mode === 'settle-race' && armedReconcile && /\bsettlementGuard\b/.test(stack)) {
+      // B3C-3: the FV settlement guard observes, and passes; the lock is lost right after, before the AUTH-03 write.
+      dropped = true;
+      return dropProtectedLock;
+    } else if (job.mode === 'reconcile-loss' && armedReconcile) {
+      // The authority check at reconcile() start observes first, and passes; the lock is lost right after.
+      dropped = true;
+      return dropProtectedLock;
+    }
+    return undefined;
+  });
 }
 const report = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const die = () => {
@@ -87,22 +98,20 @@ storeModule.openSqliteHumanIdentityStore = async (...args) => {
 
 if (job.mode === 'crash') {
   const [when, what] = job.killAt.split(':');
-  // Fenced writes: the fence reads /proc/locks synchronously immediately before each write transaction.
-  const fs = createRequire(import.meta.url)('node:fs');
-  const read = fs.readFileSync;
+  // Fenced writes: the fence observes the kernel's locks synchronously immediately before each write transaction.
   let armedAfter = false;
-  fs.readFileSync = function (...args) {
-    if (args[0] === '/proc/locks') {
-      const stack = new Error().stack ?? '';
+  aroundObservation((stack) => {
+    {
       const write = /\bbeginIntent\b/.test(stack) ? 'beginIntent' : /\bcompareAndSetWithEvidence\b/.test(stack) ? 'commit' : /\bcompleteIntent\b/.test(stack) ? 'completeIntent' : /\.save\b|\bsave \(/.test(stack) ? 'save' : undefined;
-      if (armedAfter) die();
+      // "after:X" — the first observation of anything else once X's fence has passed: X's write has committed.
+      if (armedAfter && write !== what) die();
       if (write !== undefined && write === what) {
         if (when === 'before') die();
         if (when === 'after') armedAfter = true;
       }
     }
-    return read.apply(this, args);
-  };
+    return undefined;
+  });
   if (when === 'consumed' || when === 'beforeConsume') {
     // AUTH-03 consumption: the identity-store append of a `decision_authorized` row.
     let consumed = 0;

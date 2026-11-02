@@ -135,7 +135,7 @@ export async function openProtectedContinuityStore(path: string, options: Protec
     return at;
   };
 
-  if (!exclusivitySupported()) refuse('cannot be held exclusively here (Linux /proc/locks, main thread only).');
+  if (!exclusivitySupported()) refuse('cannot be held exclusively here (Linux /proc/self/fdinfo of this process’s own /proc, main thread only).');
   const { default: SqliteDatabase } = await import('better-sqlite3');
   let db: InstanceType<typeof SqliteDatabase>;
   // Review R2-L: once the exclusive lock is taken, every close goes through the guarded closer.

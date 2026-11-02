@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { fstatSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type BigIntStats } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 
@@ -25,15 +25,32 @@ import { isMainThread } from 'node:worker_threads';
  * 1. Nothing in the composition opens a held file except through its one connection, and every
  *    connection is held for the composition's lifetime.
  * 2. Every write is fenced. `confirmExclusivelyHeld` runs **synchronously immediately before** each
- *    write transaction. It asks the kernel (`/proc/locks`) whether **this process** holds a POSIX write
- *    lock over SQLite's whole SHARED range on the very inode the configured path names now. It reads
- *    metadata only and opens no database file. It distinguishes this process's lock from another
- *    Host's, which a "can another process open it" probe cannot. Both the check and better-sqlite3's
- *    transactions are synchronous, so nothing in this process can run between them.
+ *    write transaction. It asks the kernel whether **this process** holds a POSIX write lock over
+ *    SQLite's whole SHARED range on the very inode the configured path names now. It reads metadata
+ *    only and opens no database file. It distinguishes this process's lock from another Host's, which
+ *    a "can another process open it" probe cannot. Both the check and better-sqlite3's transactions
+ *    are synchronous, so nothing in this process can run between them.
  *
- * **Platform.** This needs Linux's `/proc/locks`. Elsewhere (macOS, Windows) exclusivity cannot be
- * confirmed, so the composition refuses to start (`PLATFORM_UNSUPPORTED`). Network filesystems whose
- * POSIX locks are not coherent across hosts are outside the supported deployment.
+ * **The observation (FV-EXEC-LOCK-01).** The kernel's answer is read from `/proc/self/fdinfo/<fd>` of
+ * this process's descriptors open on that inode: those whose `/proc/self/fd` link names the path (no I/O
+ * on any other descriptor's filesystem) and whose `fstat` device and inode equal the path's. There the
+ * kernel prints, under the inode's own lock-context spinlock (`show_fd_locks`, fs/locks.c), the locks set
+ * through that open file whose owner is this process's file table or the open file itself: one
+ * consistent snapshot of that inode. The owner-is-the-open-file case admits OFD and flock locks that
+ * another process sharing the open file description set; only a `POSIX` line owned by this pid is
+ * accepted, which those never are. It replaces the global `/proc/locks` table, which is read one page per
+ * `read(2)` with the global lock list released in between and resumed by position, so an entry is
+ * skipped whenever entries before it are removed meanwhile: a lock this process held was reported
+ * absent under other processes' lock churn (reproduced: up to 2% of observations), and each such false
+ * negative is a terminal authority loss. A positive answer is still only this process's own POSIX lock,
+ * which only this process (an unlock, or closing any descriptor of the file) or its death removes on a
+ * local filesystem; a network filesystem that can drop locks is unsupported (below).
+ *
+ * **Platform.** This needs Linux's `/proc/self/fd` and `/proc/self/fdinfo`, with `/proc` mounted for
+ * this process's own PID namespace (`/proc/locks` is read only to tell another process's hold apart). Elsewhere (macOS,
+ * Windows, a foreign `/proc`) exclusivity cannot be confirmed, so the composition refuses to start
+ * (`PLATFORM_UNSUPPORTED`). Network filesystems whose POSIX locks are not coherent across hosts are
+ * outside the supported deployment.
  *
  * **Closing is a write too (release review C1).** A connection in exclusive WAL mode checkpoints its
  * own view of the WAL into the database and unlinks the WAL when it closes, and better-sqlite3 closes
@@ -63,8 +80,27 @@ const SHARED_LAST = SHARED_FIRST + 510n - 1n;
 export function exclusivitySupported(): boolean {
   if (process.platform !== 'linux' || !isMainThread) return false;
   try {
-    readFileSync('/proc/locks', 'utf8');
-    return true;
+    // FV-EXEC-LOCK-01: the global /proc/locks is no longer read here (this runs inside every fence's file check).
+    readdirSync('/proc/self/fdinfo');
+    // FV-EXEC-LOCK-01: `/proc` is this process's own (its PID namespace), so `/proc/self` is this process.
+    return readlinkSync('/proc/self') === String(process.pid);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * FV-EXEC-LOCK-01 — whether one kernel lock line (`/proc/locks` or an fdinfo `lock:` line, after its
+ * prefix) is SQLite's exclusive lock held by `pid`: a traditional POSIX write lock over SQLite's whole
+ * SHARED range. Never a waiter (`->`), an OFD or flock lock, a read lock, a partial range or another pid.
+ */
+function isExclusiveSqliteLock(line: string, pid: string): boolean {
+  const fields = line.trim().split(/\s+/);
+  if (fields.length < 8 || fields.includes('->')) return false;
+  const [, kind, , access, owner, , start, end] = fields;
+  if (kind !== 'POSIX' || access !== 'WRITE' || owner !== pid || start === undefined || end === undefined) return false;
+  try {
+    return BigInt(start) <= SHARED_FIRST && (end === 'EOF' || BigInt(end) >= SHARED_LAST);
   } catch {
     return false;
   }
@@ -91,33 +127,44 @@ function lockKeyOf(path: string): string | undefined {
 export function confirmExclusivelyHeld(paths: readonly string[]): boolean {
   if (!Array.isArray(paths) || paths.length === 0 || paths.some((p) => typeof p !== 'string' || p === '')) return false;
   if (process.platform !== 'linux' || !isMainThread) return false;
-  let table: string;
+  // FV-EXEC-LOCK-01: this process's descriptors, read once. Listing and `fstat` open nothing, so they cannot
+  // drop a lock; a descriptor closed or reused meanwhile fails `fstat` or names another inode, and is skipped.
+  let descriptors: readonly string[];
   try {
-    table = readFileSync('/proc/locks', 'utf8');
+    descriptors = readdirSync('/proc/self/fd').filter((name) => /^\d+$/.test(name));
   } catch {
     return false;
   }
   const pid = String(process.pid);
-  const held = new Set<string>();
-  for (const line of table.split('\n')) {
-    // `N: POSIX ADVISORY WRITE PID MAJ:MIN:INODE START END`; a `->` line is a waiter, never a holder.
-    const fields = line.trim().split(/\s+/);
-    if (fields.length < 8 || fields.includes('->')) continue;
-    const [, kind, , access, owner, key, start, end] = fields;
-    if (kind !== 'POSIX' || access !== 'WRITE' || owner !== pid || key === undefined || start === undefined || end === undefined) continue;
-    let first: bigint;
-    let last: bigint | undefined;
-    try {
-      first = BigInt(start);
-      last = end === 'EOF' ? undefined : BigInt(end);
-    } catch {
-      continue;
-    }
-    if (first <= SHARED_FIRST && (last === undefined || last >= SHARED_LAST)) held.add(key);
-  }
   return paths.every((p) => {
-    const key = lockKeyOf(resolve(p));
-    return key !== undefined && held.has(key);
+    let file: BigIntStats;
+    try {
+      file = statSync(resolve(p), { bigint: true });
+    } catch {
+      return false;
+    }
+    if (!file.isFile() || file.ino === 0n) return false;
+    let named: string;
+    try {
+      named = realpathSync(resolve(p));
+    } catch {
+      return false;
+    }
+    return descriptors.some((name) => {
+      try {
+        // Only a descriptor whose link names this file is examined further: reading the link does no I/O on
+        // the descriptor's filesystem, so an unrelated descriptor on a hung mount is never touched.
+        if (readlinkSync(`/proc/self/fd/${name}`) !== named) return false;
+        const open = fstatSync(Number(name), { bigint: true });
+        if (open.dev !== file.dev || open.ino !== file.ino) return false;
+        // The kernel's own list of the locks this process set through this open file, in one snapshot.
+        return readFileSync(`/proc/self/fdinfo/${name}`, 'utf8')
+          .split('\n')
+          .some((line) => line.startsWith('lock:') && isExclusiveSqliteLock(line.slice('lock:'.length), pid));
+      } catch {
+        return false;
+      }
+    });
   });
 }
 
