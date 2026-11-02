@@ -71,7 +71,8 @@ describe('AUTH-03 structure — the passkey channel is the only way a human deci
     assert.deepEqual(composers.sort(), ['src/enterprise/authority-gateway/gateway.ts', 'src/enterprise/composition/human-authority-composition.ts', 'src/enterprise/sovereign-status-history/protected-host-composition.ts', 'src/enterprise/synthetic-execution-verification/verification.ts']);
     const fv = read('src/enterprise/sovereign-status-history/protected-host-composition.ts');
     assert.equal(/createHumanDecisionChannel|createHumanIdentityService\(|approval-authority/.test(fv), false, 'the FV composition composes no decision channel and no general identity service');
-    assert.match(fv, /^import \{ createHumanIdentityServiceWithBootstrapSettlement, isBootstrapSettlementCapabilityOf, openSqliteHumanIdentityStore, revokeBootstrapSettlementCapability \} from '\.\.\/human-identity\/index\.js';$/m, 'it takes exactly the bootstrap-settlement pair, its custody predicate, its revocation and the store opener');
+    // CORE-07-FV-WITNESS: plus one constant, the FV identity freshness domain's name (data, not a capability).
+    assert.match(fv, /^import \{ FV_BOOTSTRAP_IDENTITY_STATE_KIND, createHumanIdentityServiceWithBootstrapSettlement, isBootstrapSettlementCapabilityOf, openSqliteHumanIdentityStore, revokeBootstrapSettlementCapability \} from '\.\.\/human-identity\/index\.js';$/m, 'it takes exactly the bootstrap-settlement pair, its custody predicate, its revocation, the store opener and the FV domain constant');
     const opens = [...fv.matchAll(/openSqliteHumanIdentityStore\(identityPath, \{[\s\S]*?\n\s{4}\}\);/g)];
     assert.equal((fv.match(/openSqliteHumanIdentityStore\(/g) ?? []).length, 1, 'one open, of its own store');
     assert.equal(opens.length, 1);
@@ -93,7 +94,12 @@ describe('AUTH-03 structure — the passkey channel is the only way a human deci
     assert.match(source, /typeof signer\.signHumanIdentityState !== 'function'/);
     assert.match(source, /HUMAN_IDENTITY_STORE_UNSUPPORTED/);
     assert.ok(source.indexOf('const opened = verifiedState();') < source.lastIndexOf('return store;'));
-    assert.match(source, /boundary\.genesisStoreId\('human-identity-state'/);
+    // CORE-07-FV-WITNESS: the genesis and every checkpoint use the store's identity freshness domain, which is the
+    // Host's legacy 'human-identity-state' slot unless the exclusive (FV) owner names its own domain.
+    assert.match(source, /boundary\.genesisStoreId\(identityDomain, /);
+    assert.match(source, /const identityDomain: HumanIdentityStateKind = requestedDomain \?\? HOST_IDENTITY_STATE_KIND;/);
+    assert.match(source, /const checkpointOf = \(state: HumanIdentityStateCommitment\) => humanIdentityStateCheckpoint\(state, identityDomain\);/);
+    assert.equal([...source.matchAll(/humanIdentityStateCheckpoint\(/g)].length, 1, 'every checkpoint goes through the store’s one domain');
     assert.equal([...source.matchAll(/session\.transition\(/g)].length, 1);
     // Every refusal precedes signing: the guard runs before signState in the append.
     const append = source.slice(source.indexOf('const appendOnce = async'), source.indexOf('let tail'));

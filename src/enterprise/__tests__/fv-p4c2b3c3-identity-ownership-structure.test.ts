@@ -22,7 +22,10 @@ describe('FV-P4C-2B3C-3 structure — one owner per AUTH-03 identity store', () 
     // PR #255 review, finding 1: the caller's object is read once into a frozen snapshot, and the store receives a
     // freshness option rebuilt from the boundary alone, never the caller's object.
     assert.match(FV, /const identity = Object\.freeze\(\{/);
-    assert.match(FV, /Object\.freeze\(\{ boundary: rawFreshness\.boundary \}\)/);
+    assert.match(FV, /Object\.freeze\(\{ boundary: rawFreshness\.boundary, stateKind: FV_BOOTSTRAP_IDENTITY_STATE_KIND \}\)/);
+    // CORE-07-FV-WITNESS: the FV domain is named explicitly by the configuration, and the store receives the constant.
+    assert.match(FV, /rawFreshness !== undefined && rawFreshnessDomain !== FV_BOOTSTRAP_IDENTITY_STATE_KIND\) invalid\(/);
+    assert.equal(/create:\s*true|create: identity|enrollment:/.test(FV.slice(FV.indexOf('openSqliteHumanIdentityStore(identityPath'), FV.indexOf('openSqliteHumanIdentityStore(identityPath') + 900)), false, 'the executor never creates or enrolls its store');
     assert.match(FV, /\.\.\.\(freshnessOption !== undefined \? \{ freshness: freshnessOption \} : \{\}\)/);
     assert.equal(/freshness: identity\.freshness\b|freshness: rawFreshness\b/.test(FV), false, 'the caller’s freshness object never reaches the store');
     assert.match(FV, /identityStore\.storeId !== identity\.storeId/, 'the store is pinned by id');

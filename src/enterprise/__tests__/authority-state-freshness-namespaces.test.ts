@@ -108,7 +108,9 @@ describe('CORE-07 namespaces — the grammar and the closed per-kind rule (NS-1 
   it('NS-3 / LEGACY-4 no namespace can be attached to any other kind — revocation, discharge, approval, XRPL, business-operation and refund slots stay single per organization', () => {
     // TRADE-04C: the trade sequence interlock's slot is single per organization too (one trade domain per Host).
     // AUTH-03: the human identity store's slot is single per organization too (one identity store per Host).
-    assert.deepEqual(UN_NAMESPACED_KINDS, ['bounded-grant-revocation-state', 'obligation-discharge-state', 'approval-state', 'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'human-identity-state']);
+    // CORE-07-FV-WITNESS: the FV executor's bootstrap identity store is its own kind (its own freshness domain), single
+    // per organization as well — never a namespace of the Host's slot.
+    assert.deepEqual(UN_NAMESPACED_KINDS, ['bounded-grant-revocation-state', 'obligation-discharge-state', 'approval-state', 'trade-sequence-reservations', 'xrpl-submission-reservations', 'payment-business-operation-state', 'payment-refund-state', 'human-identity-state', 'fv-bootstrap-identity-state']);
     for (const stateKind of UN_NAMESPACED_KINDS) {
       assert.equal(authorityStateBindingProblem({ stateKind, organizationId: ORG }), undefined, stateKind);
       assert.match(authorityStateBindingProblem({ stateKind, organizationId: ORG, namespace: 'stripe-usd' }) ?? '', /state kind that has none/, stateKind);

@@ -16,7 +16,7 @@ export {
 } from './contracts.js';
 export { INTENDED_PRODUCTION_RP_ID, createRelyingPartyConfiguration, type RelyingPartyConfiguration, type RelyingPartyInput } from './relying-party.js';
 export { HUMAN_IDENTITY_CHAIN_FORMAT, serializeHumanIdentityStateCommitment, type HumanIdentityStateCommitment } from './chain.js';
-export { openSqliteHumanIdentityStore, verifyHumanIdentityHistory, type HumanIdentityStore, type SqliteHumanIdentityStoreOptions } from './sqlite-human-identity-store.js';
+export { FV_BOOTSTRAP_IDENTITY_STATE_KIND, openSqliteHumanIdentityStore, verifyHumanIdentityHistory, type HumanIdentityStore, type SqliteHumanIdentityStoreOptions } from './sqlite-human-identity-store.js';
 export {
   BOOTSTRAP_AUTHORITY_CHALLENGE_DOMAIN,
   BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT,

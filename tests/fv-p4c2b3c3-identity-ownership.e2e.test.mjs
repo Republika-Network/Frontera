@@ -13,8 +13,8 @@ import assert from 'node:assert/strict';
 import { confirmExclusivelyHeld } from '../dist/src/enterprise/sovereign-status-history/executor-exclusivity.js';
 import { createHumanIdentityService, identityAdministratorFor, openSqliteHumanIdentityStore } from '../dist/src/enterprise/human-identity/index.js';
 import { testSigner, testVerifier, AUTHORITY_KEY_A } from '../dist/src/enterprise/__tests__/authority-authenticity-fixture.js';
-import { boundaryFor, closeAllWitnesses, startWitness } from '../dist/src/enterprise/__tests__/core07-freshness-fixture.js';
-import { GRACE, NS_A, ORG, OPERATORS, RP, S, T, addSeconds, compose, decisionsFor, identityConfigOf, makeClock, openIdentity, prepareWorld, requestFor } from './fv-p4c2b3b-support.mjs';
+import { boundaryFor, closeAllWitnesses, startWitness, witnessRows } from '../dist/src/enterprise/__tests__/core07-freshness-fixture.js';
+import { FV_DOMAIN, GRACE, NS_A, ORG, OPERATORS, RP, S, T, addSeconds, compose, decisionsFor, identityConfigOf, makeClock, openIdentity, prepareWorld, requestFor } from './fv-p4c2b3b-support.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CHILD = fileURLToPath(new URL('./fv-p4c2b3b-child.mjs', import.meta.url));
@@ -44,6 +44,14 @@ async function world() {
   const w = await prepareWorld({ dir: mkdtempSync(join(tmpdir(), 'fv-p4c2b3c3-')) });
   cleanup.push(() => rmSync(w.dir, { recursive: true, force: true }));
   return w;
+}
+
+/** CORE-07-FV-WITNESS: a world whose FV identity store is anchored at `witness` in its own domain (test-only genesis). */
+async function anchoredWorld(witness) {
+  // The directory is cleaned up even when the world cannot be prepared.
+  const dir = mkdtempSync(join(tmpdir(), 'fv-p4c2b3c3-'));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  return prepareWorld({ dir, boundary: await boundaryFor(witness, ORG) });
 }
 
 async function start(w, at = LATER, overrides = {}) {
@@ -209,8 +217,7 @@ describe('FV-P4C-2B3C-3 settlement — fenced inside the identity owner’s own 
     assert.equal(ran.result.outcome, 'established');
   });
 
-  it('review M1: with the Host’s CORE-07 witness (one human-identity-state slot per organization), the FV store fails closed and AUTH-04A is never disturbed', async () => {
-    const w = await world();
+  it('CORE-07-FV-WITNESS (closes review M1): the Host’s and the FV store’s identity freshness domains at one witness are independent', async () => {
     const witness = await startWitness();
     const authenticity = { signer: testSigner(AUTHORITY_KEY_A), verifier: testVerifier([AUTHORITY_KEY_A]) };
     const hostDir = mkdtempSync(join(tmpdir(), 'fv-p4c2b3c3-host-'));
@@ -218,22 +225,48 @@ describe('FV-P4C-2B3C-3 settlement — fenced inside the identity owner’s own 
     const hostPath = join(hostDir, 'human-identity.sqlite');
     const openHost = async (create = false) => openSqliteHumanIdentityStore(hostPath, { organizationId: ORG, now: () => LATER, authenticity, create, freshness: { boundary: await boundaryFor(witness, ORG) } });
     const admin = identityAdministratorFor({ plane: 'operator', operatorId: 'ops-admin', organizationId: ORG, role: 'organization-administrator', credentialClass: 'operator', actorRef: 'operator-plane:ops-admin' });
+    // AUTH-04A's store takes the legacy slot first, exactly as before.
     let hostStore = await openHost(true);
     await createHumanIdentityService({ store: hostStore, relyingParty: RP, operatorIds: OPERATORS, now: () => new Date(LATER) }).createPrincipal(admin, { operatorId: 'requester-a', displayName: 'Synthetic requester' });
     const hostId = hostStore.storeId;
     hostStore.close();
-    // The executor's store (registered without that witness) is not the slot's store: refused, nothing enrolled.
-    await assert.rejects(compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: { boundary: await boundaryFor(witness, ORG) } }) }), (e) => e.code === 'IDENTITY_REFUSED');
-    // The composition never performs the enrollment ceremony that would rebind the Host's slot.
-    await assert.rejects(compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: { boundary: await boundaryFor(witness, ORG), enrollment: {} } }) }), (e) => e.code === 'OPTIONS_INVALID');
-    // The Host's file at the executor's path is not the pinned store, and is refused before anything is written.
-    copyFileSync(hostPath, w.paths.identity);
-    await assert.rejects(compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: { boundary: await boundaryFor(witness, ORG) } }) }), (e) => e.code === 'IDENTITY_REFUSED');
-    // AUTH-04A's store is untouched and keeps working under its witness.
+    // The FV store's (test-only) registration genesis enrolls its OWN domain at the same witness: a new store id,
+    // never the Host's adopted genesis.
+    const w = await anchoredWorld(witness);
+    const fvId = identityConfigOf(w.dir).storeId;
+    assert.notEqual(fvId, hostId);
+    const rows = await witnessRows(witness.databasePath);
+    const slot = (kind) => rows.find((row) => row.state_kind === kind && row.organization_id === ORG);
+    assert.equal(slot('human-identity-state').store_id, hostId);
+    assert.equal(slot('human-identity-state').committed_sequence, 1, 'the Host’s slot is untouched by the FV genesis and appends');
+    assert.equal(slot(FV_DOMAIN).store_id, fvId);
+    assert.ok(slot(FV_DOMAIN).committed_sequence >= 1);
+    // The executor composes against its own domain; the Host keeps advancing its own, independently.
+    const fresh = async () => ({ boundary: await boundaryFor(witness, ORG), stateKind: FV_DOMAIN });
+    const r = await start(w, LATER, { identity: identityConfigOf(w.dir, { freshness: await fresh() }) });
     hostStore = await openHost();
-    assert.equal(hostStore.storeId, hostId);
     await createHumanIdentityService({ store: hostStore, relyingParty: RP, operatorIds: OPERATORS, now: () => new Date(LATER) }).createPrincipal(admin, { operatorId: 'approver-b', displayName: 'Synthetic approver' });
     assert.equal(hostStore.head().sequence, 2);
+    hostStore.close();
+    const after = await witnessRows(witness.databasePath);
+    assert.equal(after.find((row) => row.state_kind === FV_DOMAIN).committed_sequence, slot(FV_DOMAIN).committed_sequence, 'advancing the Host never advances FV');
+    r.host.close();
+    // The domain is named explicitly, and only the FV domain: none, the Host's slot or an unknown one is refused.
+    for (const freshness of [{ boundary: await boundaryFor(witness, ORG) }, { boundary: await boundaryFor(witness, ORG), stateKind: 'human-identity-state' }, { boundary: await boundaryFor(witness, ORG), stateKind: 'fv-bootstrap-identity-state ' }, { boundary: await boundaryFor(witness, ORG), stateKind: 'FV-BOOTSTRAP-IDENTITY-STATE' }]) {
+      await assert.rejects(compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness }) }), (e) => e.code === 'OPTIONS_INVALID', JSON.stringify(freshness.stateKind));
+    }
+    // Another organization's boundary is refused at the store.
+    await assert.rejects(compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: { boundary: await boundaryFor(witness, 'org-other'), stateKind: FV_DOMAIN } }) }), (e) => e.code === 'IDENTITY_REFUSED');
+    // The Host's file at the executor's path is not the pinned store: refused before any write or witness contact.
+    const saved = join(w.dir, 'fv-identity.saved');
+    copyFileSync(w.paths.identity, saved);
+    copyFileSync(hostPath, w.paths.identity);
+    await assert.rejects(compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: await fresh() }) }), (e) => e.code === 'IDENTITY_REFUSED');
+    copyFileSync(saved, w.paths.identity);
+    (await start(w, LATER, { identity: identityConfigOf(w.dir, { freshness: await fresh() }) })).host.close();
+    // AUTH-04A's store keeps working under its slot.
+    hostStore = await openHost();
+    assert.equal(hostStore.storeId, hostId);
     hostStore.close();
   });
 
@@ -243,18 +276,18 @@ describe('FV-P4C-2B3C-3 settlement — fenced inside the identity owner’s own 
     const boundary = await boundaryFor(witness, ORG);
     const enrollment = { operator: true, operatorId: 'ops-admin', attestation: 'verified-local-state-is-current' };
     // (a) A Proxy that hides `enrollment` from `in` but yields it on read.
-    const hidden = new Proxy({ boundary, enrollment }, { has: (target, key) => key !== 'enrollment' && key in target });
+    const hidden = new Proxy({ boundary, enrollment, stateKind: FV_DOMAIN }, { has: (target, key) => key !== 'enrollment' && key in target });
     assert.equal('enrollment' in hidden, false);
     await assert.rejects(compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: hidden }) }), (e) => e.code === 'IDENTITY_REFUSED', 'not enrolled: the slot is unbound');
     // (b) An enrollment added after the synchronous validation, while the composition awaits its stores.
-    const later = { boundary };
+    const later = { boundary, stateKind: FV_DOMAIN };
     const composing = compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: later }) });
     later.enrollment = enrollment;
     await assert.rejects(composing, (e) => e.code === 'IDENTITY_REFUSED', 'not enrolled: the slot is unbound');
     // The store layer refuses the combination on its own (defence in depth).
     const authenticity = { signer: testSigner(AUTHORITY_KEY_A), verifier: testVerifier([AUTHORITY_KEY_A]) };
     await assert.rejects(
-      openSqliteHumanIdentityStore(w.paths.identity, { organizationId: ORG, now: () => LATER, authenticity, freshness: { boundary, enrollment }, exclusive: { beforeWrite: () => undefined, closer: (_file, connection) => () => void connection.close() } }),
+      openSqliteHumanIdentityStore(w.paths.identity, { organizationId: ORG, now: () => LATER, authenticity, freshness: { boundary, enrollment, stateKind: FV_DOMAIN }, exclusive: { beforeWrite: () => undefined, closer: (_file, connection) => () => void connection.close() } }),
       (e) => e.code === 'HUMAN_IDENTITY_CONFIGURATION_INVALID',
     );
     // The organization's one slot was never bound by FV: AUTH-04A's new store still takes it at genesis (a slot
@@ -266,25 +299,40 @@ describe('FV-P4C-2B3C-3 settlement — fenced inside the identity owner’s own 
     hostStore.close();
   });
 
-  it('a CORE-07-anchored identity store restored to an older state is refused at open (rollback); the current state composes', async () => {
-    const w = await world();
+  it('CORE-07-FV-WITNESS: each identity domain detects its own rollback; restoring one never disturbs the other', async () => {
     const witness = await startWitness();
-    const path = join(w.dir, 'fresh-identity.sqlite');
+    const w = await anchoredWorld(witness);
+    const fresh = async () => ({ boundary: await boundaryFor(witness, ORG), stateKind: FV_DOMAIN });
     const older = join(w.dir, 'older-identity.sqlite');
+    copyFileSync(w.paths.identity, older);
+    // The FV store advances (its exclusive owner, in its own domain).
     const admin = identityAdministratorFor({ plane: 'operator', operatorId: 'ops-admin', organizationId: ORG, role: 'organization-administrator', credentialClass: 'operator', actorRef: 'operator-plane:ops-admin' });
     const authenticity = { signer: testSigner(AUTHORITY_KEY_A), verifier: testVerifier([AUTHORITY_KEY_A]) };
-    const openFresh = async (create = false) => openSqliteHumanIdentityStore(path, { organizationId: ORG, now: () => LATER, authenticity, create, freshness: { boundary: await boundaryFor(witness, ORG) } });
-    let store = await openFresh(true);
-    const storeId = store.storeId;
-    await createHumanIdentityService({ store, relyingParty: RP, operatorIds: OPERATORS, now: () => new Date(LATER) }).createPrincipal(admin, { operatorId: 'requester-a', displayName: 'Synthetic requester' });
-    store.close();
-    copyFileSync(path, older);
-    store = await openFresh();
-    await createHumanIdentityService({ store, relyingParty: RP, operatorIds: OPERATORS, now: () => new Date(LATER) }).createPrincipal(admin, { operatorId: 'approver-b', displayName: 'Synthetic approver' });
-    store.close();
-    const config = async () => identityConfigOf(w.dir, { storePath: path, storeId, freshness: { boundary: await boundaryFor(witness, ORG) } });
-    (await start(w, LATER, { identity: await config() })).host.close();
-    copyFileSync(older, path);
-    await assert.rejects(compose(w, makeClock(LATER), { identity: await config() }), (e) => e.code === 'IDENTITY_REFUSED', 'the witness knows a newer head');
+    const owner = await openSqliteHumanIdentityStore(w.paths.identity, { organizationId: ORG, now: () => LATER, authenticity, freshness: await fresh(), exclusive: { beforeWrite: () => undefined, closer: (_f, c) => () => void c.close(), storeId: identityConfigOf(w.dir).storeId } });
+    await createHumanIdentityService({ store: owner, relyingParty: RP, operatorIds: [...OPERATORS, 'observer-x'], now: () => new Date(LATER) }).createPrincipal(admin, { operatorId: 'observer-x', displayName: 'Synthetic observer' });
+    owner.close();
+    (await start(w, LATER, { identity: identityConfigOf(w.dir, { freshness: await fresh() }) })).host.close();
+    // A Host store in the same organization, at the same witness.
+    const hostDir = mkdtempSync(join(tmpdir(), 'fv-p4c2b3c3-host-'));
+    cleanup.push(() => rmSync(hostDir, { recursive: true, force: true }));
+    const hostPath = join(hostDir, 'human-identity.sqlite');
+    const openHost = async (create = false) => openSqliteHumanIdentityStore(hostPath, { organizationId: ORG, now: () => LATER, authenticity, create, freshness: { boundary: await boundaryFor(witness, ORG) } });
+    let hostStore = await openHost(true);
+    hostStore.close();
+    const hostOlder = join(hostDir, 'older.sqlite');
+    copyFileSync(hostPath, hostOlder);
+    hostStore = await openHost();
+    await createHumanIdentityService({ store: hostStore, relyingParty: RP, operatorIds: OPERATORS, now: () => new Date(LATER) }).createPrincipal(admin, { operatorId: 'requester-a', displayName: 'Synthetic requester' });
+    hostStore.close();
+    // The FV store restored to its older state: refused by its own domain.
+    copyFileSync(older, w.paths.identity);
+    await assert.rejects(compose(w, makeClock(LATER), { identity: identityConfigOf(w.dir, { freshness: await fresh() }) }), (e) => e.code === 'IDENTITY_REFUSED' && /older than the witnessed/.test(e.message), 'the FV witness knows a newer head');
+    // ... while the Host store, current, opens; then the Host restored is refused by its own, while FV's refusal is unchanged.
+    (await openHost()).close();
+    copyFileSync(hostOlder, hostPath);
+    await assert.rejects(openHost(), (e) => e.code === 'AUTHORITY_FRESHNESS_ROLLBACK_DETECTED');
+    const rows = await witnessRows(witness.databasePath);
+    assert.equal(rows.filter((row) => row.organization_id === ORG).length, 2, 'two slots, one per domain; nothing re-anchored or re-enrolled');
+    assert.ok(rows.every((row) => row.pending_sequence === null));
   });
 });
