@@ -37,7 +37,9 @@ Implemented by the product (verifiable in Republika's documentation):
 - Each customer is served by a dedicated Host serving only its organization;
   access to another organization's records is refused.
 - Every operator is individually authenticated; reviewer and release
-  approver are separate credentials, and a reviewer cannot approve.
+  approver are separate credentials, and a credential that recorded a
+  review of an assessment cannot approve that assessment's release
+  (ASSURE-CLAIMS-01 precision).
 - Delivered reports exclude reviewer rationale, evidence locations and
   metadata by design.
 - Operator logs exclude evidence, rationale, report content and secrets.

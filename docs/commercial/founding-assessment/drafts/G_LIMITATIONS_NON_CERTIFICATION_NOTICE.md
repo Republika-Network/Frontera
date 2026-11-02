@@ -1,7 +1,8 @@
 # [DRAFT G] Limitations and Non-Certification Notice
 
 > **DRAFT — SUBJECT TO QUALIFIED LEGAL REVIEW.** Intended to accompany every
-> delivered package and to form part of the SOW.
+> delivered package and to form part of the SOW. "Who performs the
+> assessment" and "What is outside scope" added by ASSURE-CLAIMS-01 (GF-06).
 
 **Please read this notice before relying on the Republika Sovereignty
 Assessment report.**
@@ -38,6 +39,51 @@ Assessment report.**
     retention, it can no longer confirm the package.
 12. **Framework status.** [If `rn.sv@0.1.0`: The framework version used
     records a commercial-use restriction, acknowledged by the approver at
-    release.] [If a later version: state its authorization reference.]
+    release. That acknowledgement is an internal approval step; it is not an
+    external review and does not lift the restriction.] [If a later version:
+    state its authorization reference.]
 13. **Use.** The report is for your internal use. [Third-party reliance —
     counsel.]
+
+## Who performs the assessment
+
+Republika Network wrote the `rn.sv` framework, operates the software used to
+run the assessment, and conducts and approves the assessment with its own
+authorized reviewers and approvers (employees or authorized contractors):
+
+- **Assessment review.** An authenticated Republika reviewer concludes each
+  control from the evidence you supplied.
+- **Release approval.** A separate authorized Republika approver, who
+  recorded none of the control reviews, approves the exact report content
+  for release.
+
+Both steps are internal to Republika. The assessment is independent of your
+organization; it is **not** independent of the framework author or of the
+tooling operator, and no external auditor or independent third party has
+reviewed it. If an external review is ever performed for a report, it will be
+a separate, documented engagement, and the report or its accompanying
+documents will name the reviewer and the scope of that review. Absent that,
+assume none occurred.
+
+## What is outside scope
+
+The assessment covers **only** the ten controls of `rn.sv@0.1.0`, for the
+scope you declared and the evidence you supplied up to the evidence cut-off:
+SV-01 actor identity and authority; SV-02 consent and revocation; SV-03
+policy compliance; SV-04 evidence integrity; SV-05 execution traceability;
+SV-06 isolation between organizations; SV-07 minimal disclosure; SV-08
+effective revocation of authority; SV-09 remediation and revalidation; SV-10
+governance and accountability.
+
+It makes no statement, and gives no assurance, about:
+
+- penetration testing or any other active security testing (none is
+  performed);
+- infrastructure or network security certification;
+- regulatory or legal compliance under any law, regulation or standard;
+- the security certification of any cloud or hosting provider, or their
+  jurisdictional exposure;
+- availability, resilience or performance guarantees;
+- the correctness, safety or behaviour of any AI model;
+- supply-chain security assurance;
+- overall immunity to, or prevention of, autonomous-agent failures.
