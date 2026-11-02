@@ -29,6 +29,7 @@ Assurance · **Offer:** Republika Sovereignty Assessment · **Framework:**
 | 6 | [`OPERATOR_RUNBOOK.md`](OPERATOR_RUNBOOK.md) | Operator runbook, implemented vs planned steps | DRAFT |
 | 7 | [`ASSURE_COMMERCIAL_GO_NO_GO.md`](ASSURE_COMMERCIAL_GO_NO_GO.md) | The launch gate. Final decision: **NO-GO** | DRAFT |
 | 8 | [`drafts/`](drafts/) | Customer-facing document drafts A–J | DRAFT — professional review |
+| 9 | [`governance/`](governance/GOVERNANCE_READINESS.md) | ASSURE-GOV-01: framework commercial authorization and independent assurance governance package | DRAFT — nothing approved |
 
 ### Customer-facing drafts (`drafts/`)
 

@@ -194,6 +194,15 @@ engagement Host (none provisioned), proof of volume encryption on it (the
 development machine is unencrypted), approved retention, legal review and
 framework authorization. Final decision: **NO-GO**.
 
+## 9c. Update — ASSURE-GOV-01
+
+The governance package is in [`governance/`](governance/GOVERNANCE_READINESS.md).
+It re-verifies the technical record on `2e32eb15`, records new governance
+findings GF-01…GF-09, and proposes the review protocol, risk register, version
+strategy and decision options. Nothing is approved. Final decision: **NO-GO**.
+§10 below is historical: R-05, R-02 and R-04 were done by ASSURE-OPS-01. The
+current recommendation is in `governance/GOVERNANCE_READINESS.md` §7.
+
 ## 10. Recommended next mission
 
 **ASSURE-REL-01F — Supported delivery-package export (R-05)**, together with
