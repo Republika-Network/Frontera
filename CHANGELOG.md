@@ -4,6 +4,23 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2B3C-1 dedicated FV executor and supervised lifecycle (internal, not composed, not operational)
+- **A dedicated executor process** (`dedicated-executor.ts`, FV module only, not exported from its index): `runDedicatedFvExecutor` runs the B3B protected composition alone in a supervised child process. It refuses when not on Linux's main thread, when there is no supervisor IPC channel (it never runs in its caller's process), or when the process already does other work.
+  - A closed lifecycle relation, in which health only worsens in place: `CREATED → PREFLIGHT → ACQUIRING_EXCLUSIVITY → RECOVERING → READY_INACTIVE / DEGRADED / QUARANTINED`, plus `STOPPING / STOPPED / FAILED / EXECUTOR_AUTHORITY_LOST`.
+  - A lock watch that ends the process by `SIGKILL` on authority loss.
+  - A stronger termination contract: `process.exit` is wrapped and a fail-stop `exit` listener is prepended. This closes, for the dedicated process, B3B's earlier-exit-listener edge, with a demonstration.
+  - A stop awaits in-flight work, then performs a guarded close.
+- **A narrow IPC channel** (`dedicated-executor-protocol.ts`): exactly `status` and `stop`, size-bounded, with exact keys. Events and status carry codes and counts only: no bootstrap or reconcile command, no secret, capability, handle or path.
+- **A supervisor** (`dedicated-executor-supervisor.ts`):
+  - The pure contract `decideAfterExit`: requested stops never restart, an unclean stop blocks, non-retryable refusals block (and the executor parks, so no platform restart policy can storm), and crashes back off up to a limit.
+  - A Node child-process adapter that starts a fixed entry with `env: {}` and `execArgv: ['--disable-sigusr1']`, loads no `fs` or SQLite module, and clears its reported state on exit.
+  - It refuses duplicate instances. A block clears only on the operator's acknowledgement.
+- **The production entry** (`dedicated-executor-main.ts`) is inactive by construction: it composes nothing and reports `FAILED` / `DEPENDENCIES_UNAVAILABLE`.
+- **The PROD-02 persistence ownership contract** (`executor-persistence-contract.ts`), declarative: executor-owned stores; executor-mediated or cold snapshots, both deferred to B3C-2. The AUTH-03 identity store is named as **not owned**, an activation blocker until B3C-3.
+- **Publication review (PR #252, AI):** fixed the lock watch, which now covers every history lock as well as the protected store (Medium); also fixed a block bypass from inside a stop's exit, unvalidated lifecycle events, and the executor's own inspector self-check (`DEBUG_EXPOSED`).
+- **Tests:** 40 end-to-end tests with real processes and 6 structure tests; the structure-test import allowlist gains `node:child_process` for the supervisor only.
+- **Independent review:** an AI agent of the same model family, not a human. Fixed: M1 (SIGUSR1 inspector), L2, L3 and L4. Mitigated: L1. Recorded: M2 (identity-store ownership, B3C-3).
+- **Not included:** deployment wiring, B3C-2, B3C-3, B6, FV-P4D and FV-P5. **Operational activation: NO-GO.** See `docs/integration/FV_DEDICATED_EXECUTOR_LIFECYCLE.md`.
 ### Added — ASSURE-OPS-02 Secure customer-data operations (one private Host per engagement; not a commercial authorization)
 - **`scripts/assurance/engagement-ops.mjs`** (operator tooling; no Host, API, SDK or store change). Commands: `init`, `preflight`, `status`, `record`, `backup`, `verify`, `restore`, `inventory`, `offboard`.
   - **Engagement root:** `data/`, `exports/`, `intake/` and `work/`, one per customer.

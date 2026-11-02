@@ -37,6 +37,8 @@ describe('FV-P4C-2B2 structure — internal, unreachable, not composed', () => {
     const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
       [join(MODULE, 'protected-host-composition.ts')]: ['../human-identity/index.js'],
       [join(MODULE, 'executor-exclusivity.ts')]: ['node:worker_threads'],
+      // FV-P4C-2B3C-1: the supervisor alone starts the dedicated executor process (it opens no file; see its structure test).
+      [join(MODULE, 'dedicated-executor-supervisor.ts')]: ['node:child_process'],
     };
     for (const file of walk(MODULE)) {
       for (const specifier of specifiers(file)) {
