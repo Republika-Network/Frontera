@@ -85,9 +85,9 @@ scope):**
   names, but they appear verbatim in delivered reports (PILOT-01 rec. 7). → **R-04**
 - F-12. **Static bearer credentials**, no MFA or passkey for release, no rate
   limiting, rotation by restart. Acceptable only on a private network. → R-03
-- F-13. **No encryption at rest** for the Assurance Store, and the backup tool
-  does not encrypt. → process now; R-09
-- F-14. **No per-customer deletion.** Store and custody are append-only by
+- F-13. **[PARTLY CLOSED by ASSURE-OPS-02]** **No encryption at rest** for the Assurance Store, and the backup tool
+  does not encrypt. → process now; R-09. Engagement backups are now sealed; volume encryption is detected by the preflight, not enforced.
+- F-14. **[ADDRESSED by ASSURE-OPS-02 as engagement disposition; approval of the policy still pending]** **No per-customer deletion.** Store and custody are append-only by
   design. Deletion requires one Host per customer plus destroying the store
   and its backups. → R-08 or a process
 - F-15. **Restore loses later releases.** Documented in REL-01A §12. A backup
@@ -157,9 +157,9 @@ Each item is a **separate mission**. None is implemented here.
 | R-04 | ~~P1~~ **CLOSED** | Host configuration refuses reviewer IDs that look like emails or contain whitespace-separated names (PILOT-01 rec. 7) — ASSURE-OPS-01 (well-formed personal-name tokens stay procedural) | G-TECH / G-INFO | Code |
 | R-01 | P1 | Issuer signature over `releaseDigest`, with key custody, verifier support, and reuse of the FV-P4B signed-verifier pattern (PILOT-01 rec. 2) — closes B7 | G-TECH / G-FRAMEWORK | Code + key management |
 | R-03 | P1 | Passkey-bound release approval (AUTH-03 decision challenge); rate limiting | G-TECH | Code |
-| R-09 | P2 | Encrypted backup output, or documented integration with an encrypted volume | G-INFO | Code or ops |
+| R-09 | ~~P2~~ **CLOSED (backups) / PROCEDURAL (volume)** | Encrypted backup output, or documented integration with an encrypted volume — ASSURE-OPS-02 | G-INFO | Code or ops |
 | R-07 | P2 | Record the evidence submitter in the stored assessment | G-TECH | Code (contract change) |
-| R-08 | P2 | Per-customer export and purge tooling, or a formal decision that one Host per customer plus store destruction is the policy | G-INFO | Code or decision |
+| R-08 | ~~P2~~ **TOOLING CLOSED; decision D-08 pending** | Per-customer export and purge tooling, or a formal decision that one Host per customer plus store destruction is the policy — ASSURE-OPS-02 | G-INFO | Code or decision |
 | R-10 | P2 | Investigate the `Publishability` failure on main @ `5012246c` (tarball validation, one test) | — | CI |
 | R-11 | P3 | Update the REL-01D status header after merge | — | Docs |
 
@@ -184,6 +184,15 @@ R-02, R-04 and R-05 were implemented and tested by ASSURE-OPS-01
 residuals they do not touch are unchanged: B7, A10, static credentials,
 encryption at rest, retention and deletion, legal review and framework
 authorization. The final commercial decision stays **NO-GO**.
+
+## 9b. Update — ASSURE-OPS-02
+
+Engagement isolation, sealed backups, verify-by-restore, lifecycle and gated
+offboarding are implemented and tested on synthetic engagements
+(`docs/security/ASSURE-OPS-02-SECURE-CUSTOMER-DATA.md`). Not done: a real
+engagement Host (none provisioned), proof of volume encryption on it (the
+development machine is unencrypted), approved retention, legal review and
+framework authorization. Final decision: **NO-GO**.
 
 ## 10. Recommended next mission
 

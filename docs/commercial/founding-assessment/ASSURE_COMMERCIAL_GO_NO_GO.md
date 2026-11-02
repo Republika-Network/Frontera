@@ -58,8 +58,8 @@ R-01/R-03 first. Owner: SEC (acceptance), ENG (R-01, R-03).
 | Host configuration contract and preflight | `npm run check:host-configuration`; REL-01D §8 | Implemented |
 | Named operators (reviewer, approver, custody admin) | None assigned | **BLOCKED** |
 | Credential register and issuance procedure | Draft only (`OPERATOR_ROLES.md` §4) | **BLOCKED** until adopted |
-| Dedicated private Host with encrypted volume | Not provisioned (and must not be, in this mission) | **BLOCKED** |
-| Backup after every release, restore drill | Tooling implemented (`backup:v1`, `restore:v1`); no Assurance drill performed | **BLOCKED** until drilled |
+| Dedicated private Host with encrypted volume | ASSURE-OPS-02: engagement layout, a preflight that refuses shared stores, credential reuse, a public bind and an unencrypted volume (E13 detects BitLocker, dm-crypt, FileVault); two-customer isolation tested (`assure-ops-02-secure-customer-data.test.ts`). **No engagement Host is provisioned.** The development machine reports NOT_ENCRYPTED | **BLOCKED** until a real engagement volume passes E13 |
+| Backup after every release, restore drill | ASSURE-OPS-02: sealed (AES-256-GCM), engagement-bound backup; verify-by-restore; restore preserves custody and exports byte-identically; cross-customer restore refused. Synthetic drill only | **CONDITIONAL**: a drill on the real engagement Host, witnessed by SEC, is still required |
 | Incident process | Draft only (`OPERATOR_RUNBOOK.md` §16) | **BLOCKED** until adopted |
 
 Owner: OPS. Approval: FDR adopts the runbook and roles; SEC witnesses a
@@ -72,10 +72,10 @@ synthetic restore drill.
 | Item | Evidence | Result |
 | --- | --- | --- |
 | Consent and authority to provide evidence | Draft E only | BLOCKED |
-| Evidence artifact storage location | Undefined (`CUSTOMER_DATA_GOVERNANCE.md` §8) | BLOCKED |
+| Evidence artifact storage location | ASSURE-OPS-02: references and digests only in the Host; files stay with the customer, or go into `<root>/intake/` under the documented manual procedure, and are destroyed with the root | CONDITIONAL on D-05 (which option) |
 | Retention periods | Proposed values only (§10) | BLOCKED (D-04) |
-| Deletion | Process only; no per-customer purge (§11) | CONDITIONAL on one Host per customer |
-| Encryption at rest | Not provided by the store or the backup tool | BLOCKED until a process is adopted |
+| Deletion | ASSURE-OPS-02: gated engagement disposition (dry-run plan, digest-bound approval, certificate); custody stays append-only; key destruction and off-host copies are MANUAL. Tested on synthetic engagements only | CONDITIONAL on one Host per customer (D-08) and approved retention (D-04) |
+| Encryption at rest | ASSURE-OPS-02: backups sealed by the tool; stores, exports and temp files rely on platform volume encryption, which the preflight detects (it does not enforce it) | CONDITIONAL: procedural enforcement (preflight E13 PASS before start) |
 | Subprocessor inventory, cross-border position | Absent | BLOCKED (D-05) |
 | Report disclosure, log hygiene, tenant isolation | Implemented and tested | PASS |
 
@@ -152,8 +152,8 @@ Owner: FDR. Approval: a signed SOW and authorization for a named customer.
 | Gate | Status | Owner | Next action |
 | --- | --- | --- | --- |
 | G-TECH | CONDITIONAL | ENG / SEC | R-02, R-04, R-05 closed (ASSURE-OPS-01); accept B7/A10/static credentials under M2, or R-01/R-03 |
-| G-OPS | BLOCKED | OPS | Name operators; adopt the register; synthetic restore drill |
-| G-INFO | BLOCKED | LEG / OPS | Approve the policy; decide storage, retention, subprocessors |
+| G-OPS | BLOCKED | OPS | Name operators; adopt the register; provision an encrypted engagement Host that passes the OPS-02 preflight; real restore drill |
+| G-INFO | BLOCKED | LEG / OPS | Approve the policy; decide D-04 retention, D-05 evidence option and subprocessors (OPS-02 tooling in place) |
 | G-LEGAL | BLOCKED | LEG | Professional review of drafts |
 | G-FRAMEWORK | BLOCKED | GOV / FDR | D-01, D-02; then mission R-06 |
 | G-CUST | BLOCKED | FDR | Identify a founding customer; D-06 |

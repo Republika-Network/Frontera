@@ -36,6 +36,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { runBackup } from './backup-enterprise-v1.mjs';
 import { runRestore } from './restore-enterprise-v1.mjs';
@@ -231,7 +232,7 @@ async function main() {
   if (args.command === 'restore') console.log('Start the Host on the restored stores against the SURVIVING witness. If it refuses with AUTHORITY_FRESHNESS_ROLLBACK_DETECTED, this backup is older than the witnessed state: never reset or re-enroll the witness.');
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname);
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch((error) => {
     const known = error instanceof AuthorityPilotBackupError || error instanceof SealedBackupError;

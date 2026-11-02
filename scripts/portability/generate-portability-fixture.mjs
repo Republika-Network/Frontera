@@ -14,6 +14,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { loadEnterpriseModule, stableJsonStringify } from './lib-portability.mjs';
 import { targetStorePaths as registryTargetPaths } from './store-registry.mjs';
@@ -43,7 +44,7 @@ async function loadAuthorityFixture() {
   // The same generic, application-neutral authority fixture the runtime's own
   // durable-authority suite uses -- not a second, parallel fixture that could
   // drift from what the tests actually prove.
-  return import(resolve(new URL('../..', import.meta.url).pathname, 'dist/src/enterprise/kernel-authority/fixtures/durable-authority.fixture.js'));
+  return import(pathToFileURL(resolve(fileURLToPath(new URL('../..', import.meta.url)), 'dist/src/enterprise/kernel-authority/fixtures/durable-authority.fixture.js')).href);
 }
 
 async function loadTestSupport() {
@@ -52,7 +53,7 @@ async function loadTestSupport() {
   // Republic" world seeded in `datasys-enforcement.fixture.ts`) instead of
   // inventing a second decision-engine fixture -- see
   // `src/enterprise/__tests__/support.ts`.
-  return import(resolve(new URL('../..', import.meta.url).pathname, 'dist/src/enterprise/__tests__/support.js'));
+  return import(pathToFileURL(resolve(fileURLToPath(new URL('../..', import.meta.url)), 'dist/src/enterprise/__tests__/support.js')).href);
 }
 
 export async function generateFixture({ target }) {
@@ -263,7 +264,7 @@ async function main() {
   console.log(JSON.stringify(fixture, null, 2));
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname);
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch((error) => {
     console.error(`[fixture:portability:v1] ${error.message}`);

@@ -1,9 +1,15 @@
 # [DRAFT I] Engagement Closeout and Deletion Checklist
 
-> **DRAFT.** Process only: no purge tool exists. The Assurance Store has no
-> delete API and release custody is append-only, so deletion means destroying
-> the customer's dedicated store and its backups. Retention values are
+> **DRAFT.** The Assurance Store has no delete API and release custody is
+> append-only, so deletion means destroying the customer's dedicated
+> engagement environment (store included) and its backups. Retention values are
 > proposals (D-04).
+
+> **ASSURE-OPS-02:** sections B and C are supported by
+> `scripts/assurance/engagement-ops.mjs`. The dry-run `offboard` plan lists
+> every file under the engagement root; `offboard --execute` (approval bound
+> to the plan digest) deletes it and writes the certificate. Items marked
+> MANUAL there (key, off-host backups, credentials, volume) stay manual.
 
 ## A. At acceptance
 
