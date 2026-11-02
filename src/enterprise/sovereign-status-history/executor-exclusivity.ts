@@ -136,6 +136,26 @@ function installExitGuard(): void {
 }
 
 /**
+ * FV-P4C-2B3C-1 — how many exclusive connections this process has not closed cleanly (open, or retained
+ * after their lock was lost). Zero once every one was closed while held.
+ */
+export function exclusiveConnectionCount(): number {
+  return OPEN_EXCLUSIVE.size;
+}
+
+/**
+ * FV-P4C-2B3C-1 — whether this process may end normally: every exclusive connection it has not closed
+ * cleanly still has its lock confirmed held. `false` means that a normal exit's native cleanup could
+ * checkpoint into files another executor now owns, and the process must stop by `SIGKILL` instead.
+ */
+export function exclusiveConnectionsSafe(): boolean {
+  for (const entry of OPEN_EXCLUSIVE) {
+    if (!confirmExclusivelyHeld([entry.file])) return false;
+  }
+  return true;
+}
+
+/**
  * FV-P4C-2B3B (release review C1) — the only way an exclusive connection is closed. Registers it and
  * returns its close: the connection is closed only while this process holds its lock on `file`;
  * otherwise it is retained (strongly referenced, never closed), and the exit guard stops the process

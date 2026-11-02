@@ -6,8 +6,9 @@ route, CLI or startup path, reaches this composition. Structure tests pin this. 
 (B6). This increment does not activate anything.
 
 **Release status: not production-ready.** Before any activation:
-- **A dedicated FV executor process is REQUIRED (§5). It has not been implemented yet.** B3B does not
-  provide it.
+- **A dedicated FV executor process is REQUIRED (§5).** FV-P4C-2B3C-1 adds its runtime, lifecycle and
+  supervisor, non-operational (`FV_DEDICATED_EXECUTOR_LIFECYCLE.md`); the deployment isolation and the
+  identity-store ownership (B3C-3) it still needs are not implemented.
 - **The settlement guard and the AUTH-03 write are not atomic (§11, I3).**
 - **A compromised filesystem writer running as the same user (or root) is outside current
   protection (§8).**

@@ -4,6 +4,23 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2B3C-1 dedicated FV executor and supervised lifecycle (internal, not composed, not operational)
+- **A dedicated executor process** (`dedicated-executor.ts`, FV module only, not exported from its index): `runDedicatedFvExecutor` runs the B3B protected composition alone in a supervised child process. It refuses when not on Linux's main thread, when there is no supervisor IPC channel (it never runs in its caller's process), or when the process already does other work.
+  - A closed lifecycle relation, in which health only worsens in place: `CREATED → PREFLIGHT → ACQUIRING_EXCLUSIVITY → RECOVERING → READY_INACTIVE / DEGRADED / QUARANTINED`, plus `STOPPING / STOPPED / FAILED / EXECUTOR_AUTHORITY_LOST`.
+  - A lock watch that ends the process by `SIGKILL` on authority loss.
+  - A stronger termination contract: `process.exit` is wrapped and a fail-stop `exit` listener is prepended. This closes, for the dedicated process, B3B's earlier-exit-listener edge, with a demonstration.
+  - A stop awaits in-flight work, then performs a guarded close.
+- **A narrow IPC channel** (`dedicated-executor-protocol.ts`): exactly `status` and `stop`, size-bounded, with exact keys. Events and status carry codes and counts only: no bootstrap or reconcile command, no secret, capability, handle or path.
+- **A supervisor** (`dedicated-executor-supervisor.ts`):
+  - The pure contract `decideAfterExit`: requested stops never restart, an unclean stop blocks, non-retryable refusals block (and the executor parks, so no platform restart policy can storm), and crashes back off up to a limit.
+  - A Node child-process adapter that starts a fixed entry with `env: {}` and `execArgv: ['--disable-sigusr1']`, loads no `fs` or SQLite module, and clears its reported state on exit.
+  - It refuses duplicate instances. A block clears only on the operator's acknowledgement.
+- **The production entry** (`dedicated-executor-main.ts`) is inactive by construction: it composes nothing and reports `FAILED` / `DEPENDENCIES_UNAVAILABLE`.
+- **The PROD-02 persistence ownership contract** (`executor-persistence-contract.ts`), declarative: executor-owned stores; executor-mediated or cold snapshots, both deferred to B3C-2. The AUTH-03 identity store is named as **not owned**, an activation blocker until B3C-3.
+- **Tests:** 36 end-to-end tests with real processes and 6 structure tests; the structure-test import allowlist gains `node:child_process` for the supervisor only.
+- **Independent review:** an AI agent of the same model family, not a human. Fixed: M1 (SIGUSR1 inspector), L2, L3 and L4. Mitigated: L1. Recorded: M2 (identity-store ownership, B3C-3).
+- **Not included:** deployment wiring, B3C-2, B3C-3, B6, FV-P4D and FV-P5. **Operational activation: NO-GO.** See `docs/integration/FV_DEDICATED_EXECUTOR_LIFECYCLE.md`.
+
 ### Fixed / Added — ASSURE-OPS-01 Customer delivery and security hardening (R-02, R-04, R-05; not a commercial authorization)
 - **R-02 terminal review immutability.** A manual review of a `completed`, `failed` (including an inconclusive termination) or `superseded` assessment is refused with `409 ASSURANCE_ASSESSMENT_IMMUTABLE` (`reason: terminal_assessment`) and nothing is recorded. The service checks after authorization; every store re-checks inside the insert unit (SQLite: one `BEGIN IMMEDIATE` transaction), so a review racing a completion is refused. Existing reviews are untouched.
 - **R-04 reviewer references.** Reviewer ids are printed in delivered reports, so every configured Assurance reviewer credential (Host loader and every `createAssuranceReviewerAuthenticator`) must now be an opaque, lower-case ASCII token of at most 64 characters, joined by single `.`/`_`/`-`. That rules out emails, phone-like digit runs, whitespace and newlines, markup, paths, non-ASCII characters, the reserved `withheld-reviewer-` prefix and duplicates. **Configuration change:** a Host whose `assuranceReviewers` names such an id refuses to boot. A newly built report prints an unsafe id that a historical review already carries as a deterministic `withheld-reviewer-<16 hex>`; the stored review is not rewritten.
