@@ -21,6 +21,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { loadEnterpriseModule, stableJsonStringify } from './lib-portability.mjs';
 import { targetStorePaths } from './store-registry.mjs';
@@ -205,7 +206,7 @@ async function compareAssurance(enterprise, preStores, postStores, fixture) {
  * properties a disaster recovery actually has to preserve.
  */
 async function compareKernelAuthority(enterprise, preStores, postStores, fixture) {
-  const kernelModule = await import(resolve(new URL('../..', import.meta.url).pathname, 'dist/src/kernel/index.js'));
+  const kernelModule = await import(pathToFileURL(resolve(fileURLToPath(new URL('../..', import.meta.url)), 'dist/src/kernel/index.js')).href);
   const expected = fixture.record.kernelAuthority;
   const context = { system: true };
 
@@ -307,7 +308,7 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname);
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch((error) => {
     console.error(`[compare:portability:v1] ${error.message}`);

@@ -28,6 +28,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /** The coverage model a PROD-02 manifest carries. A restore refuses any other value (an unknown, newer model fails closed). */
 export const COVERAGE_MODEL = 'aoc.enterprise.backup.coverage.v1';
@@ -753,7 +754,7 @@ export async function loadRegistryModules(repoRoot) {
   const dist = (path) => resolve(repoRoot, 'dist/src', path);
   const required = (path) => {
     if (!existsSync(dist(path))) throw new Error(`Built output not found at ${dist(path)}. Run "npm run build" before using the portability tooling.`);
-    return import(dist(path));
+    return import(pathToFileURL(dist(path)).href);
   };
   cachedModules = {
     enterprise: await required('enterprise/index.js'),

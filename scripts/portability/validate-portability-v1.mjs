@@ -14,6 +14,7 @@
 
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, cpSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 
@@ -240,7 +241,7 @@ async function main() {
   console.log(JSON.stringify({ result: report.result, steps: report.steps.map((s) => ({ name: s.name, status: s.status, durationMs: s.durationMs })) }, null, 2));
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname);
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch(() => {
     process.exitCode = 1;

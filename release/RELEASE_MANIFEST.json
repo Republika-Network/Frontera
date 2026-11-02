@@ -114,7 +114,7 @@
       },
       {
         "path": "scripts/portability/backup-enterprise-v1.mjs",
-        "checksum": "sha256:f339ac1f780715b56e8bb7cf06f80ea366998517d5270b49b7cd6c6c01fd2202"
+        "checksum": "sha256:648e7ed45af4e31f96a428ee800927387dc6fc90cf92dc8de0139d2ceafe2d71"
       },
       {
         "path": "scripts/portability/check-portability-smoke.mjs",
@@ -122,23 +122,23 @@
       },
       {
         "path": "scripts/portability/compare-portability-state.mjs",
-        "checksum": "sha256:59b6d1d7bf05a2a8b3594f94635560592c34250200601f9ec71fe6c0dddf7acf"
+        "checksum": "sha256:303aade8278a38113650cce4965265710ee5b1ee930d20eb4b7e3305135fa929"
       },
       {
         "path": "scripts/portability/generate-portability-fixture.mjs",
-        "checksum": "sha256:2bf350f28db3f8a1cd1fecb06e7fb7a246616cffb0256c7833d7f090f6e29227"
+        "checksum": "sha256:ace268e6f900e6f9c611d980d70564c8f9469bc151c9ee51cdcd4c733a41cbb9"
       },
       {
         "path": "scripts/portability/lib-portability.mjs",
-        "checksum": "sha256:2e50c2237b240210bb0df96d6298e28131fbe8ab138ff33aeb72304ed911f97b"
+        "checksum": "sha256:3a6d166d927ff6d8dc49e83995756c5222b4a90de8af2cdea4e520fd0b5a1559"
       },
       {
         "path": "scripts/portability/restore-enterprise-v1.mjs",
-        "checksum": "sha256:732da5bd1da447d1e6afa1fd06befc16737afd82cc5b2e1bbfd9985484f1ba9c"
+        "checksum": "sha256:8b5d94e041a88772df0d299c83fca4f27b2c42b0a120029aa4effdc7bf80ab67"
       },
       {
         "path": "scripts/portability/validate-portability-v1.mjs",
-        "checksum": "sha256:a2ec3d783ecde9cc9872f3d30505dfa9efe342ce5da85d4921ef359d0743bd13"
+        "checksum": "sha256:fd308e979d547f6817d299881cde34e5880e3e24e83f49f6b74a92fe07a95074"
       }
     ]
   }
