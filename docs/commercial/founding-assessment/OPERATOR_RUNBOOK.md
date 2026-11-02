@@ -39,9 +39,11 @@
 3. [IMPL] Add `{ reviewerId, roles, apiKeyEnv }` to `assuranceReviewers` in the
    governed-action file (`AOC_ENTERPRISE_GOVERNED_ACTIONS_FILE`). Inline
    secrets are refused. Duplicate secrets refuse boot.
-4. [PROC] `reviewerId` is a role-style identifier (for example
-   `rn-reviewer-01`), **never an email or name**. It appears verbatim in the
-   report. (Not validated by the Host — backlog R-04.)
+4. [IMPL] `reviewerId` must be a safe public reference: lower-case ASCII
+   letters and digits joined by single `.`, `_` or `-`, ≤ 64 characters, no
+   ≥ 7-digit run, not `withheld-reviewer-…`, unique. The Host refuses to boot
+   otherwise (ASSURE-OPS-01, R-04). [PROC] Use a role-style reference such as
+   `rn-reviewer-01`, never a name: the Host cannot detect a well-formed name.
 5. [IMPL] Restart the Host. Rotation and revocation are the same procedure:
    edit, then restart. A revoked credential authenticates no one.
 
@@ -121,8 +123,9 @@ Follow REL-01B §15 exactly:
 2. [IMPL] On `409 ASSURANCE_ASSESSMENT_CONFLICT` (`concurrent_modification`),
    re-read and retry. Nothing was written.
 3. [IMPL] `POST /api/assurance/assessments/{id}/verify` (R or A).
-4. [PROC] **No reviews after completion.** The service still accepts them
-   (PILOT-01 known limitation; backlog R-02).
+4. [IMPL] **No reviews after completion.** A review of a completed, failed or
+   superseded assessment is refused (`409 ASSURANCE_ASSESSMENT_IMMUTABLE`,
+   `reason: terminal_assessment`) and nothing is recorded (ASSURE-OPS-01, R-02).
 
 ## 10. Draft inspection
 
@@ -157,13 +160,18 @@ Follow REL-01B §15 exactly:
 
 1. [IMPL] `GET /api/assurance/commercial-releases/{reportId}` (R or A) ·
    SDK `getCommercialRelease`. `GET …/{id}/commercial-releases` lists them.
-2. [PROC] Assemble the package files (`SERVICE_SPECIFICATION.md` §12). The
-   assembly procedure used today is the synthetic exporter in
-   `src/enterprise/__tests__/assure-pilot-01-scenario.ts`
-   (`scripts/assurance/run-pilot-01-dry-run.mjs`). **No supported operator
-   export command exists** for a real assessment — [PLANNED] backlog R-05.
-3. [PROC] Write files byte-exact, LF line endings. On Windows, never let
-   `core.autocrlf` or an editor touch `report.md`. Archive the package.
+2. [IMPL] Export the package from custody (ASSURE-OPS-01, R-05):
+   `GET /api/assurance/commercial-releases/{reportId}/package` (R or A) · SDK
+   `exportCommercialReleasePackage`. Save the JSON body as `export.json`. It
+   contains the full report, so treat it as customer-confidential. The Host
+   verifies the bytes against custody before answering. `409
+   ASSURANCE_RELEASE_NOT_EXPORTABLE` (`artifacts_not_in_custody`) means a
+   release kept before this feature: re-deliver the original package.
+   `500 ASSURANCE_INTEGRITY_FAILED` means stop and escalate (§16).
+3. [IMPL] `node scripts/assurance/materialize-commercial-package.mjs export.json --out <empty-dir>`
+   writes the six files byte-exact, from the closed file set only. Then delete
+   `export.json`. On Windows, never let `core.autocrlf` or an editor touch
+   `report.md`. Archive the directory.
 4. [IMPL] Before sending, run the offline verifier:
    `node scripts/assurance/verify-commercial-package.mjs <package-dir>`
    (add `--renderer dist/src/enterprise/assurance/commercial-report-markdown.js`
@@ -232,10 +240,10 @@ Customer and regulator notifications follow `CUSTOMER_DATA_GOVERNANCE.md` §12
 | Credentials, reviewer-only mode, framework opt-in | IMPL (issuance, register and storage are PROC) |
 | Create, evidence, review, terminate, reassess, evaluate, verify | IMPL |
 | Draft, release into custody, list, get, verify a release | IMPL |
-| Package export for a real assessment | **PLANNED (R-05)**; synthetic exporter only |
+| Package export for a real assessment | IMPL (ASSURE-OPS-01): export route, SDK method, materialiser CLI |
 | Offline package verifier | IMPL |
 | Backup, restore | IMPL (encryption PROC) |
 | Customer offboarding and deletion | PROC (no purge tool) |
-| Refusing reviews after completion | **PLANNED (R-02)** |
-| Reviewer-ID format validation | **PLANNED (R-04)** |
+| Refusing reviews after completion | IMPL (ASSURE-OPS-01) |
+| Reviewer-ID format validation | IMPL (ASSURE-OPS-01); names in well-formed tokens: PROC |
 | Signed releases | **PLANNED (R-01)** |

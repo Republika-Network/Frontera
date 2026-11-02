@@ -446,6 +446,17 @@ Removing only the in-transaction check is **not** equivalent. The primary key
 turns the race into a store failure instead of returning the kept release, and
 R05 detects it.
 
+## 16a. Custody v2 (ASSURE-OPS-01)
+
+Releases committed since ASSURE-OPS-01 are kept as
+`aoc.assurance.commercial-release-custody.v2`. The record is v1 plus the
+approved `artifacts: { content, markdown }`, covered by `recordDigest`, in the
+same table and column (no DDL change). Every read checks them against the
+manifest and release with `verifyCommercialReport`. v1 records stay valid and
+verifiable. Only v2 releases can be exported
+(`docs/security/ASSURE-OPS-01-CUSTOMER-DELIVERY-HARDENING.md` §6). A10 applies
+to v2 unchanged.
+
 ## 17. Operation
 
 - **Release:** `releaseCommercialReport` as before. Read `custody.outcome`: a

@@ -275,10 +275,12 @@ none of the commercial-use blockers below.
 4. ~~Give contradicted controls a way out (F02).~~ Done in ASSURE-REL-01B, by
    explicit termination of the attempt and a linked new attempt. A review
    still never concludes a contradicted control.
-5. Refuse manual reviews on terminal assessments.
+5. ~~Refuse manual reviews on terminal assessments.~~ Done in ASSURE-OPS-01
+   (R-02); the pinned KNOWN LIMITATION test is inverted to RESOLVED.
 6. ~~Reword the released Markdown's banner (F03).~~ Done in ASSURE-REL-01C
    (generator v2).
-7. Validate in the Host configuration that reviewer IDs are not emails.
+7. ~~Validate in the Host configuration that reviewer IDs are not emails.~~
+   Done in ASSURE-OPS-01 (R-04): safe public reviewer references only.
 8. Take the governance decision on `commercialUse: restricted`.
 
 ## 8. Provenance of this material

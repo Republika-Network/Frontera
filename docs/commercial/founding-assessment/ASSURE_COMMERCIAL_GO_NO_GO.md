@@ -2,8 +2,9 @@
 
 > **FINAL COMMERCIAL DECISION: NO-GO.**
 >
-> **STATUS: DRAFT (ASSURE-REL-01E).** This gate is the default state on
-> baseline `5012246c`, 2026-11-01. It changes only through §4. A technical
+> **STATUS: DRAFT (ASSURE-REL-01E; technical rows updated by ASSURE-OPS-01).**
+> This gate was set on baseline `5012246c`, 2026-11-01. ASSURE-OPS-01 closed
+> technical gaps R-02, R-04 and R-05 only. It changes only through §4. A technical
 > PASS never produces a commercial GO. Tests passing are not authorization.
 
 ## 1. Rules
@@ -40,14 +41,13 @@
 | Independent package verifier on a synthetic package | This mission: verdict `PASS (…); external authenticity NOT DEMONSTRATED` | PASS — authenticity not demonstrated |
 | SEC-01A/C/E, REL-01B, verification suites | This mission: 114/114 | PASS |
 | External authenticity of releases (B7) | No signature or timestamp; A10 pinned as known limitation | **OPEN** |
-| Supported package export for real assessments | Exporter exists only in test code | **GAP (R-05)** |
-| Reviews refused after completion | Pinned KNOWN LIMITATION | **GAP (R-02)** |
-| Reviewer-ID format (no emails) | Not validated | **GAP (R-04)** |
+| Supported package export for real assessments | ASSURE-OPS-01: `GET /api/assurance/commercial-releases/{reportId}/package` from custody v2, verified before return; `materialize-commercial-package.mjs`; Host pilot exports, restarts, re-exports byte-identically and passes the independent verifier (`assure-ops-01-customer-export.test.ts`, `assure-rel-01d-host-pilot.test.ts`) | **CLOSED (R-05)**. Releases kept before ASSURE-OPS-01 are not exportable (by design) |
+| Reviews refused after completion | ASSURE-OPS-01: refused at service and store (atomic with the insert); race on two connections tested (`assure-ops-01-terminal-review.test.ts`) | **CLOSED (R-02)** |
+| Reviewer-ID format (no emails) | ASSURE-OPS-01: safe-reference policy at Host loader and every authenticator; unsafe historical ids withheld in new reports (`assure-ops-01-reviewer-privacy.test.ts`) | **CLOSED (R-04)**. Names in well-formed tokens remain procedural |
 
-Conditions to reach usable CONDITIONAL: R-05 delivered **or** a reviewed manual
-export procedure approved by SEC; B7 residual accepted under D-03.
-Owner: ENG (fixes), SEC (acceptance). Corrective action: backlog R-01, R-02,
-R-04, R-05.
+Remaining conditions for G-TECH: acceptance of B7 (no signature), A10
+(issuer-controlled custody) and static bearer credentials under M2/D-03, or
+R-01/R-03 first. Owner: SEC (acceptance), ENG (R-01, R-03).
 
 ### G-OPS — Operational readiness
 
@@ -151,7 +151,7 @@ Owner: FDR. Approval: a signed SOW and authorization for a named customer.
 
 | Gate | Status | Owner | Next action |
 | --- | --- | --- | --- |
-| G-TECH | CONDITIONAL | ENG / SEC | R-05 export, R-02, R-04; accept B7 under M2 |
+| G-TECH | CONDITIONAL | ENG / SEC | R-02, R-04, R-05 closed (ASSURE-OPS-01); accept B7/A10/static credentials under M2, or R-01/R-03 |
 | G-OPS | BLOCKED | OPS | Name operators; adopt the register; synthetic restore drill |
 | G-INFO | BLOCKED | LEG / OPS | Approve the policy; decide storage, retention, subprocessors |
 | G-LEGAL | BLOCKED | LEG | Professional review of drafts |

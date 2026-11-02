@@ -10,8 +10,13 @@
 | `report.json` | Canonical content | `contentDigest` |
 | `integrity-manifest.json` | Binds assessment, framework, generator, content and Markdown digests | `manifestDigest` |
 | `release-record.json` | The independent approval | Republika's custody (authoritative) |
-| `limitations.md` | Extract of the limitations | Re-extraction from `report.json` |
-| `verification-instructions.md` | How to verify | Informational |
+| `limitations.md` | Extract of the limitations | Re-extraction from `report.json` (informational; covered by no digest) |
+| `verification-instructions.md` | How to verify | Informational; covered by no digest |
+
+The first four files are integrity-bound to the release. The last two are
+delivery companions and were not part of what the approver approved. The
+package is produced by the supported export from the issuer's custody
+(ASSURE-OPS-01).
 
 ## Republika pre-delivery checklist (internal)
 
@@ -24,6 +29,7 @@
 - [ ] Offline verifier PASS on files, integrity and consistency.
 - [ ] Authoritative verification `RELEASE_MATCHES_AUTHORITY`.
 - [ ] Cold backup taken after the release.
+- [ ] Package exported from custody (`GET …/commercial-releases/{reportId}/package`) and materialised with `materialize-commercial-package.mjs`; `export.json` deleted.
 - [ ] Package archived with LF line endings, byte-exact.
 
 ## Customer acceptance checklist

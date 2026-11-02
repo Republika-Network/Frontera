@@ -85,6 +85,7 @@ reviewer-attributed).
 | List releases | `GET …/{id}/commercial-releases` | ✅ | ✅ | 401 | 401 | `listCommercialReleases` |
 | Read a release | `GET /api/assurance/commercial-releases/{reportId}` | ✅ | ✅ | 401 | 401 | `getCommercialRelease` |
 | Verify a package | `POST /api/assurance/commercial-releases/verify` | ✅ | ✅ | 401 | 401 | `verifyCommercialRelease` |
+| Export a package (ASSURE-OPS-01) | `GET /api/assurance/commercial-releases/{reportId}/package` | ✅ | ✅ | 401 | 401 | `exportCommercialReleasePackage` |
 
 "Reviewer-only" is `AOC_ENTERPRISE_ASSURANCE_REVIEWER_ONLY=true`, which also
 refuses `K`/`S` on finding events, signals and reassessment. Without it the v1
@@ -231,7 +232,7 @@ the machine, and keep each secret with exactly one person.
 | No external signature or timestamp on releases; a store writer can rewrite custody undetected (REL-01A A10) | Unchanged; customers confirm digests over an independent channel |
 | Manual evidence is never authenticated (SEC-01C) | Unchanged |
 | `commercialUse: restricted` and its nine framework blockers | Unchanged; needs a governance decision and a new framework version |
-| No customer self-service retrieval or portal | Out of scope; delivery is the package plus the independent verifier |
+| No customer self-service retrieval or portal | Out of scope; delivery is the package plus the independent verifier. The package is exported from custody since ASSURE-OPS-01 (`docs/security/ASSURE-OPS-01-CUSTOMER-DELIVERY-HARDENING.md`) |
 | Evidence submission is attributed in the audit log, not in the stored assessment | The assessment records the requester and every review, ending and release; who submitted an evidence set is in `enterprise.assurance.operator` only |
 | The v1 organization-key path stays available unless reviewer-only mode is on | Set reviewer-only on a Founding Assessment Host |
 | Over the 1 MiB bound the shared body reader drops the connection after answering `400` | Existing Host behaviour, unchanged |
