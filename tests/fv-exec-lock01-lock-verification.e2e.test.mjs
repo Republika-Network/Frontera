@@ -90,21 +90,26 @@ describe('FV-EXEC-LOCK-01 — lock verification without false negatives, and wit
     const dir = directory();
     const paths = [0, 1, 2].map((i) => join(dir, `held-${String(i)}.sqlite`));
     for (const path of paths) holdExclusive(path);
-    const stop = await churn(dir, 8, 70);
+    const stop = await churn(dir, 6, 60);
     try {
       let observations = 0;
       let missed = 0;
+      let oldSamples = 0;
       let oldMissed = 0;
-      const end = Date.now() + 15_000;
-      while (Date.now() < end) {
+      // Bounded by count and by time (a loaded CI runner is slower); the slow old reading is sampled only.
+      const end = Date.now() + 30_000;
+      while (Date.now() < end && observations < 2_000) {
         observations += 1;
         if (!confirmExclusivelyHeld(paths)) missed += 1;
-        if (!paths.every(heldInProcLocks)) oldMissed += 1;
+        if (observations % 10 === 0) {
+          oldSamples += 1;
+          if (!paths.every(heldInProcLocks)) oldMissed += 1;
+        }
       }
-      assert.ok(observations > 500, String(observations));
+      // Diagnostic first, so a failing run still records it (the old reading's misses depend on load: not asserted).
+      process.stdout.write(`# FV-EXEC-LOCK-01 observations=${String(observations)} newMisses=${String(missed)} oldProcLocksSamples=${String(oldSamples)} oldProcLocksMisses=${String(oldMissed)}\n`);
       assert.equal(missed, 0, `${String(missed)} false negatives in ${String(observations)} observations`);
-      // Diagnostic only (not asserted: it depends on the machine's load): how often the replaced reading missed.
-      process.stdout.write(`# FV-EXEC-LOCK-01 observations=${String(observations)} newMisses=${String(missed)} oldProcLocksMisses=${String(oldMissed)}\n`);
+      assert.ok(observations >= 200, `too few observations to mean anything: ${String(observations)}`);
       // The locks were genuinely held throughout: another process cannot take them.
       assert.equal(anotherProcessCanTake(paths[0]), false);
     } finally {
@@ -119,7 +124,17 @@ describe('FV-EXEC-LOCK-01 — lock verification without false negatives, and wit
     const kid = spawn(process.execPath, ['-e', `const D=require(${JSON.stringify(SQLITE)});const d=new D(process.argv[1]);d.pragma('locking_mode = EXCLUSIVE');d.exec('BEGIN EXCLUSIVE; CREATE TABLE t(x); COMMIT');process.stdout.write('up\\n');setInterval(()=>{},1000);`, foreign], { stdio: ['ignore', 'pipe', 'ignore'] });
     kids.add(kid);
     await new Promise((done) => kid.stdout.once('data', done));
-    assert.equal(confirmExclusivelyHeld([foreign]), false, 'another process holds it');
+    // Publication review (Low): this process holds its own descriptor on that file, so the descriptor, fstat and
+    // fdinfo path is exercised for an inode another process has locked. (Closing it drops only this process's
+    // locks on the file, of which there are none.)
+    const ours = openSync(foreign, 'r');
+    try {
+      assert.equal(readFileSync(`/proc/self/fdinfo/${String(ours)}`, 'utf8').includes('lock:'), false, 'no lock line of ours');
+      assert.equal(confirmExclusivelyHeld([foreign]), false, 'another process holds it');
+    } finally {
+      closeSync(ours);
+    }
+    assert.equal(confirmExclusivelyHeld([foreign]), false, 'another process holds it, with no descriptor of ours either');
     // A SHARED lock (a read transaction, rollback journal, normal locking): a POSIX read lock, not exclusivity.
     const shared = join(dir, 'shared.sqlite');
     const reader = new Database(shared);

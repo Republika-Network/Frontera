@@ -105,8 +105,10 @@ held file. So "held at the snapshot" means "held at the write".
 
 ## 6. Tests
 - **New** `tests/fv-exec-lock01-lock-verification.e2e.test.mjs` (10 tests, real processes):
-  - 0 false negatives over every observation for 15 s under heavy churn (the old method's misses are
-    printed as a diagnostic, not asserted);
+  - 0 false negatives over 2,000 observations (at most 30 s) under heavy churn, with at least 200 required.
+    The old method is sampled every 10th observation and its misses printed first, as a diagnostic, not
+    asserted. PR #259's first CI run failed this test's original fixed-time floor (267 observations in 15 s
+    on a loaded runner), not its false-negative assertion; the floor is now count- and time-bounded;
   - another process's lock, a SHARED read lock, a single-byte RESERVED lock, unlocked, missing and
     non-file paths are all refused;
   - WAL and rollback-journal exclusive locks are both recognized;
