@@ -4,6 +4,28 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Changed — FV-P4C-2B3C-3 single AUTH-03 identity ownership and fenced settlement (internal, not composed, not operational)
+- **One owner per AUTH-03 identity store.** The protected FV composition no longer accepts an identity store handed in, already open. It opens its **own** bootstrap identity store (`identity: { storePath, storeId, authenticity, freshness?, relyingParty, operatorIds }`):
+  - the store must pass the FV filesystem policy and be its own file (not the protected store, not a history, by name or by `dev:ino`);
+  - it is pinned by store id: another store at the path (AUTH-04A's, a copy or a replacement), even one signed by the same key, is refused with `IDENTITY_REFUSED`;
+  - it is held exclusively for the composition's lifetime, and a store held by a still-living executor gives `EXECUTOR_HELD`.
+  - AUTH-04A keeps sole ownership of the Host store and is unchanged.
+- **AUTH-03 store, opt-in `exclusive` option** (`sqlite-human-identity-store.ts`):
+  - SQLite `locking_mode = EXCLUSIVE`, with the lock taken at open;
+  - the owner's pin is checked before any open-time write or CORE-07 contact;
+  - every write is fenced synchronously first: genesis, re-signing, challenges, and each chained append, both before the witness `prepare` and inside the write transaction;
+  - the connection closes only through the owner's guarded closer.
+  - Without the option, the store behaves exactly as before.
+- **The B3B I3 window is closed:** the settlement write is fenced inside the identity owner's own transaction (the identity lock, the protected-store lock and executor authority), so a lock lost after the FV settlement guard passed records nothing. Losing the identity lock alone also makes the composition `executor-lost`.
+- **No CORE-07 enrollment from the composition.** Review M1: the `human-identity-state` witness slot is one per organization, so the FV store must have a witness of its own before activation. This is a new activation blocker; CORE-07 is unchanged.
+- **Persistence contract:** the bootstrap identity store is executor-owned, and AUTH-04A's store is never opened by the executor. This closes B3C-1's M2.
+- **Tests:**
+  - a new e2e suite with real processes and a real CORE-07 witness, plus a new structure test;
+  - the B3B and B3C-1 suites are updated to the executor-owned store (the B3B child observes the store at its module export, test-only);
+  - the AUTH-03 composer structure test now pins one exclusive open of its own store.
+- **Independent review:** an AI agent of the same model family, not a human. M1 is mitigated fail-closed and recorded as a blocker; L1, L2, L3 and one Info item are fixed. See `docs/integration/FV_AUTH03_IDENTITY_OWNERSHIP.md`.
+- **Not included:** B3C-2, B6, FV-P4D, FV-P5, any deployment. **Operational activation: NO-GO.**
+
 ### Added — FV-P4C-2B3C-1 dedicated FV executor and supervised lifecycle (internal, not composed, not operational)
 - **A dedicated executor process** (`dedicated-executor.ts`, FV module only, not exported from its index): `runDedicatedFvExecutor` runs the B3B protected composition alone in a supervised child process. It refuses when not on Linux's main thread, when there is no supervisor IPC channel (it never runs in its caller's process), or when the process already does other work.
   - A closed lifecycle relation, in which health only worsens in place: `CREATED → PREFLIGHT → ACQUIRING_EXCLUSIVITY → RECOVERING → READY_INACTIVE / DEGRADED / QUARANTINED`, plus `STOPPING / STOPPED / FAILED / EXECUTOR_AUTHORITY_LOST`.

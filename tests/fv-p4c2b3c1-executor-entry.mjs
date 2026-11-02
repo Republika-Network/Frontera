@@ -35,24 +35,18 @@ if (job.reportLaunch) {
 }
 
 const { runDedicatedFvExecutorOrRefuse } = await import('../dist/src/enterprise/sovereign-status-history/dedicated-executor.js');
-const { compose, makeClock, openIdentity, pathsOf } = await import('./fv-p4c2b3b-support.mjs');
+const { compose, makeClock, pathsOf } = await import('./fv-p4c2b3b-support.mjs');
 
 const paths = pathsOf(job.dir);
 const dropLock = () => closeSync(openSync(paths.protectedStore, 'r'));
 const clock = makeClock(job.at);
 
 const composeHere = async () => {
-  const identity = await openIdentity(job.dir, clock);
   const world = { paths, namespaces: job.namespaces };
   const overrides = { statusSource: undefined };
   if (Array.isArray(job.histories)) overrides.configuration = () => ({ generation: 1, histories: job.histories });
-  let host;
-  try {
-    host = await compose(world, identity, clock, overrides);
-  } catch (error) {
-    identity.close();
-    throw error;
-  }
+  // B3C-3: the composition opens and exclusively holds its own bootstrap identity store.
+  const host = await compose(world, clock, overrides);
   if (job.slowReconcileMs === undefined) return host;
   // Only the timing of reconciliation changes: the runtime sees the same three methods it uses.
   return {
@@ -87,6 +81,8 @@ function fire() {
   if (job.fault === 'rejection') void Promise.reject(new Error('synthetic rejection'));
   if (job.fault === 'exit-nonzero') process.exit(9);
   if (job.fault === 'drop-lock') dropLock();
+  // B3C-3: every lock of the process (protected store, histories and its bootstrap identity store).
+  if (job.fault === 'drop-all-locks') for (const path of [paths.protectedStore, ...job.namespaces.map((n) => paths.history(n)), paths.identity]) closeSync(openSync(path, 'r'));
   // A history's lock only (publication review M): the protected store stays held.
   if (job.fault === 'drop-history-lock') closeSync(openSync(paths.history(job.namespaces[0]), 'r'));
   if (job.fault === 'reexit') {

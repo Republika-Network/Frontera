@@ -43,7 +43,7 @@ flowchart LR
   Exec -- "lifecycle / status: codes and counts" --> Sup
   Comp -- "exclusive lock" --> PS[("Protected continuity and intent store")]
   Comp -- "exclusive lock, per namespace" --> H[("FV status histories")]
-  Comp -. "shared, NOT owned (B3C-3)" .-> ID[("AUTH-03 identity store")]
+  Comp -- "exclusive lock, pinned (B3C-3)" --> ID[("FV bootstrap identity store")]
   Host -. "opens today (AUTH-04A)" .-> ID
   Src["Trusted status source (B6)<br/>absent"] -. "none" .-> Comp
   BR["Future backup/restore controller (B3C-2)"] -. "snapshot request via supervisor only" .-> Sup
@@ -267,7 +267,7 @@ So neither is allowed, and the registry names no FV store today (a structure tes
 
 | Question | Answer |
 |---|---|
-| Who owns each database? | The executor owns the protected store (records, intent journal, epoch) and every history, with their `-wal`. **The AUTH-03 identity store is not owned** (see below). |
+| Who owns each database? | The executor owns the protected store (records, intent journal, epoch), every history and, since B3C-3, its own bootstrap identity store, each with its `-wal`. AUTH-04A's Host identity store is never opened by the executor (see below). |
 | How is a consistent snapshot requested? | **Executor-mediated:** the supervisor asks; the executor confirms its locks, fences, and runs SQLite's backup API from its own held connection into a configured output directory, reporting schema identity, epoch, counts and SHA-256. Or **cold:** stop the executor (`STOPPED`), keep the supervisor stopped, copy, then start. Both are **deferred to B3C-2**. |
 | When may a database be read? | By the executor at any time; by anyone else only when the executor is `STOPPED` and its supervisor is held stopped. |
 | Where may backup output go? | A directory configured for the backup controller, outside the executor's data directory, never overlapping an executor file. |
@@ -275,10 +275,10 @@ So neither is allowed, and the registry names no FV store today (a structure tes
 | What is never allowed while the executor runs? | Opening, probing, copying or checksumming an executor file or its `-wal` from inside the executor's process; opening it from another process in a retry loop; byte-copying a live file; deleting, renaming or replacing a file; restoring over it. |
 | What about restore? | It is never promoted automatically. A restored set starts quarantined until the operator ceremony (B3C-2). A whole-system rollback remains undetectable without FV-P4D. |
 
-**The identity store is not owned (review M2).** The executor's composition uses the AUTH-03 identity
-store, but does **not** own or lock it. Any process of the same user can open it and issue
-bootstrap-authority challenges for the identities the executor relies on. The contract names it under
-`notOwned` as an **activation blocker until B3C-3**.
+**Review M2, closed by FV-P4C-2B3C-3** (`FV_AUTH03_IDENTITY_OWNERSHIP.md`). The executor now opens and
+exclusively holds its **own** bootstrap identity store, pinned by store id. AUTH-04A's Host store has
+AUTH-04A as its one owner, and the contract lists it as never opened by the executor. A new blocker
+remains from that increment's review: the FV store needs a CORE-07 witness slot of its own.
 
 ## 10. AUTH-03 identity lifecycle (plan for B3C-3)
 
@@ -331,7 +331,8 @@ These are inherited from B3B and exercised through the process boundary:
   volume, nothing else running in it) is a deployment requirement for activation, and is not implemented.
 - **Visible arguments.** The protected store's path is visible in the executor's argv
   (`/proc/<pid>/cmdline`). It never crosses IPC.
-- **Not atomic.** The settlement guard and the AUTH-03 write are not atomic (B3B I3).
+- **Atomic since B3C-3.** The settlement write is now fenced inside the identity owner's own write
+  transaction (`FV_AUTH03_IDENTITY_OWNERSHIP.md` §5). The B3B I3 window is closed on the main thread.
 - **Whole-system rollback** detection is FV-P4D's.
 
 ## 13. Security review and test evidence
@@ -387,7 +388,7 @@ state (for example `READY_INACTIVE`) through the backoff. Fixed: the state is cl
   - PROD-02 registration;
   - executor-mediated or cold snapshot, and restore into quarantine;
   - operator ceremonies for quarantined intents and lost executors.
-- **B3C-3:** a single owner of the AUTH-03 identity store and the bootstrap-settlement capability (§10).
+- **B3C-3: done** (`FV_AUTH03_IDENTITY_OWNERSHIP.md`), except its CORE-07 witness-slot prerequisite.
 - **Deployment isolation:** its own container or unit and volume, and the supervisor's platform adapter.
 - **B6:** a trusted issuer-currentness source.
 - **FV-P4D:** an independent continuity witness.

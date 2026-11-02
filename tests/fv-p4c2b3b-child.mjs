@@ -18,6 +18,9 @@
 //   `completeIntent`), after the post-settle lock check passed: the strictest timing for I2.
 // - `reconcile-loss`: a bootstrap whose source refuses (decisions consumed, nothing committed), the grace
 //   bound passed, then `reconcile()`, with the lock dropped right after its authority check (I3).
+// - `identity-loss` (B3C-3): only the bootstrap identity store's lock dropped; then a challenge and a bootstrap.
+// - `settle-race` (B3C-3): the same, but the lock is dropped right after the FV settlement guard has passed,
+//   before the AUTH-03 identity-store write: only the store's own in-transaction fence can refuse it now.
 // These last modes end with a normal `process.exit(0)`: the exit guard must stop the process (SIGKILL)
 // before a lost connection can checkpoint into files it no longer owns.
 // Every report is one JSON line on stdout.
@@ -27,7 +30,8 @@ import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 
 import { confirmExclusivelyHeld } from '../dist/src/enterprise/sovereign-status-history/executor-exclusivity.js';
-import { compose, makeClock, openIdentity, pathsOf } from './fv-p4c2b3b-support.mjs';
+import { bootstrapAuthorityDecisionInput } from '../dist/src/enterprise/sovereign-status-history/index.js';
+import { bindingOf, compose, makeClock, pathsOf } from './fv-p4c2b3b-support.mjs';
 
 const job = JSON.parse(process.argv[2]);
 const paths = pathsOf(job.dir);
@@ -35,7 +39,7 @@ const dropProtectedLock = () => closeSync(openSync(paths.protectedStore, 'r'));
 /** Which fenced durable write a fence read belongs to, from its call stack. */
 const writeOf = (stack) => (/\bbeginIntent\b/.test(stack) ? 'beginIntent' : /\bcompareAndSetWithEvidence\b/.test(stack) ? 'commit' : /\bcompleteIntent\b/.test(stack) ? 'completeIntent' : /\.save\b|\bsave \(/.test(stack) ? 'save' : undefined);
 let armedReconcile = false;
-if (job.mode === 'drop-at' || job.mode === 'reconcile-loss') {
+if (job.mode === 'drop-at' || job.mode === 'reconcile-loss' || job.mode === 'settle-race') {
   const fs = createRequire(import.meta.url)('node:fs');
   const read = fs.readFileSync;
   let dropped = false;
@@ -44,6 +48,12 @@ if (job.mode === 'drop-at' || job.mode === 'reconcile-loss') {
       if (job.mode === 'drop-at' && writeOf(new Error().stack ?? '') === job.dropAt) {
         dropped = true;
         dropProtectedLock();
+      } else if (job.mode === 'settle-race' && armedReconcile && /\bsettlementGuard\b/.test(new Error().stack ?? '')) {
+        // B3C-3: the FV settlement guard reads, and passes; the lock is lost right after, before the AUTH-03 write.
+        const out = read.apply(this, args);
+        dropped = true;
+        dropProtectedLock();
+        return out;
       } else if (job.mode === 'reconcile-loss' && armedReconcile) {
         // The authority check at reconcile() start reads first, and passes; the lock is lost right after.
         const out = read.apply(this, args);
@@ -64,7 +74,16 @@ const die = () => {
 };
 
 const clock = makeClock(job.at);
-let identityStore = await openIdentity(job.dir, clock);
+// FV-P4C-2B3C-3: the composition opens its own bootstrap identity store. This test harness observes the
+// store it opened (and, for the consumption crash points, wraps it) at the store module's export.
+const storeModule = createRequire(import.meta.url)('../dist/src/enterprise/human-identity/sqlite-human-identity-store.js');
+const realOpen = storeModule.openSqliteHumanIdentityStore;
+let identityStore;
+let wrapStore = (store) => store;
+storeModule.openSqliteHumanIdentityStore = async (...args) => {
+  identityStore = await realOpen(...args);
+  return wrapStore(identityStore);
+};
 
 if (job.mode === 'crash') {
   const [when, what] = job.killAt.split(':');
@@ -87,8 +106,7 @@ if (job.mode === 'crash') {
   if (when === 'consumed' || when === 'beforeConsume') {
     // AUTH-03 consumption: the identity-store append of a `decision_authorized` row.
     let consumed = 0;
-    const store = identityStore;
-    identityStore = new Proxy(store, {
+    wrapStore = (store) => new Proxy(store, {
       get(target, property) {
         if (property === 'append') {
           return async (...args) => {
@@ -122,17 +140,15 @@ if (job.mode === 'midrun-loss') {
 }
 let host;
 try {
-  host = await compose({ paths, namespaces: job.namespaces }, identityStore, clock, overrides);
+  host = await compose({ paths, namespaces: job.namespaces }, clock, overrides);
 } catch (error) {
   report({ composed: false, code: error.code ?? String(error) });
-  identityStore.close();
   process.exit(0);
 }
 report({ composed: true, epoch: host.status().epoch, pid: process.pid });
 
 if (job.mode === 'contend') {
   host.close();
-  identityStore.close();
   process.exit(0);
 }
 
@@ -151,7 +167,6 @@ if (job.mode === 'midrun-loss') {
   const status = host.status();
   report({ reason: outcome.reason ?? outcome.result?.reason, readiness: status.readiness, pending: status.pendingIntents[job.namespaces[0]] });
   host.close();
-  identityStore.close();
   process.exit(0);
 }
 
@@ -160,11 +175,10 @@ if (job.mode === 'drop-at') {
   const status = host.status();
   report({ reason: outcome.reason ?? outcome.result?.reason, readiness: status.readiness, pending: status.pendingIntents[job.namespaces[0]] });
   host.close();
-  identityStore.close();
   process.exit(0);
 }
 
-if (job.mode === 'reconcile-loss') {
+if (job.mode === 'reconcile-loss' || job.mode === 'settle-race') {
   const outcome = await host.bootstrap(job.bootstrap);
   clock.advance(job.grace + 1);
   const before = identityStore.history().filter((row) => row.kind === 'decision_outcome').length;
@@ -178,7 +192,24 @@ if (job.mode === 'reconcile-loss') {
   const after = identityStore.history().filter((row) => row.kind === 'decision_outcome').length;
   report({ bootstrap: outcome.result?.reason, entries, settlementsWritten: after - before, readiness: host.status().readiness });
   host.close();
-  identityStore.close();
+  process.exit(0);
+}
+
+if (job.mode === 'identity-loss') {
+  // B3C-3: only the bootstrap identity store's lock is dropped (a raw open/close in this process).
+  closeSync(openSync(paths.identity, 'r'));
+  const out = { identityHeld: confirmExclusivelyHeld([paths.identity]), protectedHeld: confirmExclusivelyHeld([paths.protectedStore]) };
+  try {
+    host.beginBootstrapDecision({ operatorId: 'requester-a', ...bootstrapAuthorityDecisionInput(bindingOf(job.bootstrap.request).binding, 'requester') });
+    out.begin = 'issued';
+  } catch (error) {
+    out.begin = error.code ?? 'refused';
+  }
+  const outcome = await host.bootstrap(job.bootstrap);
+  out.bootstrap = outcome.outcome === 'ran' ? outcome.result.reason ?? outcome.result.outcome : outcome.reason;
+  out.readiness = host.status().readiness;
+  report(out);
+  host.close();
   process.exit(0);
 }
 
@@ -205,14 +236,15 @@ if (job.mode === 'replace-history') {
   }
   report(out);
   host.close();
-  identityStore.close();
   process.exit(0);
 }
 
 if (job.mode === 'hold') {
   if (job.dropLocks) {
     // The hazard: a raw descriptor of each held file opened and closed in this process drops its POSIX locks.
-    for (const path of [pathsOf(job.dir).protectedStore, ...job.namespaces.map((n) => pathsOf(job.dir).history(n))]) closeSync(openSync(path, 'r'));
+    // B3C-3: the bootstrap identity store is one of its files too; `except-identity` keeps that one lock.
+    const files = [pathsOf(job.dir).protectedStore, ...job.namespaces.map((n) => pathsOf(job.dir).history(n)), ...(job.dropLocks === 'except-identity' ? [] : [pathsOf(job.dir).identity])];
+    for (const path of files) closeSync(openSync(path, 'r'));
     report({ dropped: true });
   }
   const lines = createInterface({ input: process.stdin });
@@ -231,7 +263,6 @@ if (job.mode === 'hold') {
   });
   lines.on('close', () => {
     host.close();
-    identityStore.close();
     process.exit(0);
   });
 }
