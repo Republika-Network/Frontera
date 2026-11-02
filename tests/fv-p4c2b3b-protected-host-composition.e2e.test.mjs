@@ -21,7 +21,7 @@ import { storeCommittedRequestOf } from '../dist/src/enterprise/sovereign-status
 import { openSqliteHumanIdentityStore } from '../dist/src/enterprise/human-identity/index.js';
 import { testSigner, testVerifier } from '../dist/src/enterprise/__tests__/authority-authenticity-fixture.js';
 import { trustedBootstrap } from './fv-status-bootstrap-support.mjs';
-import { GRACE, NS_A, NS_B, S, T, addSeconds, compose, decisionsFor, makeClock, openIdentity, prepareWorld, requestFor } from './fv-p4c2b3b-support.mjs';
+import { GRACE, NS_A, NS_B, S, T, addSeconds, compose, decisionsFor, identityConfigOf, makeClock, prepareWorld, requestFor } from './fv-p4c2b3b-support.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CHILD = fileURLToPath(new URL('./fv-p4c2b3b-child.mjs', import.meta.url));
@@ -44,19 +44,12 @@ async function world(options) {
   return w;
 }
 
-/** One Host start over `w`'s durable state: the identity store and the protected composition. */
+/** One Host start over `w`'s durable state: the protected composition, which opens its own identity store (B3C-3). */
 async function start(w, at = LATER, overrides = {}) {
   const clock = makeClock(at);
-  const identity = await openIdentity(w.dir, clock);
-  cleanup.push(() => identity.close());
-  try {
-    const host = await compose(w, identity, clock, overrides);
-    cleanup.push(() => host.close());
-    return { host, identity, clock, stop: () => (host.close(), identity.close()) };
-  } catch (error) {
-    identity.close();
-    throw error;
-  }
+  const host = await compose(w, clock, overrides);
+  cleanup.push(() => host.close());
+  return { host, clock, stop: () => host.close() };
 }
 
 function spawnChild(job) {
@@ -290,6 +283,17 @@ describe('FV-P4C-2B3B exclusive executor — kernel file locks on the write path
     assert.equal(outcomes.find((o) => !o.composed).code, 'EXECUTOR_HELD');
   });
 
+  it('B3C-3. an old process that lost every lock but its bootstrap identity store’s still blocks a takeover: the one identity owner fences a second executor', { timeout: 90_000 }, async () => {
+    const w = await world();
+    const stale = spawnChild({ mode: 'hold', dropLocks: 'except-identity', dir: w.dir, namespaces: w.namespaces, at: T });
+    await stale.next((l) => 'composed' in l);
+    await stale.next((l) => l.dropped === true);
+    const contender = spawnChild({ mode: 'contend', dir: w.dir, namespaces: w.namespaces, at: T });
+    const outcome = await contender.next((l) => 'composed' in l);
+    assert.deepEqual([outcome.composed, outcome.code], [false, 'EXECUTOR_HELD'], 'the identity store has one owner: a second executor cannot take it, even holding the protected store');
+    assert.equal((await contender.exited).code, 0);
+  });
+
   it('16. an old process whose locks were silently dropped, after another Host took over, writes nothing, and its graceful close and exit cannot undo the new holder', { timeout: 90_000 }, async () => {
     const w = await world();
     const bootstrap = await signedJob(w);
@@ -357,7 +361,6 @@ describe('FV-P4C-2B3B exclusive executor — kernel file locks on the write path
     release();
     const ran = await running;
     assert.notEqual(ran.result?.outcome, 'established');
-    s.identity.close();
     const r = await start(w);
     assert.equal(classes(r.host.status())[NS_A], 'INTENT_UNRESOLVED');
     r.clock.advance(GRACE + 1);
@@ -511,13 +514,15 @@ describe('FV-P4C-2B3B coordinator and custody — data in, never code; the capab
     s.host.close();
     await assert.rejects(s.host.reconcile(), /closed/);
     assert.equal((await s.host.bootstrap({ request: requestFor(NS_A), signedStatusText: '', requesterResponse: {}, approverResponse: {} })).reason, 'CLOSED');
-    s.identity.close();
     const otherDir = mkdtempSync(join(tmpdir(), 'fv-p4c2b3b-foreign-'));
     cleanup.push(() => rmSync(otherDir, { recursive: true, force: true }));
     const clock = makeClock(LATER);
-    const foreign = await openSqliteHumanIdentityStore(join(otherDir, 'identity.sqlite'), { organizationId: 'org-someone-else', now: () => clock.iso(), authenticity: { signer: testSigner(), verifier: testVerifier() }, create: true });
-    cleanup.push(() => foreign.close());
-    await assert.rejects(compose(w, foreign, clock), (e) => e.code === 'CUSTODY_REFUSED');
+    const foreignPath = join(otherDir, 'identity.sqlite');
+    const foreign = await openSqliteHumanIdentityStore(foreignPath, { organizationId: 'org-someone-else', now: () => clock.iso(), authenticity: { signer: testSigner(), verifier: testVerifier() }, create: true });
+    const foreignId = foreign.storeId;
+    foreign.close();
+    // B3C-3: the composition opens its identity store itself; another organization's is refused there.
+    await assert.rejects(compose(w, clock, { identity: identityConfigOf(w.dir, { storePath: foreignPath, storeId: foreignId }) }), (e) => e.code === 'IDENTITY_REFUSED');
     // The refused start released everything it took: a normal start works.
     (await start(w)).stop();
   });

@@ -195,6 +195,17 @@ export interface SqliteHumanIdentityStoreOptions {
   readonly authenticity: { readonly signer: AuthorityArtifactSigner; readonly verifier: AuthorityArtifactVerifier };
   /** CORE-07 — cross-restart freshness of the signed head, anchored at an external witness. `enrollment` is the explicit ceremony only. */
   readonly freshness?: { readonly boundary: AuthorityStateFreshnessBoundary; readonly enrollment?: AuthorityStateEnrollmentContext };
+  /**
+   * FV-P4C-2B3C-3 — open as the store's one exclusive owner (the dedicated FV executor's own bootstrap
+   * identity store; never AUTH-04A's, which passes nothing here and is unchanged). SQLite
+   * `locking_mode = EXCLUSIVE` with its lock taken at once (no other connection, in any process, can
+   * then open the file), `busy_timeout` 0, every write transaction calling `beforeWrite` synchronously
+   * first (it throws to refuse: nothing is written), and the connection closed only through `closer`
+   * (the owner's guarded close). Both functions are the owner's; this module knows nothing of FV.
+   * `storeId` (review L2): the owner's pinned store; any other store at the path is refused right after
+   * it is verified, before anything is re-signed, written or presented to a CORE-07 witness.
+   */
+  readonly exclusive?: { readonly beforeWrite: () => void; readonly closer: (file: string, connection: { close(): unknown }) => () => void; readonly storeId?: string };
 }
 
 export interface HumanIdentityStore {
@@ -295,11 +306,40 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
   if (freshness !== undefined && (!isAuthorityStateFreshnessBoundary(freshness.boundary) || freshness.boundary.organizationId !== organizationId)) {
     throw new AuthorityStateFreshnessError('AUTHORITY_FRESHNESS_CONFIGURATION_INVALID', 'The human identity store freshness option must carry a boundary built by createAuthorityStateFreshnessBoundary for the same organization.');
   }
+  const exclusive = options.exclusive;
+  if (exclusive !== undefined && (typeof exclusive !== 'object' || exclusive === null || typeof exclusive.beforeWrite !== 'function' || typeof exclusive.closer !== 'function')) {
+    throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'The exclusive option is the owner’s write fence and guarded closer.');
+  }
+  // PR #255 review, finding 1 (defence in depth): an exclusive owner never enrolls a CORE-07 witness slot from an
+  // open. The organization's one 'human-identity-state' slot is AUTH-04A's; binding a slot is an operator ceremony.
+  if (exclusive !== undefined && freshness?.enrollment !== undefined) {
+    throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'An exclusively owned store never enrolls a witness slot when it is opened.');
+  }
   const file = resolve(path);
   if (options.create !== true && !existsSync(file)) throw new HumanIdentityError('HUMAN_IDENTITY_STORE_UNAVAILABLE', `No human identity store exists at ${file}; it is created only by an explicit initialization.`);
   if (options.create === true) mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const { default: SqliteDatabase } = await import('better-sqlite3');
   const db: Database = new SqliteDatabase(file, options.create === true ? {} : { fileMustExist: true });
+  // FV-P4C-2B3C-3: the exclusive owner's write fence (a no-op for every other owner).
+  const fence = (): void => exclusive?.beforeWrite();
+  // How this connection is closed: the owner's guarded closer once its lock is taken, a plain close otherwise.
+  let closeConnection = (): void => {
+    db.close();
+  };
+  if (exclusive !== undefined) {
+    try {
+      // Before the first access: no shared-memory index, every lock kept; and the lock taken now, before any
+      // read could leave a SHARED lock that a peer's upgrade would wait on.
+      db.pragma('locking_mode = EXCLUSIVE');
+      db.pragma('busy_timeout = 0');
+      db.exec('BEGIN EXCLUSIVE');
+      db.exec('COMMIT');
+    } catch {
+      db.close();
+      throw new HumanIdentityError('HUMAN_IDENTITY_STORE_UNAVAILABLE', 'The human identity store is held by another owner; it is never shared.');
+    }
+    closeConnection = exclusive.closer(file, db);
+  }
 
   // The newest committed state this process has verified (sequence and digest). Across restarts, the freshness session is what refuses an older state.
   let witnessed: { readonly sequence: number; readonly chainDigest: string } | undefined;
@@ -345,7 +385,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = FULL');
-    db.pragma(`busy_timeout = ${String(busyTimeoutMs)}`);
+    if (exclusive === undefined) db.pragma(`busy_timeout = ${String(busyTimeoutMs)}`);
     if (!tableExists(db, 'human_identity_meta')) {
       // A genesis is created only for a file that holds nothing at all, and only by an explicit initialization.
       if (options.create !== true || !isEmptyDatabase(db)) corrupt('The human identity store has content but no authenticated identity; it is never re-initialized.');
@@ -357,6 +397,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
       const signature = await signState(genesis);
       const createdAt = options.now();
       db.transaction(() => {
+        fence();
         db.exec(SCHEMA);
         db.prepare('INSERT INTO human_identity_meta (id, schema_version, store_id, organization_id, created_at) VALUES (1, ?, ?, ?, ?)').run(HUMAN_IDENTITY_STORE_SCHEMA_VERSION, storeId, organizationId, createdAt);
         db.prepare('INSERT INTO human_identity_head (id, sequence, chain_digest, signature_json, updated_at) VALUES (1, 0, ?, ?, ?)').run(genesis.chainDigest, JSON.stringify(signature), createdAt);
@@ -364,6 +405,9 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
     }
     // Verified before the store is handed to anything: a forged or foreign store refuses at open.
     const opened = verifiedState();
+    if (exclusive?.storeId !== undefined && opened.state.storeId !== exclusive.storeId) {
+      throw new HumanIdentityError('HUMAN_IDENTITY_STORE_UNSUPPORTED', 'The human identity store at this path is not the owner’s pinned store; nothing was written.');
+    }
     if (freshness !== undefined) {
       session = await freshness.boundary.establish(humanIdentityStateCheckpoint(opened.state), () => humanIdentityStateCheckpoint(verifiedState().state), freshness.enrollment !== undefined ? { enrollment: freshness.enrollment } : {});
     }
@@ -372,6 +416,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
       try {
         const signature = await signState(opened.state);
         db.transaction(() => {
+          fence();
           const current = verifiedState().state;
           if (current.sequence !== opened.state.sequence || current.chainDigest !== opened.state.chainDigest || current.storeId !== opened.state.storeId) return;
           db.prepare('UPDATE human_identity_head SET signature_json = ? WHERE id = 1').run(JSON.stringify(signature));
@@ -382,7 +427,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
       }
     }
   } catch (error) {
-    db.close();
+    closeConnection();
     throw error;
   }
 
@@ -433,6 +478,9 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
       const updatedAt = options.now();
       const commitLocal = (): void =>
         db.transaction(() => {
+          // FV-P4C-2B3C-3: the exclusive owner confirms its authority synchronously, inside this very write
+          // transaction: a refusal here records nothing (and, under freshness, fails the witness transition closed).
+          fence();
           // Under the write lock: still exactly the planned state, so the signature covers what is written.
           const current = verifiedState().state;
           if (current.sequence !== state.sequence || current.chainDigest !== state.chainDigest || current.storeId !== state.storeId) {
@@ -451,6 +499,9 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
           verifiedState();
         }).immediate();
       try {
+        // FV-P4C-2B3C-3 (review L1): the exclusive owner's fence before the witness is asked to prepare, so an
+        // authority already lost never leaves a prepared witness head behind; it runs again inside the commit.
+        fence();
         if (session === undefined) commitLocal();
         else await session.transition(humanIdentityStateCheckpoint(state), humanIdentityStateCheckpoint(next), () => (commitLocal(), { value: undefined, state: humanIdentityStateCheckpoint(next) }));
       } catch (error) {
@@ -506,6 +557,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
     saveChallenge(challenge) {
       accepting();
       try {
+        fence();
         db.prepare('INSERT INTO human_identity_challenges (challenge, ceremony, operator_id, enrolment_id, target_credential_id, issued_at, expires_at, consumed_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)').run(
           challenge.challenge,
           challenge.ceremony,
@@ -538,6 +590,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
     saveDecisionChallenge({ challenge, contract }) {
       accepting();
       try {
+        fence();
         db.prepare(
           'INSERT INTO human_decision_challenges (challenge, format, organization_id, approval_request_id, subject_digest, verdict, operator_id, nonce, issued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).run(challenge, contract.format, contract.organizationId, contract.approvalRequestId, contract.subjectDigest, contract.verdict, contract.operatorId, contract.nonce, contract.issuedAt, contract.expiresAt);
@@ -553,7 +606,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
     close: () => {
       if (!closed) {
         closed = true;
-        db.close();
+        closeConnection();
       }
     },
     async closeWhenSettled(timeoutMs) {

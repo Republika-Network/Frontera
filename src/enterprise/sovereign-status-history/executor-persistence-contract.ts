@@ -18,7 +18,7 @@ import { SOVEREIGN_STATUS_HISTORY_SCHEMA_VERSION } from './sqlite-status-high-wa
 export const FV_EXECUTOR_PERSISTENCE_OWNER = 'frontera.fv-dedicated-executor' as const;
 
 export interface FvExecutorOwnedStore {
-  readonly kind: 'protected-continuity-store' | 'status-history';
+  readonly kind: 'protected-continuity-store' | 'status-history' | 'bootstrap-identity-store';
   readonly schemaIdentity: string;
   /** What it holds. */
   readonly holds: readonly string[];
@@ -46,19 +46,27 @@ export const FV_EXECUTOR_PERSISTENCE_CONTRACT = Object.freeze({
       sidecars: Object.freeze(['-wal']),
       cardinality: 'per-namespace' as const,
     }),
+    // FV-P4C-2B3C-3: the executor's own AUTH-03 identity store for bootstrap-authority decisions, opened and
+    // held exclusively by the executor, its id pinned. Never AUTH-04A's store.
+    Object.freeze({
+      kind: 'bootstrap-identity-store' as const,
+      schemaIdentity: 'frontera.human-identity-store (AUTH-03 schema 2), bootstrap-authority domain',
+      holds: Object.freeze(['the FV operators’ principals and passkeys', 'bootstrap-authority challenges, consumed decisions and their settlements (signed chain, CORE-07 head)']),
+      sidecars: Object.freeze(['-wal']),
+      cardinality: 'one' as const,
+    }),
   ] satisfies readonly FvExecutorOwnedStore[]),
   /**
-   * Review M2: files the executor's composition uses but does NOT own or lock. The AUTH-03 identity store is
-   * an ordinary shared SQLite store today. Every process of the same user may open it and issue bootstrap
-   * challenges against it. Its single owner is B3C-3's to establish; until then it is a blocker for
-   * activation, and B3C-2 must not treat it as an executor-owned (or a freely shared) FV store.
+   * Files the executor never opens. B3C-1's review M2 (the AUTH-03 identity store shared between the Host
+   * and the executor) is closed by FV-P4C-2B3C-3: the executor owns its own bootstrap identity store
+   * (above), and AUTH-04A's Host identity store has AUTH-04A as its one owner.
    */
   notOwned: Object.freeze([
     Object.freeze({
-      kind: 'auth03-identity-store' as const,
-      owner: 'undetermined-until-B3C-3' as const,
-      risk: 'a second process can open it and issue bootstrap-authority challenges for the identities the executor relies on',
-      activationBlocker: true as const,
+      kind: 'auth04a-host-identity-store' as const,
+      owner: 'AUTH-04A (the Enterprise Host)' as const,
+      rule: 'never opened by the executor; the executor accepts no already opened store, and pins its own by id',
+      activationBlocker: false as const,
     }),
   ]),
   lock: Object.freeze({

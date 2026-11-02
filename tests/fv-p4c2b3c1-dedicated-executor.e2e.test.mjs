@@ -135,11 +135,9 @@ async function readProtected(w, read) {
 /** Both humans' decisions for one request, signed through a B3B composition in this process, then closed. */
 async function signedJob(w, request = requestFor(NS_A)) {
   const clock = makeClock(T);
-  const identity = await openIdentity(w.dir, clock);
-  const host = await compose(w, identity, clock);
+  const host = await compose(w, clock);
   const decisions = decisionsFor(host, w.devices, request);
   host.close();
-  identity.close();
   return { request, signedStatusText: S.active1.text, ...decisions };
 }
 
@@ -343,8 +341,9 @@ describe('FV-P4C-2B3C-1 dedicated executor — authority loss and fail-stop', ()
 
   it('22/23/24/25. a stale executor: another commits while it is stale; its shutdown is a fail-stop without any close; the new holder’s state survives', { timeout: 90_000 }, async () => {
     const w = await world();
-    // A notices nothing on its own (a long watch): its lock is silently dropped once it is ready.
-    const stale = supervise(w, { fault: 'drop-lock', watchIntervalMs: 60_000 }, { policy: { ...FAST, maxRestarts: 0 } });
+    // A notices nothing on its own (a long watch): its locks are silently dropped once it is ready (B3C-3: all of
+    // them, its bootstrap identity store's included; with that one kept, no takeover is possible at all, below).
+    const stale = supervise(w, { fault: 'drop-all-locks', watchIntervalMs: 60_000 }, { policy: { ...FAST, maxRestarts: 0 } });
     stale.sup.start();
     await waitFor(() => stale.seen('READY_INACTIVE'), 'stale READY');
     await waitFor(() => openable(w.paths.protectedStore), 'the stale lock dropped');
@@ -352,19 +351,34 @@ describe('FV-P4C-2B3C-1 dedicated executor — authority loss and fail-stop', ()
     holder.sup.start();
     await waitFor(() => holder.runningNow(), 'new holder running');
     const held = await holder.sup.status();
-    // It holds the protected store, but the stale process still holds its histories: none is admitted to the new one.
-    assert.deepEqual([held.state, held.protectedStoreLock, held.admittedNamespaces, held.quarantinedNamespaces], ['QUARANTINED', 'held', 0, 2]);
+    assert.deepEqual([held.state, held.protectedStoreLock, held.admittedNamespaces, held.quarantinedNamespaces], ['READY_INACTIVE', 'held', 2, 0]);
     // The stale executor is asked to stop: it must not close (a closing checkpoint would write the holder's files).
     await stale.sup.stop();
     assert.equal(stale.sup.snapshot().lastExit.signal, 'SIGKILL');
     assert.deepEqual([stale.sup.snapshot().phase, stale.sup.snapshot().blockedReason], ['blocked', 'UNCLEAN_STOP'], 'an unclean stop needs the operator before the next start');
     assert.ok(stale.seen('EXECUTOR_AUTHORITY_LOST', 'AUTHORITY_LOST_DURING_SHUTDOWN'));
     const still = await holder.sup.status();
-    assert.deepEqual([still.state, still.protectedStoreLock, still.epoch], ['QUARANTINED', 'held', held.epoch], 'no state of the new holder changed');
+    assert.deepEqual([still.state, still.protectedStoreLock, still.epoch], ['READY_INACTIVE', 'held', held.epoch], 'no state of the new holder changed');
     await holder.sup.stop();
     // The holder's epoch is durable and the store is intact (the open runs quick_check and the trigger set).
     const epoch = await readProtected(w, (store) => store.epoch);
     assert.equal(epoch, held.epoch + 1);
+  });
+
+  it('B3C-3. a stale executor that lost its protected-store lock but still holds its bootstrap identity store blocks every takeover (one identity owner)', { timeout: 90_000 }, async () => {
+    const w = await world();
+    const stale = supervise(w, { fault: 'drop-lock', watchIntervalMs: 60_000 }, { policy: { ...FAST, maxRestarts: 0 } });
+    stale.sup.start();
+    await waitFor(() => stale.seen('READY_INACTIVE'), 'stale READY');
+    await waitFor(() => openable(w.paths.protectedStore), 'the stale protected-store lock dropped');
+    const second = supervise(w);
+    second.sup.start();
+    await waitFor(() => second.sup.snapshot().phase === 'blocked', 'second blocked');
+    assert.ok(second.seen('FAILED', 'EXECUTOR_HELD'), 'refused at the identity store, which has one owner');
+    assert.equal(second.seen('READY_INACTIVE'), false);
+    assert.equal(openable(w.paths.identity), false, 'the identity store is still held by its one owner');
+    await stale.sup.stop();
+    assert.equal(stale.sup.snapshot().lastExit.signal, 'SIGKILL', 'the stale owner ends by fail-stop, never a close');
   });
 
   it('22. lock lost during shutdown itself: no close, fail-stop', { timeout: 60_000 }, async () => {
@@ -720,11 +734,12 @@ describe('FV-P4C-2B3C-1 contracts — the transition relation, the restart polic
     assert.deepEqual(c.stores.map((s) => [s.kind, s.schemaIdentity, s.cardinality]), [
       ['protected-continuity-store', 'frontera.fv-protected-continuity-store/1', 'one'],
       ['status-history', 'frontera.sovereign-status-history.v2', 'per-namespace'],
+      ['bootstrap-identity-store', 'frontera.human-identity-store (AUTH-03 schema 2), bootstrap-authority domain', 'one'],
     ]);
     assert.deepEqual(c.snapshotModes.map((m) => [m.mode, m.status]), [['executor-mediated', 'deferred-to-B3C-2'], ['cold', 'deferred-to-B3C-2']]);
     assert.ok(c.forbiddenWhileExecutorActive.some((rule) => /inside the executor process/.test(rule)));
-    // Review M2: the AUTH-03 identity store is named as NOT owned, an activation blocker until B3C-3.
-    assert.deepEqual(c.notOwned.map((n) => [n.kind, n.owner, n.activationBlocker]), [['auth03-identity-store', 'undetermined-until-B3C-3', true]]);
+    // Review M2, closed by B3C-3: the executor owns its own bootstrap identity store; AUTH-04A's is never opened by it.
+    assert.deepEqual(c.notOwned.map((n) => [n.kind, n.owner, n.activationBlocker]), [['auth04a-host-identity-store', 'AUTH-04A (the Enterprise Host)', false]]);
     assert.deepEqual(fvExecutorOwnedFiles('/p/s', ['/p/a']), ['/p/s', '/p/s-wal', '/p/s-shm', '/p/s-journal', '/p/a', '/p/a-wal', '/p/a-shm', '/p/a-journal']);
   });
 });

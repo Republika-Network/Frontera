@@ -58,6 +58,16 @@ export const pathsOf = (dir) => ({
 
 /** The world's synthetic authority key (generated per process by the fixture), shared with its child processes through the world's temporary directory. */
 const keyFile = (dir) => join(dir, 'synthetic-test-authority-key.json');
+const identityStoreIdFile = (dir) => join(dir, 'identity-store-id.txt');
+
+/**
+ * FV-P4C-2B3C-3 — the executor's own bootstrap identity store, as the trusted composition configures it:
+ * its path, its pinned store id and the deployment's synthetic signer. The composition opens it itself.
+ */
+export function identityConfigOf(dir, overrides = {}) {
+  const key = authorityKeyOf(dir);
+  return { storePath: pathsOf(dir).identity, storeId: readFileSync(identityStoreIdFile(dir), 'utf8'), authenticity: { signer: testSigner(key), verifier: testVerifier([key]) }, relyingParty: RP, operatorIds: OPERATORS, ...overrides };
+}
 const authorityKeyOf = (dir) => {
   try {
     return JSON.parse(readFileSync(keyFile(dir), 'utf8'));
@@ -90,6 +100,8 @@ export async function prepareWorld({ namespaces = [NS_A, NS_B], dir = mkdtempSyn
     const issued = await identity.authorizeEnrolment(admin, operatorId);
     await identity.finishRegistration(issued.enrolmentToken, devices[operatorId].register(identity.beginRegistration(issued.enrolmentToken)));
   }
+  // FV-P4C-2B3C-3: the registration ceremony pins the executor's bootstrap identity store by its id.
+  writeFileSync(identityStoreIdFile(dir), identityStore.storeId, { mode: 0o600 });
   identityStore.close();
   const records = await openProtectedContinuityStore(paths.protectedStore, { create: true, now: () => clock.iso() });
   for (const namespace of namespaces) {
@@ -103,12 +115,12 @@ export async function prepareWorld({ namespaces = [NS_A, NS_B], dir = mkdtempSyn
 
 export const configurationOf = (world, namespaces = world.namespaces) => () => ({ generation: 1, histories: namespaces.map((namespace) => ({ namespace, databasePath: world.paths.history(namespace) })) });
 
-/** The protected composition over `world`, as the trusted Host composition root would build it. */
-export async function compose(world, identityStore, clock, overrides = {}) {
+/** The protected composition over `world`, as the trusted Host composition root would build it (it opens its own identity store). */
+export async function compose(world, clock, overrides = {}) {
   return composeFvProtectedHost({
     protectedStorePath: world.paths.protectedStore,
     configuration: configurationOf(world),
-    identity: { store: identityStore, relyingParty: RP, operatorIds: OPERATORS },
+    identity: identityConfigOf(world.paths.dir),
     standing,
     organizationId: ORG,
     clock: () => clock.now(),
