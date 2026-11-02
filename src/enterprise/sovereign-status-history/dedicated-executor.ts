@@ -165,7 +165,7 @@ function startExecutor(protectedStorePath: string, compose: (() => Promise<FvPro
     if (!exclusiveConnectionsSafe()) return failStop('AUTHORITY_LOST_DURING_SHUTDOWN');
     await flushed;
     await new Promise((done) => setImmediate(done));
-    if (process.connected === true) process.disconnect();
+    if (process.connected === true) process.disconnect?.();
     return realExitChecked(code);
   };
   const realExitChecked = (code: number): never => {
@@ -349,7 +349,7 @@ export function runDedicatedFvExecutorOrRefuse(definition: DedicatedFvExecutorDe
       process.send({ protocol: FV_EXECUTOR_IPC_PROTOCOL, type: 'lifecycle', instanceId: 'fv-executor:refused', state: 'FAILED', reason, at: new Date().toISOString() } satisfies FvExecutorEvent);
       process.on('message', (message: unknown) => {
         const parsed = parseFvExecutorCommand(message);
-        if (parsed.ok && parsed.command.type === 'stop' && process.connected === true) process.disconnect();
+        if (parsed.ok && parsed.command.type === 'stop' && process.connected === true) process.disconnect?.();
       });
       return;
     }
