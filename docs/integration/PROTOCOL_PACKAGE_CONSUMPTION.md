@@ -143,9 +143,13 @@ and prints no list of failures at the end, so the tail held only the last tests 
 **The flow now** (`scripts/protocol/lib-test-diagnostics.mjs`, used by the validator):
 - Each command's interleaved stdout and stderr streams to its own file, `NN-<command>.log`, as it is
   produced. Nothing is held in a memory buffer, and the file keeps everything written even if the run is
-  killed. A log is read back only for a failed command, and a log too large to read falls back to its
-  tail. A passing command's output is never loaded, so the diagnostics cannot turn a passing step red.
-  The old 64 MiB buffer limit, which used to fail the step, is gone.
+  killed. A log is read back only for a failed command: whole up to 128 MiB, and beyond that only its
+  tail. A passing command's output is never loaded.
+- A log that cannot be written (missing or unwritable directory, full disk) does not decide anything. The
+  command still runs, its output goes to the job log, and its own exit status is the outcome. The
+  diagnostics therefore cannot turn a passing step red.
+- One behaviour change: output over 64 MiB used to fail the step (`ENOBUFS`); it no longer does, because
+  the output is no longer buffered in memory.
 - In CI, the validate step sets `AOC_TARBALL_VALIDATE_LOG_DIR` to `$RUNNER_TEMP/protocol-tarball-test-logs`,
   outside the isolated copy. A local run without it uses a temporary directory and removes it at the end,
   as before.
@@ -173,7 +177,8 @@ fails itself the job stays failed. On success there is no upload. No permissions
 - A failing test's identity comes from the runner's TAP. A crash before TAP is written, such as a build
   error, shows the exit status and the tail, and the full log.
 - On a hard job timeout or cancellation, the upload runs only if GitHub still runs `cancelled()` steps.
-- The listing reads Node's TAP shape: indentation, `# Subtest:` and YAML blocks. The battery's own
+- The listing reads Node's TAP shape: indentation, `# Subtest:` and YAML blocks. An unterminated YAML
+  block ends at the first line outside its indentation. The battery's own
   `node --test` commands pass no reporter flag and rely on TAP being the default for non-TTY output, as
   in Node 22. A test pins that default, so a future Node that changes it fails visibly.
 - The step summary covers the battery's eight steps. Install and export-resolution failures, and fatal

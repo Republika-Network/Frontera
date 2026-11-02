@@ -20,18 +20,33 @@ import { appendFileSync, closeSync, fstatSync, openSync, readSync } from 'node:f
  * returns `{ ok, status, signal, error, logFile }`. `ok` is true only for exit status 0.
  */
 export function runLogged(cmd, args, cwd, logFile, { env = process.env } = {}) {
-  const fd = openSync(logFile, 'w');
+  // A log that cannot be opened (missing or unwritable directory, full disk) never decides the outcome: the
+  // command still runs, its output goes to this process's own stdout/stderr (the job log), and the result says
+  // the diagnostics were unavailable. Only the command's exit decides `ok`.
+  let fd;
+  let logError = null;
+  try {
+    fd = openSync(logFile, 'w');
+  } catch (cause) {
+    logError = `${cause.code ?? 'ERROR'}: ${cause.message}`;
+  }
   let result;
   try {
-    result = spawnSync(cmd, args, { cwd, env, stdio: ['ignore', fd, fd] });
+    result = spawnSync(cmd, args, { cwd, env, stdio: fd === undefined ? ['ignore', 'inherit', 'inherit'] : ['ignore', fd, fd] });
   } finally {
-    closeSync(fd);
+    if (fd !== undefined) closeSync(fd);
   }
   const status = typeof result.status === 'number' ? result.status : null;
   const signal = result.signal ?? null;
   const error = result.error ? `${result.error.code ?? 'ERROR'}: ${result.error.message}` : null;
-  appendFileSync(logFile, `\n[tarball-validate] ${cmd} ${args.join(' ')} -> exit status=${String(status)} signal=${String(signal)}${error ? ` error=${error}` : ''}\n`);
-  return { ok: status === 0 && signal === null && error === null, status, signal, error, logFile };
+  if (logError === null) {
+    try {
+      appendFileSync(logFile, `\n[tarball-validate] ${cmd} ${args.join(' ')} -> exit status=${String(status)} signal=${String(signal)}${error ? ` error=${error}` : ''}\n`);
+    } catch (cause) {
+      logError = `${cause.code ?? 'ERROR'}: ${cause.message}`;
+    }
+  }
+  return { ok: status === 0 && signal === null && error === null, status, signal, error, logFile, logError };
 }
 
 /** About the last `chars` characters of a file (read from its end, however large it is), or '' when it cannot be read. */
@@ -94,7 +109,18 @@ export function summarizeTapFailures(text, { maxFailures = 25, maxLinesPerFailur
     const details = [];
     let j = i + 1;
     if (lines[j] !== undefined && lines[j].trimEnd() === `${indent}  ---`) {
-      for (j += 1; j < lines.length && lines[j].trimEnd() !== `${indent}  ...`; j += 1) details.push(lines[j].slice(indent.length + 2));
+      // The block ends at its `...`, or (malformed: never closed) at the first non-empty line that is not
+      // indented inside it, so an unterminated block never swallows the failures after it.
+      const inside = `${indent}  `;
+      for (j += 1; j < lines.length; j += 1) {
+        const candidate = lines[j];
+        if (candidate.trimEnd() === `${indent}  ...`) break;
+        if (candidate.trim() !== '' && !candidate.startsWith(inside)) {
+          j -= 1;
+          break;
+        }
+        details.push(candidate.slice(inside.length));
+      }
       i = j;
     }
     if (details.some((d) => /^failureType: 'subtestsFailed'/.test(d))) {

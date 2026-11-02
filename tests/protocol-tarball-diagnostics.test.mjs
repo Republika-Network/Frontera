@@ -180,13 +180,30 @@ describe('CI-TEST-LOG-01 — every failing test is identifiable, the exit status
     writeFileSync(tarball, 'not really a tarball');
     const notADirectory = join(dir, 'a-file');
     writeFileSync(notADirectory, '');
-    const copies = () => readdirSync(tmpdir()).filter((name) => name.startsWith('aoc-enterprise-tarball-validate-') && !name.startsWith('aoc-enterprise-tarball-validate-logs-'));
-    const before = new Set(copies());
+    // A private temporary directory for the validator, so no other run on this host can interfere.
+    const privateTmp = join(dir, 'tmp');
+    mkdirSync(privateTmp);
     const { NODE_TEST_CONTEXT: _nested, ...env } = process.env;
-    const run = spawnSync(process.execPath, [VALIDATOR, tarball], { cwd: dir, encoding: 'utf8', env: { ...env, AOC_TARBALL_VALIDATE_LOG_DIR: notADirectory }, timeout: 60_000 });
+    const run = spawnSync(process.execPath, [VALIDATOR, tarball], { cwd: dir, encoding: 'utf8', env: { ...env, TMPDIR: privateTmp, AOC_TARBALL_VALIDATE_LOG_DIR: notADirectory }, timeout: 60_000 });
     assert.equal(run.status, 1);
     assert.match(run.stderr, /FATAL/);
-    assert.deepEqual(copies().filter((name) => !before.has(name)), [], 'no isolated copy was left behind');
+    assert.deepEqual(readdirSync(privateTmp), [], 'no isolated copy (and no log directory) was left behind');
+  });
+
+  it('publication review Low: a log that cannot be written never decides the outcome; the command’s own exit does', () => {
+    const dir = directory();
+    const unwritable = join(dir, 'missing-directory', 'step.log');
+    const passing = runLogged(process.execPath, ['-e', 'process.exit(0)'], dir, unwritable);
+    assert.equal(passing.ok, true, 'a passing command stays green when its log cannot be written');
+    assert.match(passing.logError ?? '', /ENOENT/);
+    const failing = runLogged(process.execPath, ['-e', 'process.exit(4)'], dir, unwritable);
+    assert.equal(failing.ok, false);
+    assert.equal(failing.status, 4);
+  });
+
+  it('publication review Low: an unterminated YAML block does not hide the failures after it', () => {
+    const tap = ['TAP version 13', '# Subtest: first', 'not ok 1 - first', '  ---', "  error: 'the block below is never closed'", '# Subtest: second', 'not ok 2 - second', '  ---', "  error: 'second'", '  ...', '1..2'].join('\n');
+    assert.deepEqual(summarizeTapFailures(tap).failures.map((f) => f.name), ['first', 'second']);
   });
 
   it('a log too large to load still yields its tail, read from the end of the file', () => {

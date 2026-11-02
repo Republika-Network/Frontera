@@ -14,7 +14,7 @@
 // Never modifies the real repository's package.json or package-lock.json --
 // all mutation happens inside a throwaway temporary copy that is deleted on exit.
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { cp, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -78,12 +78,12 @@ function run(cmd, args, cwd, { allowFailure = true } = {}) {
   const logFile = join(logDir, `${String(logSequence).padStart(2, '0')}-${slug}.log`);
   const result = runLogged(cmd, args, cwd, logFile);
   // Read back only for a failed command (its diagnostics): a successful command's output, however large,
-  // is never loaded, so the diagnostics can never turn a passing step into a failure. A log too large to
-  // read falls back to its tail; the complete file stays on disk either way.
+  // is never loaded. A failed command's log is read whole up to 128 MiB (the summary scans it all); a larger
+  // or unreadable one falls back to its tail. The complete file stays on disk either way.
   let output = '';
-  if (!result.ok) {
+  if (!result.ok && result.logError === null) {
     try {
-      output = readFileSync(logFile, 'utf8');
+      output = statSync(logFile).size <= 128 * 1024 * 1024 ? readFileSync(logFile, 'utf8') : tailOf(logFile, 1_000_000);
     } catch {
       output = tailOf(logFile, 1_000_000);
     }
@@ -91,7 +91,8 @@ function run(cmd, args, cwd, { allowFailure = true } = {}) {
   if (!result.ok && !allowFailure) {
     throw new Error(`Command failed (${String(result.status)}): ${cmd} ${args.join(' ')}\n${output}`);
   }
-  return { ok: result.ok, status: result.status, signal: result.signal, error: result.error, output, logFile };
+  if (result.logError !== null) log(`Diagnostics unavailable for this command (its log could not be written: ${result.logError}); its outcome is its own exit status.`);
+  return { ok: result.ok, status: result.status, signal: result.signal, error: result.error, output, logFile, logError: result.logError };
 }
 
 /** A failed step's notes: every failing test it reported (TAP), where its full log is, and its tail. */
@@ -100,7 +101,9 @@ function failureNotes(result, tailChars) {
   const exit = `exit status=${String(result.status)} signal=${String(result.signal)}${result.error ? ` error=${result.error}` : ''}`;
   return [
     ...(failures.length > 0 ? [summary] : []),
-    `${exit}; full log: ${result.logFile}${logsKept ? '' : ' (temporary: removed when the validator exits; set AOC_TARBALL_VALIDATE_LOG_DIR to keep it)'}`,
+    result.logError !== null
+      ? `${exit}; no log: it could not be written (${result.logError}); the command's output is in this job log above`
+      : `${exit}; full log: ${result.logFile}${logsKept ? '' : ' (temporary: removed when the validator exits; set AOC_TARBALL_VALIDATE_LOG_DIR to keep it)'}`,
     `--- last ${String(tailChars)} characters ---`,
     tailOf(result.logFile, tailChars),
   ].join('\n');
@@ -113,7 +116,7 @@ function writeStepSummary(label, result) {
   const { failures, summary } = summarizeTapFailures(result.output, { maxChars: 12_000 });
   const body = failures.length > 0 ? summary : `No failing test was identified in the output; see the log tail and the uploaded log artifact.`;
   try {
-    appendFileSync(target, `### protocol-tarball-consumption: \`${label}\` failed\n\nExit status ${String(result.status)}, signal ${String(result.signal)}. The complete output is in the \`protocol-tarball-test-logs\` artifact.\n\n\`\`\`text\n${body.replace(/\`\`\`/g, "'''")}\n\`\`\`\n`);
+    appendFileSync(target, `### protocol-tarball-consumption: \`${label}\` failed\n\nExit status ${String(result.status)}, signal ${String(result.signal)}. The complete output is in this run's \`protocol-tarball-test-logs-run…-attempt…\` artifact.\n\n\`\`\`text\n${body.replace(/\`\`\`/g, "'''")}\n\`\`\`\n`);
   } catch {
     // A summary that cannot be written changes nothing: the step's own result stands.
   }
@@ -293,7 +296,13 @@ async function main() {
     logDir = await mkdtemp(join(tmpdir(), 'aoc-enterprise-tarball-validate-logs-'));
   }
   log(`Writing each command's complete output to ${logDir}.`);
-  const tempDir = await mkdtemp(join(tmpdir(), 'aoc-enterprise-tarball-validate-'));
+  let tempDir;
+  try {
+    tempDir = await mkdtemp(join(tmpdir(), 'aoc-enterprise-tarball-validate-'));
+  } catch (error) {
+    if (!configuredLogDir) await rm(logDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
   const stepResults = [];
   let exitCode = 0;
   let verifiedPublicExports = [];
