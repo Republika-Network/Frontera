@@ -82,6 +82,7 @@ These happen before anything is opened; the process then reports `FAILED` and ho
 | `NOT_A_DEDICATED_PROCESS` | There is no supervisor IPC channel, so it never runs in its caller's process. Also refused when the process already does other work: a listening or connected socket, or its own `uncaughtException`, `unhandledRejection`, `SIGTERM`, `SIGINT`, `message` or `disconnect` handler. This is a heuristic (review L1); real isolation is the deployment's job (§12). |
 | `ALREADY_RUNNING_IN_PROCESS` | The process already holds, or has held, executor state. |
 | `OPTIONS_INVALID` | No protected store path, or a bad watch interval. |
+| `DEBUG_EXPOSED` | Started without `--disable-sigusr1`, with an `--inspect` or `--debug` flag, or with `NODE_OPTIONS` set, whoever the launcher was (publication review). |
 | `DEPENDENCIES_UNAVAILABLE` | No composition function: the production entry. |
 
 **Inputs.** No environment variable is read. No module is loaded by name, and there is no plugin
@@ -89,7 +90,11 @@ loader. The supervisor starts the child with `env: {}`, `execArgv: ['--disable-s
 other than IPC:
 - No inherited `NODE_OPTIONS`, `--require`, `--import` or `--inspect`.
 - No inspector on `SIGUSR1` (review M1). Otherwise any process of the same user could attach and run
-  code inside the executor.
+  code inside the executor. The executor also checks this itself (`DEBUG_EXPOSED`), so another launcher
+  cannot omit it.
+- `--disable-sigusr1` needs **Node 22.14 or later** (the repository's `engines` says `>=22`). On an older
+  Node the child refuses the flag at start, and the supervisor blocks at its restart limit: this fails
+  safe, but it does not run.
 
 ## 5. Lifecycle state machine
 
@@ -104,7 +109,7 @@ The relation (`FV_EXECUTOR_TRANSITIONS`) is closed and frozen; nothing else is a
 | `ACQUIRING_EXCLUSIVITY` | `FAILED` | a composition refusal (§6) | event; exit 75 (`EXECUTOR_HELD`), or parked |
 | `RECOVERING` | `READY_INACTIVE` / `DEGRADED` / `QUARANTINED` | the one startup reconciliation finished; the composition readiness is `ready` / `degraded` / `unavailable` | event, and `lastReconciliation` in the status |
 | `READY_INACTIVE` → `DEGRADED` → `QUARANTINED` | worse only | the lock watch observes a worse readiness | event |
-| any running state | `EXECUTOR_AUTHORITY_LOST` | the lock watch or a stop finds the protected-store lock unconfirmed | event, then `SIGKILL` |
+| any running state | `EXECUTOR_AUTHORITY_LOST` | the lock watch or a stop finds a lock unconfirmed: the protected store's, or any history's (`exclusiveConnectionsSafe()`, publication review) | event, then `SIGKILL` |
 | any non-terminal state | `STOPPING` | a `stop` command, `SIGTERM`, `SIGINT` or a supervisor disconnect | event |
 | `STOPPING` | `STOPPED` | in-flight work has finished and a guarded close released every lock | event; exit 0 |
 | any non-terminal state | `FAILED` | an uncaught exception or unhandled rejection | event; guarded close; exit 70 |
@@ -159,18 +164,20 @@ Diagnostics are codes only, and the child's stderr is not captured.
 
 **Platform adapters.**
 - **Tests:** the Node adapter in this module.
-- **Production (to be chosen at activation):** Frontera already runs the reference executor as its own
-  Compose container (`deploy/authority-pilot/compose.executor.yaml`, with `init: true` and
-  `restart: unless-stopped`). An FV executor container would follow that pattern, with:
-  - its own volume for its files;
-  - `stop_grace_period` at least the stop timeout;
-  - the parked-`FAILED` behaviour providing the non-retryable block that Docker's restart policy cannot
-    express.
-- **systemd** would map to:
+- **Production (to be chosen at activation).** The executor refuses to run without an IPC parent, so a
+  platform never runs the executor directly. It runs a **small Node supervisor process**, which forks the
+  executor as its child. Frontera already runs the reference executor as its own Compose container
+  (`deploy/authority-pilot/compose.executor.yaml`, with `init: true` and `restart: unless-stopped`). An FV
+  container would follow that pattern:
+  - its command is the supervisor process, and the executor runs alone inside it as the supervisor's child;
+  - its own volume for the executor's files;
+  - `stop_grace_period` at least twice the stop timeout;
+  - the platform's own restart policy applies to the supervisor process only; the executor's restart
+    policy is this contract.
+- **systemd** would unit the supervisor process the same way:
   - `Restart=on-failure`;
-  - `RestartPreventExitStatus=78`;
   - `StartLimitBurst` / `StartLimitIntervalSec`;
-  - `KillMode=process`.
+  - `KillMode=mixed`, so the supervisor stops its child first.
 
 No deployment file is added in this increment.
 
@@ -239,6 +246,11 @@ The supervisor validates each status payload's exact key set and types before pa
 - `lastReconciliation` (`at`, `outcome`, `entries`, `unresolved`);
 - `lastReason`;
 - `protectedStoreSchema`.
+
+`state` is monotonic; `readiness` is the composition's live value and can read better than `state`
+(for example `ready` while `state` is `DEGRADED`). **`state` is the one to act on.** Lifecycle events
+are validated as strictly as statuses: an exact instance-id pattern and a short instant (publication
+review), so an executor cannot push data into the supervisor's snapshot or log.
 
 A status contains no secret, key, capability, handle, SQL interface, private record, evidence payload
 or path. A status request is answered from the executor's memory, so it opens nothing.
@@ -338,12 +350,25 @@ with reproductions. **It is not a human review.**
 | L5: `COMPOSITION_FAILED` is non-retryable | Low | Intended: fail-safe, needs the operator |
 | Info: `failStop` and `fatal` set their state outside the relation, immediately before `SIGKILL` or exit | Info | Accepted: cosmetic |
 
+**Publication review of PR #252.** A second AI review, of the published diff, with reproductions. It is
+not a human review either.
+
+| Finding | Severity | Resolution |
+|---|---|---|
+| The lock watch confirmed only the protected store: a history lock dropped while running left a false `READY_INACTIVE` indefinitely (another process could open that history) | Medium | Fixed: the watch requires `exclusiveConnectionsSafe()`; test; mutant killed |
+| A `start()` from inside the exit of a blocked supervisor's stop was accepted | Low | Fixed: blocked from the exit instant; test; mutant killed |
+| Lifecycle events were not validated (an unbounded instance id could reach snapshot and log) | Low | Fixed; test; mutant killed |
+| The SIGUSR1 protection depended on the launcher | Low | Fixed: the executor's own `DEBUG_EXPOSED` check; test; mutant killed |
+| `--disable-sigusr1` needs Node 22.14 or later | Info | Documented (§4) |
+| `readiness` can read better than `state` | Info | Documented (§8) |
+| The doc implied the executor itself as the container command | Info | Corrected (§6) |
+
 **Found during implementation.** After an exit, the supervisor kept reporting the dead executor's last
 state (for example `READY_INACTIVE`) through the backoff. Fixed: the state is cleared on exit and kept in
 `lastExit` only.
 
 **Tests:**
-- `tests/fv-p4c2b3c1-dedicated-executor.e2e.test.mjs`: 36 tests with real processes.
+- `tests/fv-p4c2b3c1-dedicated-executor.e2e.test.mjs`: 40 tests with real processes.
 - `src/enterprise/__tests__/fv-p4c2b3c1-dedicated-executor-structure.test.ts`: 6 structure tests.
 - **Targeted mutants**, run on the compiled code in an isolated copy, each against only the tests that must
   kill it, with a bounded timeout. Every file was restored and hash-verified.

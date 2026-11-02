@@ -324,6 +324,15 @@ describe('FV-P4C-2B3C-1 dedicated executor — authority loss and fail-stop', ()
     assert.deepEqual(intents, []);
   });
 
+  it('publication review M: a history lock lost while running is authority lost too: no false readiness, SIGKILL', { timeout: 60_000 }, async () => {
+    const w = await world();
+    const { sup, seen } = supervise(w, { fault: 'drop-history-lock', watchIntervalMs: 100 }, { policy: { ...FAST, maxRestarts: 0 } });
+    sup.start();
+    await waitFor(() => sup.snapshot().phase === 'blocked', 'blocked');
+    assert.ok(seen('EXECUTOR_AUTHORITY_LOST', 'AUTHORITY_LOST'));
+    assert.deepEqual([sup.snapshot().lastExit.signal, sup.snapshot().blockedReason], ['SIGKILL', 'RESTART_LIMIT']);
+  });
+
   it('the B3B exit-listener edge, closed in the dedicated process: an earlier exit listener that exits again, and an exit cached before the wrapper, still end by SIGKILL', { timeout: 60_000 }, async () => {
     const w = await world();
     const { sup } = supervise(w, { fault: 'reexit' }, { policy: { ...FAST, maxRestarts: 0 } });
@@ -490,7 +499,7 @@ describe('FV-P4C-2B3C-1 dedicated executor — recovery and quarantine across re
 describe('FV-P4C-2B3C-1 dedicated executor — the IPC channel, custody and refusals', () => {
   it('36/37/38/39/40. arbitrary, malformed and oversized commands are refused; events and status carry codes and counts only', { timeout: 60_000 }, async () => {
     const w = await world();
-    const child = fork(ENTRY, [JSON.stringify({ dir: w.dir, namespaces: w.namespaces, at: T })], { execArgv: [], env: {}, serialization: 'json', stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const child = fork(ENTRY, [JSON.stringify({ dir: w.dir, namespaces: w.namespaces, at: T })], { execArgv: ['--disable-sigusr1'], env: {}, serialization: 'json', stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
     pids.add(child.pid);
     cleanup.push(() => child.kill('SIGKILL'));
     const messages = [];
@@ -597,6 +606,59 @@ describe('FV-P4C-2B3C-1 dedicated executor — the IPC channel, custody and refu
     await waitFor(() => seen('READY_INACTIVE'), 'READY');
     assert.equal(await sup.status(), undefined);
     await sup.stop();
+  });
+
+  it('publication review: the executor itself refuses an inspector exposure, whoever launched it (no --disable-sigusr1, an inspect flag, NODE_OPTIONS)', { timeout: 60_000 }, async () => {
+    const w = await world();
+    const job = JSON.stringify({ dir: w.dir, namespaces: w.namespaces, at: T });
+    for (const [execArgv, env] of [[[], {}], [['--disable-sigusr1', '--inspect-port=0'], {}], [['--disable-sigusr1'], { NODE_OPTIONS: '--no-warnings' }]]) {
+      const child = fork(ENTRY, [job], { execArgv, env, serialization: 'json', stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      pids.add(child.pid);
+      const event = await new Promise((done) => child.on('message', (m) => m.type === 'lifecycle' && done(m)));
+      assert.deepEqual([event.state, event.reason], ['FAILED', 'DEBUG_EXPOSED'], JSON.stringify(execArgv));
+      child.send({ protocol: FV_EXECUTOR_IPC_PROTOCOL, type: 'stop', id: 'x' });
+      await new Promise((done) => child.on('exit', done));
+    }
+    assert.equal(openable(w.paths.protectedStore), true);
+  });
+
+  it('publication review: lifecycle events that are not exactly an event (here an instance id carrying a path) never reach the snapshot or the log', { timeout: 60_000 }, async () => {
+    const w = await world();
+    const { sup, events } = supervise(w, { fault: 'leaky-lifecycle' });
+    sup.start();
+    await waitFor(async () => (await sup.status())?.state === 'READY_INACTIVE', 'READY by status');
+    assert.equal(sup.snapshot().executorState, null);
+    assert.equal(sup.snapshot().instanceId, null);
+    assert.doesNotMatch(JSON.stringify(events), /sqlite|\/tmp/);
+    await sup.stop();
+    assert.equal(sup.snapshot().lastExit.code, 0);
+  });
+
+  it('publication review: a blocked supervisor cannot be started from inside the exit of its stop', { timeout: 60_000 }, async () => {
+    const w = await world();
+    let attempt;
+    const sup = createFvExecutorSupervisor({
+      entry: PRODUCTION_ENTRY,
+      args: [w.paths.protectedStore],
+      policy: FAST,
+      onEvent: (event) => {
+        if (event.snapshot.pid !== null) pids.add(event.snapshot.pid);
+        if (event.kind === 'exit') {
+          try {
+            sup.start();
+            attempt = 'ACCEPTED';
+          } catch (error) {
+            attempt = error.code;
+          }
+        }
+      },
+    });
+    cleanup.push(() => sup.stop());
+    sup.start();
+    await waitFor(() => sup.snapshot().phase === 'blocked', 'blocked');
+    await sup.stop();
+    assert.equal(attempt, 'BLOCKED');
+    assert.deepEqual([sup.snapshot().phase, sup.snapshot().pid], ['blocked', null]);
   });
 
   it('the supervisor validates its entry and arguments, and starts the child with no inherited flags or environment', () => {

@@ -68,11 +68,12 @@ const composeHere = async () => {
 
 // Faults fire `faultAfterMs` after the executor first reports a running state (observed on its own IPC sends).
 const RUNNING = new Set(['READY_INACTIVE', 'DEGRADED', 'QUARANTINED']);
-let armed = job.fault !== undefined && job.fault !== 'drop-lock-on-stop' && job.fault !== 'leaky-status';
+let armed = job.fault !== undefined && !['drop-lock-on-stop', 'leaky-status', 'leaky-lifecycle'].includes(job.fault);
 if (typeof process.send === 'function') {
   const send = process.send.bind(process);
   process.send = (message, ...rest) => {
     // `leaky-status`: a compromised executor adds a path to its status; the supervisor must not pass it on.
+    if (job.fault === 'leaky-lifecycle' && message?.type === 'lifecycle') message = { ...message, instanceId: `${message.instanceId} ${paths.protectedStore}` };
     if (job.fault === 'leaky-status' && message?.type === 'status') message = { ...message, status: { ...message.status, protectedStorePath: paths.protectedStore } };
     if (armed && message?.type === 'lifecycle' && RUNNING.has(message.state)) {
       armed = false;
@@ -86,6 +87,8 @@ function fire() {
   if (job.fault === 'rejection') void Promise.reject(new Error('synthetic rejection'));
   if (job.fault === 'exit-nonzero') process.exit(9);
   if (job.fault === 'drop-lock') dropLock();
+  // A history's lock only (publication review M): the protected store stays held.
+  if (job.fault === 'drop-history-lock') closeSync(openSync(paths.history(job.namespaces[0]), 'r'));
   if (job.fault === 'reexit') {
     dropLock();
     cachedExit(0);

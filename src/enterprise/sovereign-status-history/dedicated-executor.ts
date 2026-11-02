@@ -35,7 +35,7 @@ import type { FvExecutorEvent, FvExecutorReason, FvExecutorState, FvExecutorStat
 
 export class FvDedicatedExecutorError extends Error {
   constructor(
-    readonly code: 'PLATFORM_UNSUPPORTED' | 'NOT_A_DEDICATED_PROCESS' | 'ALREADY_RUNNING_IN_PROCESS' | 'OPTIONS_INVALID',
+    readonly code: 'PLATFORM_UNSUPPORTED' | 'NOT_A_DEDICATED_PROCESS' | 'ALREADY_RUNNING_IN_PROCESS' | 'OPTIONS_INVALID' | 'DEBUG_EXPOSED',
     message: string,
   ) {
     super(message);
@@ -78,6 +78,11 @@ function looksDedicated(): boolean {
 export function runDedicatedFvExecutor(definition: DedicatedFvExecutorDefinition): void {
   if (!exclusivitySupported()) throw new FvDedicatedExecutorError('PLATFORM_UNSUPPORTED', 'The dedicated FV executor runs on Linux, on the main thread, only.');
   if (typeof process.send !== 'function' || process.connected !== true) throw new FvDedicatedExecutorError('NOT_A_DEDICATED_PROCESS', 'The dedicated FV executor runs only as a supervised child process with an IPC channel; it never runs in its caller’s process.');
+  // Publication review: the inspector exposure is refused here too, whoever launched the process: started
+  // without --disable-sigusr1, with an inspect or debug flag, or with NODE_OPTIONS, it refuses to run.
+  if (!process.execArgv.includes('--disable-sigusr1') || process.execArgv.some((flag) => /^--(inspect|debug)/.test(flag)) || (process.env.NODE_OPTIONS ?? '') !== '') {
+    throw new FvDedicatedExecutorError('DEBUG_EXPOSED', 'The dedicated FV executor runs only with --disable-sigusr1, no inspector flag and no NODE_OPTIONS.');
+  }
   if (running || exclusiveConnectionCount() !== 0) throw new FvDedicatedExecutorError('ALREADY_RUNNING_IN_PROCESS', 'This process already holds, or has held, FV executor state.');
   // Review L1: an IPC channel alone does not make a process dedicated (a Host can itself be a forked child).
   // A process already serving (a listening or connected socket) or already handling process-wide failures or
@@ -201,7 +206,9 @@ function startExecutor(protectedStorePath: string, compose: (() => Promise<FvPro
   /** The composition's readiness, applied monotonically: it never improves in place. */
   const observe = (): void => {
     if (host === undefined || stopping) return;
-    if (!confirmExclusivelyHeld([protectedStorePath])) {
+    // Every lock, not only the protected store's (publication review M): a history whose lock was dropped is
+    // as much a lost authority (its connection could no longer close safely), and it must not read as ready.
+    if (!confirmExclusivelyHeld([protectedStorePath]) || !exclusiveConnectionsSafe()) {
       void failStop('AUTHORITY_LOST');
       return;
     }

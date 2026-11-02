@@ -17,7 +17,8 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - It refuses duplicate instances. A block clears only on the operator's acknowledgement.
 - **The production entry** (`dedicated-executor-main.ts`) is inactive by construction: it composes nothing and reports `FAILED` / `DEPENDENCIES_UNAVAILABLE`.
 - **The PROD-02 persistence ownership contract** (`executor-persistence-contract.ts`), declarative: executor-owned stores; executor-mediated or cold snapshots, both deferred to B3C-2. The AUTH-03 identity store is named as **not owned**, an activation blocker until B3C-3.
-- **Tests:** 36 end-to-end tests with real processes and 6 structure tests; the structure-test import allowlist gains `node:child_process` for the supervisor only.
+- **Publication review (PR #252, AI):** fixed the lock watch, which now covers every history lock as well as the protected store (Medium); also fixed a block bypass from inside a stop's exit, unvalidated lifecycle events, and the executor's own inspector self-check (`DEBUG_EXPOSED`).
+- **Tests:** 40 end-to-end tests with real processes and 6 structure tests; the structure-test import allowlist gains `node:child_process` for the supervisor only.
 - **Independent review:** an AI agent of the same model family, not a human. Fixed: M1 (SIGUSR1 inspector), L2, L3 and L4. Mitigated: L1. Recorded: M2 (identity-store ownership, B3C-3).
 - **Not included:** deployment wiring, B3C-2, B3C-3, B6, FV-P4D and FV-P5. **Operational activation: NO-GO.** See `docs/integration/FV_DEDICATED_EXECUTOR_LIFECYCLE.md`.
 

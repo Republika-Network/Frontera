@@ -82,6 +82,7 @@ export const FV_EXECUTOR_REASONS = Object.freeze([
   'SIGNAL_SIGTERM',
   'SIGNAL_SIGINT',
   'SUPERVISOR_DISCONNECTED',
+  'DEBUG_EXPOSED',
 ] as const);
 export type FvExecutorReason = (typeof FV_EXECUTOR_REASONS)[number];
 export const FV_EXECUTOR_NON_RETRYABLE_REASONS: ReadonlySet<FvExecutorReason> = new Set<FvExecutorReason>([
@@ -94,6 +95,7 @@ export const FV_EXECUTOR_NON_RETRYABLE_REASONS: ReadonlySet<FvExecutorReason> = 
   'PROTECTED_STORE_REFUSED',
   'CUSTODY_REFUSED',
   'COMPOSITION_FAILED',
+  'DEBUG_EXPOSED',
 ]);
 
 /** The executor's status, as its supervisor sees it: counts and codes only. */

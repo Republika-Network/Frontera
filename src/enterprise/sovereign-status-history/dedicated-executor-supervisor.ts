@@ -159,7 +159,9 @@ function eventOf(message: unknown): FvExecutorEvent | undefined {
   if (typeof message !== 'object' || message === null) return undefined;
   const m = message as Record<string, unknown>;
   if (m.protocol !== FV_EXECUTOR_IPC_PROTOCOL) return undefined;
-  if (m.type === 'lifecycle' && typeof m.instanceId === 'string' && typeof m.state === 'string' && STATES.has(m.state) && (m.reason === null || (typeof m.reason === 'string' && REASONS.has(m.reason)))) return m as FvExecutorEvent;
+  // Publication review: lifecycle events are validated like statuses (an exact id, a short instant), so an
+  // executor cannot push data into the supervisor's snapshot or its operator log.
+  if (m.type === 'lifecycle' && typeof m.instanceId === 'string' && /^fv-executor:([0-9a-f-]{36}|refused)$/.test(m.instanceId) && typeof m.at === 'string' && m.at.length <= 40 && typeof m.state === 'string' && STATES.has(m.state) && (m.reason === null || (typeof m.reason === 'string' && REASONS.has(m.reason)))) return m as FvExecutorEvent;
   if (m.type === 'status' && typeof m.id === 'string' && isStatus(m.status)) return m as FvExecutorEvent;
   if (m.type === 'rejected') return m as FvExecutorEvent;
   return undefined;
@@ -194,6 +196,7 @@ export function createFvExecutorSupervisor(options: FvExecutorSupervisorOptions)
   let executorReason: FvExecutorReason | null = null;
   let stopRequested = false;
   let blockedReason: string | null = null;
+  let stoppingFromBlock = false;
   let lastExit: FvSupervisorSnapshot['lastExit'] = null;
   const restartTimes: number[] = [];
   let backoff: ReturnType<typeof setTimeout> | undefined;
@@ -269,10 +272,11 @@ export function createFvExecutorSupervisor(options: FvExecutorSupervisorOptions)
       instanceId = null;
       executorState = null;
       executorReason = null;
-      phase = decision.action === 'restart' ? 'backoff' : decision.action === 'blocked' || phase === 'blocked' ? 'blocked' : 'stopped';
+      // A stop of a blocked executor stays blocked from this instant (publication review: no start() in between).
+      phase = decision.action === 'restart' ? 'backoff' : decision.action === 'blocked' || phase === 'blocked' || stoppingFromBlock ? 'blocked' : 'stopped';
       emit('exit');
       if (decision.action === 'stopped') {
-        phase = phase === 'blocked' ? 'blocked' : 'stopped';
+        phase = phase === 'blocked' || stoppingFromBlock ? 'blocked' : 'stopped';
       } else if (decision.action === 'blocked') {
         phase = 'blocked';
         blockedReason = decision.reason;
@@ -330,6 +334,7 @@ export function createFvExecutorSupervisor(options: FvExecutorSupervisorOptions)
         return;
       }
       const wasBlocked = phase === 'blocked';
+      stoppingFromBlock = wasBlocked;
       stopRequested = true;
       phase = 'stopping';
       nextId += 1;
@@ -347,6 +352,7 @@ export function createFvExecutorSupervisor(options: FvExecutorSupervisorOptions)
       await exited;
       clearTimeout(term);
       clearTimeout(kill);
+      stoppingFromBlock = false;
       if (wasBlocked) phase = 'blocked';
     },
     acknowledgeBlock(): void {
