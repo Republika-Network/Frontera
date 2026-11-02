@@ -424,6 +424,12 @@ counts the fence's kernel reads, identifies each write by its call stack, and wr
       to its own store. A loss in that gap could let one settlement through. It is still a truthful
       settlement: evidence for a consumed decision can only come from the run that consumed it, in this
       process, and AUTH-03 refuses a second, different settlement.
+- **Publication (Linux, B3B-REL): simultaneous start.** Test 14 failed 10 times in 15 on a clean Linux
+  copy: each of two Hosts kept SQLite's SHARED lock from its first read (exclusive locking mode retains
+  it), so both refused (`EXECUTOR_HELD`). This failed closed, but it was a liveness defect. Fixed: a refused
+  acquisition, which never held the lock and whose connection is already closed, is retried up to six times
+  after a short random pause. Initialization is never retried, and a store another live Host holds is still
+  refused. After the fix: 0 failures in 20.
 - **No human review yet.**
 
 ## 12. Remaining dependencies (operational blockers)

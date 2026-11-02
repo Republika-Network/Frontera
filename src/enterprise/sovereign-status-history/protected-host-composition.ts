@@ -211,9 +211,23 @@ export async function composeFvProtectedHost(options: FvProtectedHostOptions): P
   };
 
   // 3. Exclusive authority: the protected store, epoch advanced durably.
+  // Linux CI (B3B-REL): two Hosts opening together can each keep SQLite's SHARED lock from their first read
+  // (exclusive locking mode retains it), so each blocks the other's EXCLUSIVE and both refuse. A refused
+  // attempt never held the lock and its connection is already closed (releasing that SHARED lock), so the
+  // acquisition is retried a bounded number of times after a random pause. Initialization is never retried,
+  // and a store another live Host holds is still refused (`EXECUTOR_HELD`) once the attempts are spent.
+  const ACQUIRE_ATTEMPTS = 6;
   let records: ProtectedContinuityStore;
   try {
-    records = await openProtectedContinuityStore(protectedPath, { now: iso, create: options.initializeProtectedStore === true, beforeWrite: fence(() => checkProtectedFile(protectedPath) === undefined && authority()) });
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        records = await openProtectedContinuityStore(protectedPath, { now: iso, create: options.initializeProtectedStore === true, beforeWrite: fence(() => checkProtectedFile(protectedPath) === undefined && authority()) });
+        break;
+      } catch (error) {
+        if ((error as { code?: unknown }).code !== 'EXECUTOR_HELD' || options.initializeProtectedStore === true || attempt >= ACQUIRE_ATTEMPTS) throw error;
+        await new Promise((done) => setTimeout(done, 5 + Math.floor(Math.random() * 20 * attempt)));
+      }
+    }
   } catch (error) {
     const code = (error as { code?: unknown }).code;
     if (code === 'EXECUTOR_HELD') throw new FvProtectedHostError('EXECUTOR_HELD', 'Another FV executor holds the protected store; this Host executes nothing.');
