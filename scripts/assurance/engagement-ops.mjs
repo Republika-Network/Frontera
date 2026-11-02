@@ -23,7 +23,7 @@
 // Output names checks, variables, paths and digests — never a secret value.
 // See docs/security/ASSURE-OPS-02-SECURE-CUSTOMER-DATA.md.
 
-import { createHash } from 'node:crypto';
+import { createHash, scryptSync } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -149,16 +149,26 @@ function readGovernedActions(env) {
   }
 }
 
-/** sha256 fingerprints of the credentials a Host configuration names. The values are read to hash them and never leave this function. */
+/**
+ * A credential's ledger fingerprint: scrypt (node:crypto; N=2^14, r=8, p=1) with
+ * a fixed, domain-separating salt. Deterministic, so the same credential is
+ * recognised in two engagements; slow, so a leaked ledger does not allow cheap
+ * offline guessing of a low-entropy organization key.
+ */
+function credentialFingerprint(value) {
+  return `scrypt:${scryptSync(value, 'frontera.assurance.credential-ledger.v1', 32, { N: 16384, r: 8, p: 1 }).toString('hex')}`;
+}
+
+/** Fingerprints of the credentials a Host configuration names. The values are read to fingerprint them and never leave this function. */
 function credentialFingerprints(env, governedActions) {
   const fingerprints = [];
   for (const reviewer of Array.isArray(governedActions?.assuranceReviewers) ? governedActions.assuranceReviewers : []) {
     const value = typeof reviewer?.apiKeyEnv === 'string' ? env[reviewer.apiKeyEnv] : undefined;
-    if (typeof value === 'string' && value.length > 0) fingerprints.push({ kind: 'assurance-reviewer', reference: String(reviewer.reviewerId), fingerprint: sha256(`frontera.credential.v1\u0000${value}`) });
+    if (typeof value === 'string' && value.length > 0) fingerprints.push({ kind: 'assurance-reviewer', reference: String(reviewer.reviewerId), fingerprint: credentialFingerprint(value) });
   }
   for (const [index, entry] of String(env.AOC_ENTERPRISE_API_KEYS ?? '').split(',').filter((part) => part.trim().length > 0).entries()) {
     const key = entry.split(':')[0]?.trim() ?? '';
-    if (key.length > 0) fingerprints.push({ kind: 'organization-api-key', reference: `AOC_ENTERPRISE_API_KEYS[${index}]`, fingerprint: sha256(`frontera.credential.v1\u0000${key}`) });
+    if (key.length > 0) fingerprints.push({ kind: 'organization-api-key', reference: `AOC_ENTERPRISE_API_KEYS[${index}]`, fingerprint: credentialFingerprint(key) });
   }
   return fingerprints;
 }

@@ -28,7 +28,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 /** The coverage model a PROD-02 manifest carries. A restore refuses any other value (an unknown, newer model fails closed). */
 export const COVERAGE_MODEL = 'aoc.enterprise.backup.coverage.v1';
@@ -752,8 +751,11 @@ let cachedModules;
 export async function loadRegistryModules(repoRoot) {
   if (cachedModules !== undefined) return cachedModules;
   const dist = (path) => resolve(repoRoot, 'dist/src', path);
-  const required = (path) => {
+  const required = async (path) => {
     if (!existsSync(dist(path))) throw new Error(`Built output not found at ${dist(path)}. Run "npm run build" before using the portability tooling.`);
+    // A file URL, not a bare path: Windows Node refuses an absolute drive path as an ESM specifier.
+    // node:url is loaded here, not at the top, so this module stays pure at import time (PROD-03 readiness gate).
+    const { pathToFileURL } = await import('node:url');
     return import(pathToFileURL(dist(path)).href);
   };
   cachedModules = {

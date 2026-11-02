@@ -86,7 +86,7 @@ customer ──(evidence files: encrypted channel, D-05)──► reviewer
 | One organization per Host | Host (REL-01D) plus preflight **E02** (served org = engagement org) | ISO-05 |
 | No report retrieval across customers | Separate Hosts and credential sets: A's credential is `401` on B; A's report is `404` on B; A's package is `RELEASE_NOT_IN_CUSTODY` on B | ISO-02 |
 | No cross-customer evidence | SEC-01D attribution: A's evidence offered to B is `EVIDENCE_WRONG_TENANT` per reference | ISO-03 |
-| No reused credentials | Preflight **E12** with a credential ledger: sha256 fingerprints (never values) of reviewer and organization keys; reuse across engagements, or sharing within one, fails | ISO-04 |
+| No reused credentials | Preflight **E12** with a credential ledger: deterministic scrypt fingerprints (never values; slow, so a leaked ledger does not allow cheap guessing of a low-entropy key) of reviewer and organization keys; reuse across engagements, or sharing within one, fails | ISO-04 |
 | No cross-customer restore | The sealed header names the engagement and organization (authenticated by GCM), and restore:v1 refuses another organization | BAK-04 |
 | No system-context bypass | Reviewer-only mode (**E04**), authentication required (**E06**), loopback or private bind (**E07**) | ISO-05 |
 | Framework recorded | **E05**: exactly `rn.sv@0.1.0` | ISO-05 |
@@ -323,6 +323,16 @@ restored): **12 killed, 0 survived**:
    SQLite cleans up.
 2. The plan opened a store even when a non-empty WAL showed a running Host.
    It now never opens it.
+
+**Two defects found by CI on the first PR head and fixed:**
+
+3. The PROD-03 readiness gate requires `store-registry.mjs` to import only
+   `node:crypto`, `node:fs` and `node:path` at the top level ("pure at import
+   time"). The Windows file-URL fix now loads `node:url` lazily inside the
+   module loader instead.
+4. CodeQL `js/insufficient-password-hash` flagged the ledger's plain-SHA-256
+   credential fingerprint. It now uses scrypt with a fixed domain salt:
+   deterministic, and slow to guess.
 
 ## 14. Existing limitations
 
