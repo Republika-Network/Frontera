@@ -80,15 +80,35 @@ here.
 
 | ID | Finding | Evidence | Consequence | Proposed treatment | Status |
 | --- | --- | --- | --- | --- | --- |
-| GF-01 | The delivered report's cover **hard-codes** the statement that the release approver acts as the framework's "controlled review". This pre-empts founder decision D-02, which is open | `src/enterprise/assurance/commercial-report.ts:787-791` (cover `commercialUse.statement`); `:286` (the acknowledgement's doc comment) | Every report v2 already tells the customer that an internal approver is the controlled review | D-02 must decide it explicitly. If D-02 ≠ option (b), the wording changes in a new generator version (R-06 scope); historical reports stay unchanged | VERIFIED (code reading); treatment PENDING |
+| GF-01 | The delivered report's cover **hard-codes** the statement that the release approver acts as the framework's "controlled review". This pre-empts founder decision D-02, which is open | `src/enterprise/assurance/commercial-report.ts:787-791` (cover `commercialUse.statement`); `:286` (the acknowledgement's doc comment) | Every report v2 already tells the customer that an internal approver is the controlled review | D-02 must decide it explicitly. If D-02 ≠ option (b), the wording changes in a new generator version (R-06 scope); historical reports stay unchanged | VERIFIED (code reading). **ASSURE-CLAIMS-01:** treatment IMPLEMENTED in generator v3 (§4a); D-02 still PENDING |
 | GF-02 | The frozen restriction is phrased as **self-expiring**: "…until ASSURE-SEC-01 resolves the known blockers". It can be misread as lifted now that 8 of 9 blockers are closed | `rn-sv-framework.ts:536-539` | Risk of an informal "the restriction has lapsed" reading | Record here and in the strategy: the restriction lapses only by a governance decision for a new version, never by technical closure. A successor must not use self-expiring conditions | VERIFIED; treatment PROPOSED |
 | GF-03 | An engineering security record states an acceptance that no one approved: REL-01D §10 lists static bearer secrets as "**Accepted** for a private pilot" | `docs/security/ASSURE-REL-01D-OPERATOR-INTERFACE.md` §10 | Technical documentation reads as policy acceptance | Read it as PROPOSED. Acceptance exists only through M2 / SR-02. A one-line correction is backlog R-11 (with the stale status header) | VERIFIED; treatment PROPOSED |
 | GF-04 | `CUSTOMER_DATA_GOVERNANCE.md` contradicts itself after OPS-02: §3, §13 and the gap summary still say backups are not encrypted and no per-customer deletion exists, while the OPS-02 notes in the same file say otherwise | `../CUSTOMER_DATA_GOVERNANCE.md` §3, §13, "Summary of gaps"; `docs/security/ASSURE-OPS-02-SECURE-CUSTOMER-DATA.md` §4, §10 | A legal reviewer would read an inconsistent policy | The policy owner (LEG + OPS) corrects it while reviewing M3. Not edited here: it is a policy under legal review | VERIFIED; PENDING |
 | GF-05 | No ASSURE-SEC-01A security document exists. B9's closure is evidenced by code, test, the framework header and commit only | `git log` over `docs/security/ASSURE-SEC-01A*` returns nothing | An external reviewer lacks a design record for B9 | Evidence index points to the code and test directly; a short SEC-01A record is a documentation backlog item | VERIFIED |
-| GF-06 | Customer-facing drafts claim **independence** that the service does not have: "an independent, evidence-based view" (draft A, `SERVICE_SPECIFICATION.md` §1), "Independent sign-off" (draft A), "approver, independent of the reviewers" (draft H); and "…and prove it" (draft A headline) | `../drafts/A_ONE_PAGE_OFFER.md:8,11,25`; `../drafts/H_CUSTOMER_HANDOFF_VERIFICATION.md:21`; `../SERVICE_SPECIFICATION.md` §1 | Overclaim: Republika authors the framework, runs the tooling and performs the review | Replacement wording in [`CUSTOMER_CLAIMS_REVIEW.md`](CUSTOMER_CLAIMS_REVIEW.md) §3. Drafts not edited here (LEG-owned) | VERIFIED; PROPOSED |
+| GF-06 | Customer-facing drafts claim **independence** that the service does not have: "an independent, evidence-based view" (draft A, `SERVICE_SPECIFICATION.md` §1), "Independent sign-off" (draft A), "approver, independent of the reviewers" (draft H); and "…and prove it" (draft A headline) | `../drafts/A_ONE_PAGE_OFFER.md:8,11,25`; `../drafts/H_CUSTOMER_HANDOFF_VERIFICATION.md:21`; `../SERVICE_SPECIFICATION.md` §1 | Overclaim: Republika authors the framework, runs the tooling and performs the review | Replacement wording in [`CUSTOMER_CLAIMS_REVIEW.md`](CUSTOMER_CLAIMS_REVIEW.md) §3. Drafts not edited here (LEG-owned) | VERIFIED; PROPOSED. **ASSURE-CLAIMS-01:** drafts corrected (§4a); LEG review PENDING |
 | GF-07 | The report generator, its readiness check, its limitation texts and the offline verifier are **hard-bound to `rn.sv@0.1.0`**. A successor version is not a metadata-only change in effect: it needs a code mission | `commercial-report.ts:11,58-59,411,425,473,521,542`; `scripts/assurance/verify-commercial-package.mjs:45-46,145-147`; `enterprise-configuration.ts:482`; `composition-root.ts:2588` | Planning must treat R-06 as code + governance | Impact analysis in [`RN_SV_0_2_0_CANDIDATE_SPEC.md`](RN_SV_0_2_0_CANDIDATE_SPEC.md) §6 | VERIFIED |
 | GF-08 | Every assessment read and draft path resolves its framework through the registry (`frameworkFor`, `allowRetired: true`). A version taken out of `AOC_ENTERPRISE_ASSURANCE_FRAMEWORKS` is not registered, so its historical assessments could no longer be drafted or evaluated on that Host | `service.ts:360-362`; `composition-root.ts:2588-2596` | "Suspending" a version by deregistering it would break historical access | Suspension is a separate commercial-authorization gate, never deregistration ([`FRAMEWORK_VERSION_STRATEGY.md`](FRAMEWORK_VERSION_STRATEGY.md) §6). Behaviour under deregistration is **not tested**; R-06 must test it | VERIFIED (code reading); not tested |
 | GF-09 | The registry's `deprecate()` has no frozen check (unlike `register`/`activate`) and no runtime caller outside tests | `framework-registry.ts` `deprecate`; `grep` for `.deprecate(` outside tests: none | No supported operator path to stop new assessments on a version | R-06 defines the lifecycle path explicitly | VERIFIED |
+
+## 4a. ASSURE-CLAIMS-01 update (GF-01, GF-06, C9)
+
+ASSURE-CLAIMS-01 corrected the report generator (new generator version
+`aoc.assurance.commercial-report.v3`; v1/v2 reports and fixtures byte-identical)
+and the customer-facing drafts A, D, F, G, H and the service specification.
+Record: `docs/security/ASSURE-CLAIMS-01-REPORT-DISCLOSURE-INTEGRITY.md`.
+
+| Item | Status after ASSURE-CLAIMS-01 |
+| --- | --- |
+| GF-01 / GF-06 remediation | IMPLEMENTED. Technically VERIFIED only when `assure-claims-01-commercial-disclosures.test.ts` and the historical-compatibility suites pass on the PR head; local results are in the CLAIMS-01 record |
+| Independent R1/R2 review | PENDING. No reviewer is engaged; nothing in CLAIMS-01 is an independent review |
+| Legal review of the corrected wording (L1–L9) | PENDING |
+| B7 external authenticity | OPEN. Disclosed in the v3 report text; no signature implemented |
+| Security risk acceptance (M2, SR-12, SR-13) | PENDING |
+| `rn.sv@0.1.0` | Commercially restricted; frozen; golden digest unchanged |
+| `rn.sv@0.2.0` | Not created |
+| Six mandatory commercial approvals (M1–M6) | All missing |
+| D-01, D-02, D-03 | PENDING; not decided by CLAIMS-01 |
+| Final commercial decision | **NO-GO** |
 
 ## 5. Synthetic validation summary
 

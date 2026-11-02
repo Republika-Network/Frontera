@@ -3,13 +3,15 @@
 > **STATUS: DRAFT FOR FOUNDER REVIEW ONLY.** Not an offer, not a price, not a
 > contract. It claims no accreditation, approval or customer reference. It
 > describes what the current product can support. Wherever this document says
-> "will" or "must", read it as *proposed*.
+> "will" or "must", read it as *proposed*. Independence and review wording
+> corrected by ASSURE-CLAIMS-01 (GF-01, GF-06); subject to qualified legal
+> review.
 
 ## 1. Purpose and value proposition
 
-**Purpose.** Give an organization an independent, evidence-based,
-human-reviewed view of its **digital-sovereignty posture** over a scope it
-declares. Digital sovereignty here means: who may act, under what consent and
+**Purpose.** Give an organization a structured, evidence-based assessment of
+its **digital-sovereignty posture**, conducted by Republika reviewers, over a
+scope it declares. Digital sovereignty here means: who may act, under what consent and
 policy; whether records can be trusted and traced; whether organizations stay
 isolated and disclosure stays minimal; whether authority can be revoked; and
 whether problems are corrected and confirmed. The view is given against the
@@ -24,15 +26,47 @@ ten controls of `rn.sv@0.1.0`.
   FAIL without accepted evidence bound to that control (ASSURE-SEC-01A).
 - **Honest gaps.** Missing evidence is reported as UNKNOWN (an evidence gap),
   never as a pass and never as a failure.
-- **Separation of duties.** The person who approves the release did not
-  review any control of that assessment. The service enforces this per
-  credential; process enforces it per person.
+- **Separation of duties.** A separate authorized Republika approver, who did
+  not review any control of that assessment, approves the release. The
+  service enforces this per credential; process enforces it per person. This
+  is internal approval, not an external or independent review.
 - A **verifiable deliverable package.** The customer can check its integrity
   offline and confirm it with the issuer's custody.
 - A **remediation roadmap** derived only from findings, with owners and dates
   left to be agreed, never invented.
 
+**Who performs it.** See §1a.
+
 **What it is not.** See §15 and draft G.
+
+## 1a. Roles, independence and what a result means
+
+- **Framework.** Republika authored `rn.sv@0.1.0`. It has not been reviewed
+  or approved by any accreditation body or external party.
+- **Tooling.** Republika operates the assessment tooling (the Enterprise Host
+  and its Assurance service).
+- **People.** Republika personnel or authorized contractors perform the
+  control reviews, and a separate one approves the release.
+- **Independence.** The assessment is independent of the customer's
+  organization. It is not independent of the framework author or of the
+  tooling operator, both of which are Republika.
+- **External review.** No external auditor or independent reviewer has
+  reviewed any assessment. One would exist only where a qualified external
+  reviewer performs an actual review under a documented engagement, and the
+  report would then name that reviewer and scope. Internal release approval
+  is never presented as an external review.
+- **Commercial authorization.** Whether `rn.sv@0.1.0` may be used
+  commercially is a separate governance decision (`governance/`). It does not
+  follow from internal review, internal approval or any external review. It
+  is currently **restricted**.
+- **What PASS means.** A reviewer's conclusion, from accepted customer
+  evidence bound to that control, that the control's condition held for the
+  sample. It does **not** guarantee that the supplied evidence is authentic,
+  complete or representative of the whole system.
+- **Boundaries.** Every conclusion is constrained by the declared scope, the
+  evidence cut-off and the ten-control set (§4, §5). Nothing outside them is
+  assessed.
+- **No accreditation or certification** is implied (§15).
 
 ## 2. Target customer profile (founding cohort)
 
@@ -126,7 +160,7 @@ does not restate them, so that it cannot drift from the frozen definition.
 | Confirms in writing its authority to provide each evidence item (draft E) | Accepts only evidence within the guidelines (draft C) |
 | Supplies evidence, minimized and redacted | Records evidence references; never stores secrets |
 | Names one authoritative artifact when copies conflict | Ends a contradicted attempt and starts a linked new one (REL-01B) |
-| Reviews the draft for factual errors in the declared scope only | Reviewer concludes each control; approver independently releases |
+| Reviews the draft for factual errors in the declared scope only | Reviewer concludes each control; a separate approver releases |
 | Verifies the delivered package (draft H) | Answers verification requests from custody |
 
 Detail: draft E (customer) and `OPERATOR_ROLES.md` (Republika).
@@ -151,8 +185,10 @@ Detail: draft E (customer) and `OPERATOR_ROLES.md` (Republika).
    is refused while any review is pending.
 8. **Draft** the commercial report. Confirm `READY_FOR_RELEASE`. Read it in
    full against the SOW.
-9. **Independent approval and release** by a different person holding
-   `assure.report-release`, into durable custody.
+9. **Separate release approval** by a different authorized Republika person
+   holding `assure.report-release`, whose credential recorded no review of
+   the assessment, into durable custody. Internal approval, not external
+   review.
 10. **Deliver** the package unchanged, as an archive, with verification
     instructions. The customer verifies it.
 11. **Closeout** and deletion (draft I).
@@ -200,7 +236,7 @@ Delivered as one archive, unchanged:
 | `report.md` | Human-readable report |
 | `report.json` | Canonical content |
 | `integrity-manifest.json` | Digests binding the assessment, framework, generator, content and Markdown |
-| `release-record.json` | The independent approval: approver, role, acknowledgements, date, digests |
+| `release-record.json` | The separate internal release approval: approver, role, acknowledgements, date, digests |
 | `limitations.md` | The limitations extract |
 | `verification-instructions.md` | How to verify; what *ready*, *released* and *authentic* mean |
 
@@ -217,7 +253,7 @@ executions so far are synthetic (PILOT-01, REL-01D Stage 5).
 | Evidence collection | 1–3 weeks elapsed | First founding engagement |
 | Review, 10 controls | 3–6 reviewer-days | Time-box and record actuals |
 | Contradiction handling, per contradicted control | +1–5 days elapsed | Record actuals |
-| Drafting, independent approval, release | 1–2 approver-days | Record actuals |
+| Drafting, separate release approval, release | 1–2 approver-days | Record actuals |
 | Closeout and deletion | ≤ 1 day effort, after the retention period | Record actuals |
 
 ## 14. Rescoring and reassessment policy (proposed)
@@ -252,8 +288,14 @@ The Founding Assessment:
   certification** under any law or standard;
 - is **not a blanket assurance of the safety of autonomous agents** or of any
   system's future behaviour;
+- is **not an independent or external review**: Republika authors the
+  framework, operates the tooling, and performs and approves the assessment;
 - relies on evidence supplied by the customer, which Republika does not
-  authenticate;
+  authenticate. A PASS is not a guarantee that the evidence is authentic,
+  complete or representative;
+- is **not digitally signed**: the package's digests show integrity only,
+  and its origin is corroborated only by confirming with Republika over a
+  separate, trusted channel;
 - is point-in-time and sample-based, and bound to the declared scope, the
   framework version and the methodology version.
 

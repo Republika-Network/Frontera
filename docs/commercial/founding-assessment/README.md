@@ -61,6 +61,7 @@ discrepancy.
 | Host operator interface | [`docs/security/ASSURE-REL-01D-OPERATOR-INTERFACE.md`](../../security/ASSURE-REL-01D-OPERATOR-INTERFACE.md) |
 | Backup / restore | [`docs/operations/AOC_ENTERPRISE_BACKUP_V1.md`](../../operations/AOC_ENTERPRISE_BACKUP_V1.md), [`docs/operations/AOC_ENTERPRISE_RESTORE_V1.md`](../../operations/AOC_ENTERPRISE_RESTORE_V1.md) |
 | Generic Frontera pilot operations (not Assurance-specific) | [`docs/pilot/README.md`](../../pilot/README.md) |
+| Customer-claim integrity, report review disclosure (generator v3) | [`docs/security/ASSURE-CLAIMS-01-REPORT-DISCLOSURE-INTEGRITY.md`](../../security/ASSURE-CLAIMS-01-REPORT-DISCLOSURE-INTEGRITY.md) |
 
 ## How this pack becomes non-draft
 

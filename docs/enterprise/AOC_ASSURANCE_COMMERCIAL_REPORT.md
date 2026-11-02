@@ -52,7 +52,7 @@ A draft is always computed, and every check is printed in it:
 - **DRAFT:** at least one check failed. The Markdown opens with **DRAFT — NOT
   FOR DELIVERY**.
 - **READY_FOR_RELEASE:** every check passed. It is still not released. From
-  generator v2 (ASSURE-REL-01C), the Markdown says so in words that stay true
+  generator v2 (ASSURE-REL-01C; unchanged in v3), the Markdown says so in words that stay true
   after a release: "Readiness is not release: this document does not state
   whether it was released. … Without one, this report is not released." The
   report itself never states a release status; only the release record and
@@ -152,9 +152,24 @@ The per-control limitations are printed with each control.
 
 The framework definition, which is immutable and protected by its golden
 digest, still records `commercialUse: restricted` from before ASSURE-SEC-01. A
-release therefore requires the approver to acknowledge that restriction and
-act as its controlled review. Lifting it formally needs a governance decision
-and a new framework version.
+release therefore requires the approver to acknowledge that restriction. The
+acknowledgement is an internal approval step: it is not the "controlled
+external review" the restriction names, and it does not lift the restriction.
+Lifting it formally needs a governance decision and a new framework version
+(founder decision D-02 remains open).
+
+**Review disclosure (generator v3, ASSURE-CLAIMS-01).** Generators v1 and v2
+told the reader that the release approver acts as the controlled review
+(GF-01). From `aoc.assurance.commercial-report.v3` the report keeps four
+things apart: (A) internal assessment review by authenticated reviewers;
+(B) internal release approval by a separate authorized Republika approver
+whose credential recorded none of the reviews; (C) external independent
+review, of which none is recorded, and which no request field can claim; and
+(D) framework commercial authorization, a separate governance decision. It
+also states that Republika authored the framework and operates the tooling,
+and that the report is not digitally signed. v1 and v2 reports keep their
+wording and bytes. See
+`docs/security/ASSURE-CLAIMS-01-REPORT-DISCLOSURE-INTEGRITY.md`.
 
 ## 7. Integrity
 

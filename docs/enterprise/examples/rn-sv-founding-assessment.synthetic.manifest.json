@@ -6,10 +6,10 @@
   "frameworkId": "rn.sv",
   "frameworkVersion": "0.1.0",
   "frameworkDigest": "sha256:e71fafe1a10af95514823e35d43138b1b93cdb72e37765200447a37748c13a58",
-  "generatorVersion": "aoc.assurance.commercial-report.v2",
+  "generatorVersion": "aoc.assurance.commercial-report.v3",
   "readiness": "READY_FOR_RELEASE",
   "canonicalizationVersion": "aoc.canonical-json.v1",
-  "contentDigest": "sha256:8bb6a5b6471dff3e2674376a2e53fde689f9686b3e21c89e8c0270c801f5edaa",
-  "markdownDigest": "sha256:631d348edf969ab5e97e350df4ec2d26e70f8e758e44c1d27f3c375ccf012644",
-  "manifestDigest": "sha256:1eceb8e1f1f7e3ebc84fd13aa4f04da96dd6b578c10f299fddc710c90ad4155e"
+  "contentDigest": "sha256:43c176ab641c5b8e5604cb9a4dfa448a7d53f8820e166404e0be59f97d4ccb6a",
+  "markdownDigest": "sha256:129a828a791f50c900dc78175e8692a9314bbdabc5fade766e1fd9ba7c7d5e75",
+  "manifestDigest": "sha256:8301b496bd7a52531d584a07eae42589f909a1a6c11568809d0299010de77007"
 }

@@ -1,7 +1,8 @@
 # [DRAFT H] Customer Handoff and Verification Instructions
 
 > **DRAFT.** Complements the `verification-instructions.md` file generated in
-> each package (ASSURE-REL-01C); it does not replace it.
+> each package (ASSURE-REL-01C); it does not replace it. Wording corrected by
+> ASSURE-CLAIMS-01 (GF-06); **subject to qualified legal review**.
 
 ## 1. What you receive
 
@@ -18,8 +19,17 @@ digest. Keep the original archive.
 | Term | Meaning | How you know |
 | --- | --- | --- |
 | **Ready** | The report was complete and cleared for release when drafted | `report.json` / `report.md` readiness |
-| **Released** | A Republika approver, independent of the reviewers, approved this exact content | `release-record.json`, **confirmed by Republika** |
+| **Released** | A different authorized Republika approver approved this exact report content for release | `release-record.json`, **confirmed by Republika** |
 | **Authentic** | This package is the one Republika issued | **Only by asking Republika.** The package carries no digital signature |
+
+**Who approved it.** The approver works for Republika (as an employee or an
+authorized contractor); they are not external to Republika and not an
+independent reviewer. Internal separation of duties means the approval was
+made with a separate approved credential that recorded none of the control
+reviews: the Host enforces that per credential. That the approver is also a
+different person from the reviewers is enforced by Republika's operating
+procedure; it is not cryptographically proven. Internal approval is not an
+external review and does not certify anything.
 
 ## 3. Confirm the release over a second channel
 
@@ -39,7 +49,10 @@ node verify-commercial-package.mjs <unpacked-package-directory>
 
 Expect `PASS` for files, artifact integrity, report consistency and approval
 consistency, and `external authenticity NOT DEMONSTRATED`. That last line is
-expected. It means the tool cannot prove who issued the package; §3 and §5 do.
+expected. It means the tool cannot establish who issued the package. The
+package is not digitally signed, and its digests show only that the files are
+unchanged. To corroborate that Republika issued it, use §3 and §5: both rely
+on confirmation from Republika over a separate, trusted channel.
 
 ## 5. Ask Republika to verify authoritatively
 

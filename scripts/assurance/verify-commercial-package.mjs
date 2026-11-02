@@ -50,10 +50,17 @@ const RELEASE_ROLE = 'assure.report-release';
  * released" in their READY banner and "Not released by this document" in their
  * integrity section, which stays true of their bytes after a release; they are
  * verified unchanged. v2 reports make no claim about their own release.
+ * v3 reports (ASSURE-CLAIMS-01) also keep internal review, internal release
+ * approval and external review apart; v1 and v2 reports said the internal
+ * approver acts as the controlled review (GF-01), which this verifier reports
+ * as historical wording without treating it as a failure of those packages.
  */
 const GENERATOR_V1 = 'aoc.assurance.commercial-report.v1';
 const GENERATOR_V2 = 'aoc.assurance.commercial-report.v2';
-const KNOWN_GENERATORS = [GENERATOR_V1, GENERATOR_V2];
+const GENERATOR_V3 = 'aoc.assurance.commercial-report.v3';
+const KNOWN_GENERATORS = [GENERATOR_V1, GENERATOR_V2, GENERATOR_V3];
+/** Wording that presents internal approval as the framework's controlled or external review (GF-01), or claims an external review happened. */
+const REVIEW_CONFLATION = /act as that review|acts? as (?:the|its|that) controlled review|(?:external|independent|third[- ]party) review(?:er)? (?:was|has been) (?:performed|completed|obtained)|independently (?:reviewed|audited|certified)|reviewed by an (?:external|independent) /i;
 const REQUIRED = ['report.md', 'report.json', 'integrity-manifest.json', 'release-record.json'];
 const INFORMATIONAL = ['verification-instructions.md', 'limitations.md'];
 
@@ -165,10 +172,24 @@ if (content && manifest && release) {
   record('reportConsistency', 'not marked DRAFT', !markdown.includes('DRAFT — NOT FOR DELIVERY'));
   const generator = content.integrity?.generatorVersion;
   record('reportConsistency', 'known report format', KNOWN_GENERATORS.includes(generator), generator);
-  if (generator === GENERATOR_V2) {
-    // A v2 report never states whether it was released: the release record and the issuer's custody do.
-    record('reportConsistency', 'report makes no claim about its own release (v2)', !/not yet released|Not released by this document/.test(markdown) && !/not yet released|Not released by this document/.test(JSON.stringify(content.integrity ?? {})));
+  if (generator === GENERATOR_V2 || generator === GENERATOR_V3) {
+    // A v2 or v3 report never states whether it was released: the release record and the issuer's custody do.
+    record('reportConsistency', `report makes no claim about its own release (${generator === GENERATOR_V2 ? 'v2' : 'v3'})`, !/not yet released|Not released by this document/.test(markdown) && !/not yet released|Not released by this document/.test(JSON.stringify(content.integrity ?? {})));
   }
+  if (generator === GENERATOR_V3) {
+    // ASSURE-CLAIMS-01: internal approval is never presented as external review, and the restriction stays visible.
+    const statement = String(content.integrity?.commercialUse?.statement ?? '');
+    // Scanned over the generator-authored disclosure only: customer-declared scope text is not the issuer's claim.
+    const authored = JSON.stringify({ integrity: content.integrity, methodology: content.methodology, limitations: content.limitations, readiness: content.readiness });
+    record('reportConsistency', 'internal approval not presented as external or controlled review (v3)', !REVIEW_CONFLATION.test(authored));
+    record('reportConsistency', 'states internal approval is not an independent external review (v3)', /do not constitute an independent external review/.test(statement) && /No external review of this assessment is recorded/.test(statement) && markdown.includes(escapeMarkdown(statement)));
+    const unsigned = 'They are not a digital signature, and this report carries none.';
+    record('reportConsistency', 'states the report is not digitally signed (v3)', String(content.integrity?.limitation ?? '').includes(unsigned) && markdown.includes(escapeMarkdown(unsigned)));
+  }
+  result.reviewDisclosure =
+    generator === GENERATOR_V3
+      ? `${GENERATOR_V3}: control conclusions are recorded by authenticated reviewers and release requires a separate authorized Republika approver. That is internal review and internal approval, not an independent external review; no external review is recorded, and the framework's commercial-use restriction is not lifted by it.`
+      : `${String(generator)} (historical wording, GF-01): its commercial-use statement says the release approver acts as the framework's controlled review. That approver is internal to the issuer: the release is internal approval, not an independent external review, and it does not lift the framework's commercial-use restriction. The wording is superseded in ${GENERATOR_V3}; this package is left as approved.`;
   result.reportFormat =
     generator === GENERATOR_V1
       ? `${GENERATOR_V1} (historical): its text says "not yet released" / "Not released by this document"; that wording predates ASSURE-REL-01C and is left as approved. Release status comes from release-record.json and the issuer's custody, never from the report text.`

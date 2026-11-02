@@ -7,7 +7,7 @@ import { findingHistoryViolations } from './finding-history.js';
 import { isHostVerified } from './manual-evidence-trust.js';
 import { isSafeReviewerReference, publicReviewerReference } from './reviewer-reference.js';
 import { renderCommercialReportMarkdown } from './commercial-report-markdown.js';
-import { COMMERCIAL_REPORT_GENERATOR_V2, RELEASE_STATEMENT_V2 } from './commercial-report-format.js';
+import { COMMERCIAL_REPORT_GENERATOR_V3, DISCLOSURE_WORDING_V3, RELEASE_STATEMENT_V2, REVIEW_LIMITATION_ANCHOR } from './commercial-report-format.js';
 import { RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_V0_1, RN_SV_FRAMEWORK_VERSION } from './frameworks/rn-sv-framework.js';
 import type {
   AssuranceAssessment,
@@ -49,8 +49,13 @@ import { ASSURANCE_FINDING_SEVERITIES } from './contracts.js';
  */
 
 export const COMMERCIAL_REPORT_SCHEMA_VERSION = 'rn.sv.commercial-report.v1';
-/** ASSURE-REL-01C: v2 makes no claim about its own release (`commercial-report-format.ts`). v1 reports stay valid and render unchanged. */
-export const COMMERCIAL_REPORT_GENERATOR_VERSION = COMMERCIAL_REPORT_GENERATOR_V2;
+/**
+ * ASSURE-REL-01C: v2 makes no claim about its own release. ASSURE-CLAIMS-01:
+ * v3 keeps internal review, internal release approval, external review and
+ * commercial authorization apart (`commercial-report-format.ts`). v1 and v2
+ * reports stay valid and render unchanged.
+ */
+export const COMMERCIAL_REPORT_GENERATOR_VERSION = COMMERCIAL_REPORT_GENERATOR_V3;
 export const COMMERCIAL_REPORT_TITLE = 'Republika Sovereignty Assessment — Founding Assessment';
 /** The configured reviewer-credential role that may approve a commercial release. Never implied by `assure.reviewer`. */
 export const COMMERCIAL_REPORT_RELEASE_ROLE = 'assure.report-release';
@@ -283,7 +288,12 @@ export interface CommercialReportDraft {
 export interface CommercialReleaseAcknowledgements {
   /** The approver read the limitations, exclusions and scope as rendered. */
   readonly limitationsReviewed: true;
-  /** The approver acknowledges `rn.sv@0.1.0`'s recorded commercial-use restriction and acts as its controlled review. */
+  /**
+   * The approver acknowledges `rn.sv@0.1.0`'s recorded commercial-use
+   * restriction. ASSURE-CLAIMS-01 (GF-01): an acknowledgement, not a review.
+   * It does not make the internal approver an external reviewer, and it does
+   * not satisfy or remove the restriction.
+   */
   readonly commercialUseRestrictionAcknowledged: true;
 }
 
@@ -404,7 +414,9 @@ const LIMITATIONS: readonly string[] = [
   'This is a limited-scope assessment of the declared scope only; conditions outside it were not examined.',
   'Results are point-in-time, as of the evidence cutoff, and do not describe the system before or after it.',
   'Conclusions depend on the evidence made available; most evidence was supplied by the assessed organization and was not independently authenticated.',
-  'Every rn.sv control is concluded by an authenticated human reviewer; the conclusions involve professional judgement.',
+  REVIEW_LIMITATION_ANCHOR,
+  // ASSURE-CLAIMS-01 (GF-06): who performs the assessment, and what that independence is relative to.
+  ...(DISCLOSURE_WORDING_V3.whoPerformsLimitation !== undefined ? [DISCLOSURE_WORDING_V3.whoPerformsLimitation] : []),
   'This report is not a certification, accreditation, attestation of compliance, or seal of any kind.',
   'This report is not a legal opinion and does not state compliance with any law or regulation.',
   'This report does not establish the absence of vulnerabilities, and no security testing was performed against the assessed systems.',
@@ -430,7 +442,7 @@ const METHODOLOGY_STEPS: readonly string[] = [
   'Findings derived and classified by rule-based severity.',
   'Assessment integrity and finding histories verified.',
   'This report generated deterministically from the verified assessment.',
-  'Release reviewed and approved by an authenticated human approver before delivery.',
+  DISCLOSURE_WORDING_V3.releaseApprovalStep,
 ];
 
 const INVALIDATING_CHANGES: readonly string[] = [
@@ -786,11 +798,12 @@ export function buildCommercialReportDraft(sources: CommercialReportSources): Co
       reviewers,
       commercialUse: {
         frameworkStatus: typeof commercialUse.status === 'string' ? commercialUse.status : NOT_SPECIFIED,
-        statement:
-          'The framework definition records commercial use as restricted pending controlled review. Release of this report requires an authenticated human approver to acknowledge that restriction and act as that review; the release record states whether this happened.',
+        // ASSURE-CLAIMS-01 (GF-01): internal review and internal approval are not external review, and lift no restriction.
+        statement: DISCLOSURE_WORDING_V3.commercialUseStatement,
       },
+      // v3 keeps the v2 release statement (ASSURE-REL-01C).
       release: RELEASE_STATEMENT_V2,
-      limitation: 'The digests in the manifest show integrity only. They are not a digital signature, do not provide non-repudiation, and do not authenticate the evidence.',
+      limitation: DISCLOSURE_WORDING_V3.integrityLimitation,
     },
   };
 

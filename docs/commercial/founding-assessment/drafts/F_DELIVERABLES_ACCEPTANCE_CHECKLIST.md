@@ -1,6 +1,7 @@
 # [DRAFT F] Assessment Deliverables and Acceptance Checklist
 
-> **DRAFT.** Subject to legal review of the acceptance terms.
+> **DRAFT.** Subject to legal review of the acceptance terms. Release-record
+> wording corrected by ASSURE-CLAIMS-01 (GF-06).
 
 ## Deliverables (one archive, files unchanged)
 
@@ -9,7 +10,7 @@
 | `report.md` | Human-readable report | `markdownDigest` |
 | `report.json` | Canonical content | `contentDigest` |
 | `integrity-manifest.json` | Binds assessment, framework, generator, content and Markdown digests | `manifestDigest` |
-| `release-record.json` | The independent approval | Republika's custody (authoritative) |
+| `release-record.json` | The separate internal release approval (not an external review) | Republika's custody (authoritative) |
 | `limitations.md` | Extract of the limitations | Re-extraction from `report.json` (informational; covered by no digest) |
 | `verification-instructions.md` | How to verify | Informational; covered by no digest |
 

@@ -38,8 +38,11 @@ Customer-facing language must describe it accordingly ([`CUSTOMER_CLAIMS_REVIEW.
 
 Whether R2 is required for every release, or whether the internal approver may
 act as the controlled review, is **D-02**. This protocol recommends R2 for at
-least the first founding engagement. Note GF-01: the report generator currently
-states that the approver acts as that review.
+least the first founding engagement. Note GF-01: report generators v1 and v2
+stated that the approver acts as that review. From generator v3
+(ASSURE-CLAIMS-01) new reports state instead that internal approval is not an
+independent external review and does not remove the restriction; historical
+v1/v2 reports keep their wording. D-02 itself remains open.
 
 ## 3. Independence criteria
 
