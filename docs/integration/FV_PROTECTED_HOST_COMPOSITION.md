@@ -169,9 +169,10 @@ Every crash between these steps is exercised by a real `SIGKILL` (§9).
   - an exclusive inventory closes every handle before any reopen;
   - every connection is held for the composition's lifetime.
 - **The fence.** Before every write transaction, and synchronously,
-  `confirmExclusivelyHeld` reads `/proc/locks`. It requires a POSIX `WRITE` lock **owned by this
-  process's PID**, over the whole SHARED range, on the device and inode the configured path names
-  **now**. It opens no database file. better-sqlite3 transactions are synchronous, so nothing in this
+  `confirmExclusivelyHeld` reads this process's `/proc/self/fdinfo` lock view (FV-EXEC-LOCK-01,
+  `FV_EXECUTOR_LOCK_VERIFICATION_HARDENING.md`; it was `/proc/locks`, which produced false negatives under
+  other processes' lock churn). It requires a POSIX `WRITE` lock **owned by this process's PID**, over the
+  whole SHARED range, on the device and inode the configured path names **now**. It opens no database file. better-sqlite3 transactions are synchronous, so nothing in this
   process can run between the check and the commit. Another process cannot drop this process's lock.
 - **Losing authority:**
   - a failed protected-store confirmation marks the composition `executor-lost` for good: it starts
@@ -219,9 +220,10 @@ Every crash between these steps is exercised by a real `SIGKILL` (§9).
 (`PLATFORM_UNSUPPORTED`). WSL2 is Linux, so this runs on Windows-backed development, with data under a
 Linux filesystem. These are unsupported:
 - network filesystems without coherent POSIX locks;
-- filesystems where `stat` and `/proc/locks` report different device numbers (overlayfs in containers,
-  btrfs subvolumes). There the fence never confirms, so startup is refused or the executor is lost:
-  this fails closed, an availability limit.
+- filesystems where the held file cannot be matched to its descriptor (a different path through a bind
+  mount, a kernel without fdinfo lock lines). Since FV-EXEC-LOCK-01 the descriptor is matched by `fstat`
+  device and inode, not by `/proc/locks` device numbers. overlayfs and btrfs are untested. Where the fence
+  never confirms, startup is refused or the executor is lost: this fails closed, an availability limit.
 
 Under a PID namespace without its own `/proc`, the PIDs do not match, so it also fails closed.
 

@@ -288,7 +288,7 @@ export async function openSqliteStatusHighWaterMarkStore(path: string, options: 
   let db: InstanceType<typeof SqliteDatabase>;
   // FV-P4C-2B3B (review R2-L): once the exclusive lock is taken, every close goes through the guarded closer.
   let closeHeld: (() => void) | undefined;
-  if (exclusive && !exclusivitySupported()) refuse('cannot be held exclusively here (Linux /proc/locks, main thread only); refusing to open it exclusively.');
+  if (exclusive && !exclusivitySupported()) refuse('cannot be held exclusively here (Linux /proc/self/fdinfo of this process’s own /proc, main thread only); refusing to open it exclusively.');
   try {
     db = new SqliteDatabase(file, create ? {} : { fileMustExist: true, readonly: readOnly });
   } catch {

@@ -196,7 +196,7 @@ export async function composeFvProtectedHost(options: FvProtectedHostOptions): P
   if (options.initializeProtectedStore !== undefined && typeof options.initializeProtectedStore !== 'boolean') invalid('initializeProtectedStore is a boolean.');
   const iso = (): string => clock().toISOString();
   const protectedPath = resolve(protectedStorePath);
-  if (!exclusivitySupported()) throw new FvProtectedHostError('PLATFORM_UNSUPPORTED', 'Exclusive execution cannot be held or confirmed here (Linux /proc/locks, on the main thread, is required); nothing was opened.');
+  if (!exclusivitySupported()) throw new FvProtectedHostError('PLATFORM_UNSUPPORTED', 'Exclusive execution cannot be held or confirmed here (Linux /proc/self/fdinfo of this process’s own /proc, on the main thread, is required); nothing was opened.');
 
   // 1–2. Configuration and filesystem policy, before anything is opened.
   let loaded: HostHistoryConfiguration | undefined;

@@ -4,6 +4,23 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Fixed — FV-EXEC-LOCK-01 executor lock verification false negatives (internal, not composed, not operational)
+- **The defect, confirmed.** The FV executor confirmed its own SQLite exclusive locks by parsing the global `/proc/locks`. The kernel serves that file one page per `read(2)`, releases the global lock list between reads and resumes by position. A held lock was therefore skipped whenever other processes removed locks earlier in the list.
+  - Reproduced with real processes: up to 2% of observations under lock churn, 0 without churn or with a small table. An independent process could never take the lock during a miss.
+  - It caused the one-off CI failure on PR #258.
+  - Each false negative is terminal: the executor is marked lost, or killed by `SIGKILL`.
+- **The fix** (`executor-exclusivity.ts`): `confirmExclusivelyHeld` reads this process's own lock view in `/proc/self/fdinfo/<fd>`. The kernel prints it under the inode's lock-context spinlock: one consistent snapshot of that inode.
+  - Only descriptors whose `/proc/self/fd` link names the file are examined (no I/O on unrelated mounts), matched by `fstat` device and inode.
+  - Only a `POSIX` `WRITE` lock owned by this pid over SQLite's whole SHARED range counts.
+  - `exclusivitySupported()` requires `/proc/self/fdinfo` and a `/proc` of this process's own PID namespace, and no longer reads `/proc/locks`.
+  - Unchanged: every fence, the guarded close, the exit guard, `SIGKILL` fail-stop and terminal authority loss. No retry, lease or recovery.
+- **Tests:**
+  - a new real-process suite, 0 false negatives under heavy churn. It covers foreign, read, single-byte, rename, genuine stray-close loss, and a labelled simulated block for refusals the kernel cannot be made to produce here;
+  - the B3B test child's fault injection now wraps the exported check rather than hooking `/proc/locks` reads, with deeper stack attribution. The crash and drop points keep their meaning; B3B, B3C-1 and B3C-3 pass unchanged.
+- **Mutants:** 15 of 16 targeted mutants killed, including the restored old observation and the guarded-close and exit-guard removals; 1 is equivalent (waiter lines, which fdinfo never prints).
+- **Independent review** (an AI agent of the same model family, not a human): no false positive. Its Low findings are fixed: the descriptor `fstat` liveness risk, and the exact kernel filter wording. Remaining items are documented in `docs/integration/FV_EXECUTOR_LOCK_VERIFICATION_HARDENING.md`.
+- **Not operational:** no activation, no B3C-2, B6 or FV-P4D.
+
 ### Changed — CORE-07-FV-WITNESS independent identity freshness domains (internal, not composed, not operational)
 - **A second identity freshness domain in CORE-07.** The closed state-kind list gains one un-namespaced kind, `fv-bootstrap-identity-state`: the dedicated FV executor's own AUTH-03 bootstrap identity store. It sits beside the Host's `human-identity-state` slot in the same organization, with its own genesis store id, monotonic position and rollback detection. It is a separate kind, not a namespace, so omitting a domain can never mean the Host's slot.
 - **The Host slot is unchanged:** same kind, same v1 canonical checkpoint bytes, same receipts and records (pinned by a byte test). No format, signing domain, protocol id or witness schema changes, and AUTH-04A needs no new configuration. A witness older than this version refuses FV requests (fail closed).

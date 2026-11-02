@@ -114,6 +114,12 @@ The relation (`FV_EXECUTOR_TRANSITIONS`) is closed and frozen; nothing else is a
 | `STOPPING` | `STOPPED` | in-flight work has finished and a guarded close released every lock | event; exit 0 |
 | any non-terminal state | `FAILED` | an uncaught exception or unhandled rejection | event; guarded close; exit 70 |
 
+**Lock confirmation (FV-EXEC-LOCK-01).** Every "lock unconfirmed" above is terminal, so the observation
+must not report a held lock as absent. It now reads this process's `/proc/self/fdinfo` lock view instead
+of the global `/proc/locks`, whose page-by-page reads skipped held locks under other processes' lock
+churn (reproduced: up to 2% of observations, and a CI failure). Fail-stop semantics are unchanged; see
+`FV_EXECUTOR_LOCK_VERIFICATION_HARDENING.md`.
+
 `VERIFYING_PERSISTENCE` is not a separate state. B3B's composition verifies persistence and acquires
 exclusivity in one call, so the two are not separately observable. Both are reported as `ACQUIRING_EXCLUSIVITY`.
 
