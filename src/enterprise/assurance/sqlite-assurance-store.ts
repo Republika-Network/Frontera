@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-import { AssuranceError } from './errors.js';
+import { AssuranceError, terminalReviewRefusal } from './errors.js';
 import { verifyAssuranceAssessment } from './verification.js';
 import { applyFindingTransition, foldFindingStatus } from './findings.js';
 import { assertCompletionCommit } from './finding-history.js';
@@ -918,23 +918,41 @@ export async function createSqliteAssuranceStore(dbPath: string, options: Create
 
     async appendManualReview(context, review) {
       assertOpen();
-      const assessment = requireVisibleAssessment(context, review.assessmentId);
-      requireAccessToAssuranceOrganization(context, assessment.subject.organizationId);
-      try {
-        insertManualReview.run({
-          reviewId: review.reviewId,
-          assessmentId: review.assessmentId,
-          organizationId: assessment.subject.organizationId,
-          controlId: review.controlId,
-          reviewerId: review.reviewerId,
-          reviewJson: JSON.stringify(review),
-          reviewedAt: review.reviewedAt,
-        });
-      } catch (error) {
-        if (isSqliteConstraintViolation(error)) {
-          throw new AssuranceError('ASSURANCE_MANUAL_REVIEW_INVALID', `Manual review '${review.reviewId}' already exists; reviews are append-only.`);
+      // ASSURE-OPS-01 (R-02): the status that admits the review is read in the
+      // same IMMEDIATE transaction as the insert. A completion, termination or
+      // supersession commits either before (and the review is refused) or
+      // after (and the review is already recorded) -- the write lock orders them.
+      const runAppend = db.transaction(() => {
+        const assessment = requireVisibleAssessment(context, review.assessmentId);
+        requireAccessToAssuranceOrganization(context, assessment.subject.organizationId);
+        // The row's status column, with the supersession overlay applied.
+        if (ASSURANCE_TERMINAL_STATUSES.includes(assessment.status)) throw terminalReviewRefusal(review.assessmentId, assessment.status);
+        try {
+          insertManualReview.run({
+            reviewId: review.reviewId,
+            assessmentId: review.assessmentId,
+            organizationId: assessment.subject.organizationId,
+            controlId: review.controlId,
+            reviewerId: review.reviewerId,
+            reviewJson: JSON.stringify(review),
+            reviewedAt: review.reviewedAt,
+          });
+        } catch (error) {
+          if (isSqliteConstraintViolation(error)) {
+            throw new AssuranceError('ASSURANCE_MANUAL_REVIEW_INVALID', `Manual review '${review.reviewId}' already exists; reviews are append-only.`);
+          }
+          throw error;
         }
-        throw error;
+      });
+      try {
+        runAppend.immediate();
+      } catch (error) {
+        if (error instanceof AssuranceError) throw error;
+        // The driver's message may name paths or SQL; it never leaves the store.
+        throw new AssuranceError('ASSURANCE_STORE_UNAVAILABLE', `Manual review '${review.reviewId}' could not be recorded: the Assurance Store did not persist it. Nothing was recorded; the review can be retried.`, {
+          assessmentId: review.assessmentId,
+          retryable: true,
+        });
       }
     },
 

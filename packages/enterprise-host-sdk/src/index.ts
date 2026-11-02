@@ -8,6 +8,8 @@ export type {
   AssessmentTerminationResult,
   AssuranceEvidenceSubmission,
   CommercialReleasePackage,
+  CommercialReleasePackageExport,
+  CommercialReleasePackageFile,
   CommercialReleaseRecord,
   CommercialReleaseRequest,
   CommercialReleaseResult,

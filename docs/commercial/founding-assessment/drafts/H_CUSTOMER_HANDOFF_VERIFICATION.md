@@ -5,7 +5,11 @@
 
 ## 1. What you receive
 
-One archive with six files (Draft F). Do **not** open and re-save
+One archive with six files (Draft F), exported from the issuer's release
+custody. Four of them (`report.md`, `report.json`, `integrity-manifest.json`,
+`release-record.json`) are bound by digests to the approval. `limitations.md`
+and `verification-instructions.md` are informational companions covered by no
+digest. Do **not** open and re-save
 `report.md` in an editor: changing line endings or encoding breaks its
 digest. Keep the original archive.
 

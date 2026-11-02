@@ -5,6 +5,7 @@ import { AOC_CANONICALIZATION_VERSION } from '../governance-store/canonical-json
 import { AssuranceError } from './errors.js';
 import { findingHistoryViolations } from './finding-history.js';
 import { isHostVerified } from './manual-evidence-trust.js';
+import { isSafeReviewerReference, publicReviewerReference } from './reviewer-reference.js';
 import { renderCommercialReportMarkdown } from './commercial-report-markdown.js';
 import { COMMERCIAL_REPORT_GENERATOR_V2, RELEASE_STATEMENT_V2 } from './commercial-report-format.js';
 import { RN_SV_FRAMEWORK_ID, RN_SV_FRAMEWORK_V0_1, RN_SV_FRAMEWORK_VERSION } from './frameworks/rn-sv-framework.js';
@@ -624,7 +625,7 @@ export function buildCommercialReportDraft(sources: CommercialReportSources): Co
       findings: sortedFindings.filter((finding) => finding.controlId === controlId).map((finding) => findingLabel.get(finding.findingId) ?? ''),
       limitations: profile?.limitations ?? [],
       ...(status !== 'pass' && status !== 'not_applicable' && profile !== undefined ? { revalidation: profile.revalidation } : {}),
-      review: { authenticated: reviews.length > 0, reviewers: [...new Set(reviews.map((review) => review.reviewerId))].sort(), ...(reviewedOn !== undefined ? { reviewedOn } : {}) },
+      review: { authenticated: reviews.length > 0, reviewers: [...new Set(reviews.map((review) => publicReviewerReference(review.reviewerId)))].sort(), ...(reviewedOn !== undefined ? { reviewedOn } : {}) },
     };
   });
 
@@ -679,7 +680,8 @@ export function buildCommercialReportDraft(sources: CommercialReportSources): Co
   const openFindings = findings.filter((finding) => finding.status === 'open');
 
   const readinessStatus: CommercialReportReadiness = checks.every((entry) => entry.passed) ? 'READY_FOR_RELEASE' : 'DRAFT';
-  const reviewers = [...new Set(authenticatedReviews.map((review) => review.reviewerId))].sort();
+  // ASSURE-OPS-01 (R-04): an unsafe historical identifier is withheld, deterministically; the stored review is unchanged.
+  const reviewers = [...new Set(authenticatedReviews.map((review) => publicReviewerReference(review.reviewerId)))].sort();
   const commercialUse = (framework.metadata?.['commercialUse'] ?? {}) as { readonly status?: unknown; readonly statement?: unknown };
 
   const content: CommercialReportContent = {
@@ -839,6 +841,12 @@ export function verifyCommercialReport(input: { readonly content: unknown; reado
 
 /** The release record for an approved draft. The caller has already authenticated the approver and confirmed the draft is releasable. */
 export function buildCommercialReportRelease(draft: CommercialReportDraft, approval: { readonly approvedBy: string; readonly approverRole: string; readonly approvedAt: string; readonly acknowledgements: CommercialReleaseAcknowledgements }): CommercialReportRelease {
+  // ASSURE-OPS-01 (R-04): `approvedBy` is the credential custody records and the
+  // delivered record prints; it cannot be aliased, so an unsafe one is refused.
+  // Unreachable through a configured authenticator, which refuses such ids.
+  if (!isSafeReviewerReference(approval.approvedBy)) {
+    throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', 'The approving credential\u2019s reviewerId is not a safe public reviewer reference; nothing was released.', { reason: 'unsafe_reviewer_reference' });
+  }
   const body = {
     releaseVersion: 'rn.sv.commercial-release.v1',
     reportId: draft.content.reportId,

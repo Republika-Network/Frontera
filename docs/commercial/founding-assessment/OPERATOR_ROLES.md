@@ -56,7 +56,7 @@ R = reviewer credential with `assure.reviewer`; A = with `assure.report-release`
 | Duplicate secrets across credentials | **Yes**, refuses boot | Host configuration |
 | Reviewer and approver are **different people** | **No.** Credentials are distinguished, not people | Process (§4) |
 | Custody administrator is not the approver | **No** | Process |
-| Reviewer IDs are not emails or names | **No** | Process; backlog R-04 |
+| Reviewer IDs are not emails, phone numbers, markup or paths | **Yes** (ASSURE-OPS-01) | Host loader and every authenticator; well-formed names remain process |
 | A revoked approver's past releases | Reported as `approverCurrentlyAuthorized: false`, never rewritten | REL-01A §15 |
 
 ## 4. Process control against one person holding several credentials

@@ -88,9 +88,12 @@ so that the policy applies to real data:
 - [P] **Reviewer and approver IDs appear verbatim in the report and release
   record.** They must be role-style identifiers, never emails or personal
   names (PILOT-01 §5).
-- [GAP] The Host does not validate that reviewer IDs are not emails
-  (`assurance-reviewer-credentials.ts` checks only canonical form, uniqueness
-  and the reserved agent prefix). Backlog R-04.
+- [T] ASSURE-OPS-01 (R-04): reviewer IDs must be safe public references (no
+  email, phone-like digits, whitespace, markup, path or non-ASCII). Enforced
+  at Host boot and by every authenticator. An unsafe ID already on a
+  historical review is printed as `withheld-reviewer-<hash>` in new reports.
+  [P] A well-formed personal name (`jane.doe`) cannot be detected: use
+  role-style IDs.
 - [P] Privacy notice to operators about the processing of their identifiers.
   Subject to legal review.
 
@@ -235,7 +238,7 @@ on the customer's jurisdiction.
 | Evidence artifact storage undefined | High | Process decision D-05; optional tooling |
 | No encryption at rest (store, backups) | High | Encrypted volume and encrypted backups (process) |
 | No per-customer deletion | Medium | One Host per customer + store destruction (process); R-08 |
-| Reviewer IDs not validated against emails or names | Medium | Process now; R-04 |
+| Reviewer IDs not validated against emails or names | ~~Medium~~ Low | Closed by ASSURE-OPS-01 except well-formed names (process) |
 | Retention values unapproved | High | D-04 |
 | Subprocessor inventory absent | High | D-05 |
 | Legal basis and cross-border position absent | High | LEG review |

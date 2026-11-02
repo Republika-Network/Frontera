@@ -215,6 +215,11 @@ identically, and differs from today's output only in the release wording.
 - Check that no customer-confidential term appears in the declared text.
 - Deliver the files unchanged, so that no editor re-encodes the Markdown.
 
+**Export (ASSURE-OPS-01).** Produce the delivered files with
+`GET /api/assurance/commercial-releases/{reportId}/package` and
+`scripts/assurance/materialize-commercial-package.mjs`, not by hand. The export
+returns the approved bytes kept in custody, verified against it.
+
 ## 11. Correction and reissue
 
 A delivered report is never edited.

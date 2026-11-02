@@ -1,4 +1,4 @@
-import { AssuranceError } from './errors.js';
+import { AssuranceError, terminalReviewRefusal } from './errors.js';
 import { verifyAssuranceAssessment } from './verification.js';
 import { applyFindingTransition, foldFindingStatus } from './findings.js';
 import { assertCompletionCommit } from './finding-history.js';
@@ -281,6 +281,9 @@ export function createInMemoryAssuranceStore(options: CreateInMemoryAssuranceSto
       assertOpen();
       const assessment = requireVisibleAssessment(context, review.assessmentId);
       requireAccessToAssuranceOrganization(context, assessment.subject.organizationId);
+      // ASSURE-OPS-01 (R-02): checked and appended with no await in between,
+      // so no terminal transition can interleave.
+      if (ASSURANCE_TERMINAL_STATUSES.includes(assessment.status)) throw terminalReviewRefusal(review.assessmentId, assessment.status);
       const existing = manualReviews.get(review.assessmentId) ?? [];
       if (existing.some((candidate) => candidate.reviewId === review.reviewId)) {
         throw new AssuranceError('ASSURANCE_MANUAL_REVIEW_INVALID', `Manual review '${review.reviewId}' already exists; reviews are append-only.`);

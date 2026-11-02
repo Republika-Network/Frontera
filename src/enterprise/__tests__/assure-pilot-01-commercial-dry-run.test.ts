@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import Database from 'better-sqlite3';
 
-import { AssuranceError } from '../assurance/errors.js';
+import { AssuranceError, isAssuranceError } from '../assurance/errors.js';
 import { computeDigest } from '../governance-store/digest.js';
 import { findingHistoryViolations } from '../assurance/finding-history.js';
 import { escapeMarkdownText } from '../assurance/commercial-report-markdown.js';
@@ -636,9 +636,14 @@ describe('ASSURE-PILOT-01 -- KNOWN LIMITATIONS and their resolutions (each pins 
     ]);
   });
 
-  it('KNOWN LIMITATION -- a review is still accepted after completion (it did not change the regenerated report here)', async () => {
+  it('RESOLVED (ASSURE-OPS-01, R-02) -- a review offered after completion is refused, recorded nowhere, and the regenerated report is unchanged', async () => {
     const copy = track(await copyPilotWorld(world, join(tempDir(), 'post-completion.db')));
-    await copy.service.recordManualReview(pilotContext(copy, 'reviewer'), pilotReviewInput(assessment.assessmentId, 'SV-06', 'pass', ['sv06']));
+    const before = await copy.store.listManualReviews(PILOT_ORG_CONTEXT, assessment.assessmentId);
+    await assert.rejects(
+      copy.service.recordManualReview(pilotContext(copy, 'reviewer'), pilotReviewInput(assessment.assessmentId, 'SV-06', 'pass', ['sv06'])),
+      (error: unknown) => isAssuranceError(error) && error.code === 'ASSURANCE_ASSESSMENT_IMMUTABLE' && error.details?.['reason'] === 'terminal_assessment',
+    );
+    assert.deepEqual(await copy.store.listManualReviews(PILOT_ORG_CONTEXT, assessment.assessmentId), before, 'no review was appended');
     const regenerated = await copy.service.buildCommercialReportDraft(PILOT_ORG_CONTEXT, assessment.assessmentId, { engagement: PILOT_ENGAGEMENT, issue: PILOT_ISSUE });
     assert.equal(regenerated.content.controls.find((control) => control.controlId === 'SV-06')?.status, 'fail');
     assert.equal(regenerated.manifest.contentDigest, draft.manifest.contentDigest);

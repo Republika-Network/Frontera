@@ -199,7 +199,10 @@ The SDK never retries. Guidance for callers:
   a mismatch is refused with `403 ASSURANCE_REVIEWER_UNAUTHORIZED`.
 - **Assurance operator methods** (ASSURE-REL-01D: `submitAssessmentEvidence`,
   `terminateAssessment`, `draftCommercialReport`, `releaseCommercialReport`,
-  `listCommercialReleases`, `getCommercialRelease`, `verifyCommercialRelease`):
+  `listCommercialReleases`, `getCommercialRelease`, `verifyCommercialRelease`;
+  ASSURE-OPS-01: `exportCommercialReleasePackage`, the delivery package from
+  custody as exact bytes -- write each file's decoded `contentBase64` unchanged,
+  or use `scripts/assurance/materialize-commercial-package.mjs`):
   an Assurance reviewer credential only; anything else gets `401`. The
   organization, actor and roles are the credential's; no request type has an
   actor or approver field. `releaseCommercialReport` is safe to retry with the
@@ -236,6 +239,10 @@ The governed-action types are deliberately different:
 
 `1.1.0` added `governAction()` and its type-only mirrors; the five runtime
 exports are unchanged.
+
+Unreleased (ASSURE-OPS-01) also adds `exportCommercialReleasePackage(reportId)`
+and its type-only `CommercialReleasePackageExport` / `CommercialReleasePackageFile`
+(additive, same MINOR release).
 
 Unreleased (ASSURE-REL-01D) adds seven Assurance operator client methods and
 their type-only request/response types, and makes `requestedBy` optional in

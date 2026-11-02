@@ -69,7 +69,7 @@ Read from `docs/security/ASSURE-REL-01D-OPERATOR-INTERFACE.md`, the code
 **Gaps relevant to commercial operation (not defects of REL-01D's stated
 scope):**
 
-- F-8. **No supported package export.** The six delivery files are assembled
+- F-8. **[CLOSED by ASSURE-OPS-01 — see `docs/security/ASSURE-OPS-01-CUSTOMER-DELIVERY-HARDENING.md`]** **No supported package export.** The six delivery files are assembled
   only by test code (`assure-pilot-01-scenario.ts` `writePilotPackage`,
   `pilotLimitationsExtract`, the verification-instructions text). An operator
   has the draft and release over HTTP, but no supported way to produce
@@ -78,10 +78,10 @@ scope):**
 - F-9. **Evidence submitter is not in the stored assessment**, only in the
   operator log line. Log retention therefore becomes part of the engagement
   record. → R-07, retention D-04.
-- F-10. **Reviews are accepted after completion** (PILOT-01 rec. 5, still
+- F-10. **[CLOSED by ASSURE-OPS-01]** **Reviews are accepted after completion** (PILOT-01 rec. 5, still
   pinned). No released content changes, and separation of duties counts them.
   → **R-02**
-- F-11. **Reviewer IDs are not validated** against being emails or personal
+- F-11. **[CLOSED by ASSURE-OPS-01]** **Reviewer IDs are not validated** against being emails or personal
   names, but they appear verbatim in delivered reports (PILOT-01 rec. 7). → **R-04**
 - F-12. **Static bearer credentials**, no MFA or passkey for release, no rate
   limiting, rotation by restart. Acceptable only on a private network. → R-03
@@ -141,7 +141,7 @@ assurance.
 | RR-7 | Store or backups read by an unauthorized party (plaintext) | Low / High | Encrypted volume and backups; host access control | OPS |
 | RR-8 | Release lost to a restore and re-released differently | Low / Medium | Backup after every release; post-restore reconciliation | OPS |
 | RR-9 | Reviewer judgement error on supplier evidence | Medium / Medium | Methodology, sampling, independent approval; disclosed limitation | GOV |
-| RR-10 | PII exposure via reviewer IDs in reports | Medium / Low | Role-style IDs (process); R-04 | OPS |
+| RR-10 | PII exposure via reviewer IDs in reports | Medium / Low | Policy enforced since ASSURE-OPS-01 (R-04); role-style IDs for names (process) | OPS |
 | RR-11 | Selling under `restricted` without the governance decision | Low / High | This gate; M1 | FDR |
 | RR-12 | Liability exposure without reviewed terms or insurance | Medium / High | G-LEGAL | LEG |
 
@@ -151,10 +151,10 @@ Each item is a **separate mission**. None is implemented here.
 
 | ID | Priority | Item | Gate | Type |
 | --- | --- | --- | --- | --- |
-| R-05 | P0 | Supported operator export of the delivery package (byte-exact; `limitations.md`; `verification-instructions.md`), with offline verification as part of export | G-TECH | Code |
+| R-05 | ~~P0~~ **CLOSED** | Supported operator export of the delivery package (byte-exact; `limitations.md`; `verification-instructions.md`), with offline verification as part of export — ASSURE-OPS-01 | G-TECH | Code |
 | R-06 | P0 (after D-01) | Governed `rn.sv@0.2.0`: new frozen file, digest and test; `commercialUse` recording the authorization; opt-in registration | G-FRAMEWORK | Code + governance |
-| R-02 | P1 | Refuse manual reviews on terminal assessments (PILOT-01 rec. 5) | G-TECH | Code |
-| R-04 | P1 | Host configuration refuses reviewer IDs that look like emails or contain whitespace-separated names (PILOT-01 rec. 7) | G-TECH / G-INFO | Code |
+| R-02 | ~~P1~~ **CLOSED** | Refuse manual reviews on terminal assessments (PILOT-01 rec. 5) — ASSURE-OPS-01 | G-TECH | Code |
+| R-04 | ~~P1~~ **CLOSED** | Host configuration refuses reviewer IDs that look like emails or contain whitespace-separated names (PILOT-01 rec. 7) — ASSURE-OPS-01 (well-formed personal-name tokens stay procedural) | G-TECH / G-INFO | Code |
 | R-01 | P1 | Issuer signature over `releaseDigest`, with key custody, verifier support, and reuse of the FV-P4B signed-verifier pattern (PILOT-01 rec. 2) — closes B7 | G-TECH / G-FRAMEWORK | Code + key management |
 | R-03 | P1 | Passkey-bound release approval (AUTH-03 decision challenge); rate limiting | G-TECH | Code |
 | R-09 | P2 | Encrypted backup output, or documented integration with an encrypted volume | G-INFO | Code or ops |
@@ -176,6 +176,14 @@ Each item is a **separate mission**. None is implemented here.
 | D-07 | Reassessment commercial terms | Included once within N months / separately priced |
 | D-08 | One dedicated Host per customer | Approve **(recommended; enables deletion)** / shared Host (not supported: one Host serves one organization) |
 | D-09 | Contracting entity, jurisdiction, insurance | LEG-led |
+
+## 9a. Update — ASSURE-OPS-01
+
+R-02, R-04 and R-05 were implemented and tested by ASSURE-OPS-01
+(`docs/security/ASSURE-OPS-01-CUSTOMER-DELIVERY-HARDENING.md`). The
+residuals they do not touch are unchanged: B7, A10, static credentials,
+encryption at rest, retention and deletion, legal review and framework
+authorization. The final commercial decision stays **NO-GO**.
 
 ## 10. Recommended next mission
 

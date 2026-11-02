@@ -90,9 +90,9 @@ legal counsel. These are roles; no person is named and no role is filled yet.
 | Implementation evidence | ASSURE-SEC-01B (#229): reviewer credential (`assuranceReviewers`, secret by `apiKeyEnv`), identity and roles from the authenticator only. ASSURE-REL-01D (#248): the same credential on every operator route, declared identity fields must equal the credential, reviewer-only mode. |
 | Test evidence | `assurance-sec-01b-authenticated-reviewers.test.ts`, `assure-rel-01d-operator-interface.test.ts` (#8 forged principals refused) (pass). |
 | Technical closure | **VERIFIED** for credential binding. |
-| Residual exposure | **Material.** A credential is a static bearer secret, not a per-human factor: no MFA, no passkey, no rate limiting, rotation by configuration and restart. Separation of duties distinguishes credentials, not people. Reviewer IDs are not validated against being emails or names (PILOT-01 rec. 7, still open). |
+| Residual exposure | **Material.** A credential is a static bearer secret, not a per-human factor: no MFA, no passkey, no rate limiting, rotation by configuration and restart. Separation of duties distinguishes credentials, not people. Reviewer IDs were not validated against being emails or names (PILOT-01 rec. 7); closed by ASSURE-OPS-01 (R-04) except well-formed names. |
 | Commercial relevance | High. The signed-off reviewer and approver are the substance of the deliverable. |
-| Proposed mitigation | One credential per person; private-network only; named custody of each secret; issuance register (see `OPERATOR_ROLES.md`). Technical: passkey-bound release approval (AUTH-03 decision challenge), reviewer-ID format validation (backlog R-03, R-04). |
+| Proposed mitigation | One credential per person; private-network only; named custody of each secret; issuance register (see `OPERATOR_ROLES.md`). Technical: passkey-bound release approval (AUTH-03 decision challenge), rate limiting (backlog R-03). Reviewer-ID format validation done in ASSURE-OPS-01 (R-04). |
 | Decision maker / approval | SEC + FDR: written acceptance of static bearer credentials for a private pilot, or a requirement for R-03 first. |
 | Evidence artifact | `docs/security/ASSURE-SEC-01B-AUTHENTICATED-REVIEWERS.md`, `docs/security/ASSURE-REL-01D-OPERATOR-INTERFACE.md` §2, §5, §9, §10 |
 | Policy authorization | NOT GRANTED |
@@ -180,9 +180,9 @@ legal counsel. These are roles; no person is named and no role is filled yet.
 | Implementation evidence | ASSURE-SEC-01A (#228), `manual-review-evidence.ts`: a definitive outcome must cite evidence accepted in this assessment, bound to the assessed organization and to one of the control's own requirements; pass/partial refused over unresolved contradictions; the evaluator ignores a stored non-conforming review; verification flags it. |
 | Test evidence | `assurance-sec-01a-evidence-bound-reviews.test.ts` (pass, this run); REP-01 "C: a conclusion must rest on accepted, own-tenant evidence bound to the control" (pass). |
 | Technical closure | **VERIFIED**. |
-| Residual exposure | Binding is structural; it does not prove the evidence authentic or the conclusion correct. A manual review is still **accepted after completion** (PILOT-01 rec. 5, pinned as KNOWN LIMITATION; it does not change released content). |
+| Residual exposure | Binding is structural; it does not prove the evidence authentic or the conclusion correct. A manual review was **accepted after completion** (PILOT-01 rec. 5); closed by ASSURE-OPS-01 (R-02): refused at the service and atomically at the store. |
 | Commercial relevance | Medium. |
-| Proposed mitigation | Runbook rule: no review after completion. Technical: refuse reviews on terminal assessments (backlog R-02). |
+| Proposed mitigation | Implemented: refuse reviews on terminal assessments (ASSURE-OPS-01, R-02). |
 | Decision maker / approval | SEC: confirm. |
 | Evidence artifact | `rn-sv-framework.ts` header (F01 closure); commit `cfb0aa61` |
 | Policy authorization | NOT GRANTED |
@@ -199,7 +199,7 @@ legal counsel. These are roles; no person is named and no role is filled yet.
 | B6 ignored finding-event failures | VERIFIED | No (signals out of scope) | NOT GRANTED |
 | B7 no external authenticity | **OPEN** | **Yes** | NOT GRANTED |
 | B8 evidence offered to every requirement | VERIFIED | No | NOT GRANTED |
-| B9 review evidence not checked | VERIFIED | Minor — post-completion review accepted | NOT GRANTED |
+| B9 review evidence not checked | VERIFIED | No — post-completion review refused since ASSURE-OPS-01 | NOT GRANTED |
 
 Eight of nine are technically closed with verified evidence. **B7 is open.**
 B1 and B3 are closed as worded, but their residuals are material and must be

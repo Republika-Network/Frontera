@@ -31,7 +31,12 @@ import type { CommercialReleaseCustodyCommit, CommercialReleaseCustodyRecord } f
  *    terminal assessment, the opening event of every finding and the
  *    supersession of the assessment it replaces together, or nothing;
  *  - findings evolve exclusively through appended finding events;
- *  - manual reviews and signals only append.
+ *  - manual reviews and signals only append;
+ *  - ASSURE-OPS-01 (R-02): a manual review appends only while its assessment
+ *    is non-terminal. The status check and the insert are one atomic unit, so
+ *    a review racing a completion, a failure or a supersession is either
+ *    recorded before the transition or refused after it -- never recorded
+ *    against a terminal assessment.
  */
 export interface AssuranceStore {
   readonly providerKind: 'memory' | 'sqlite';
@@ -79,6 +84,15 @@ export interface AssuranceStore {
   /** Persists a post-completion, signal-driven finding (never mutates a completed assessment's frozen content). */
   saveFinding(context: AssuranceAccessContext, finding: AssuranceFinding): Promise<void>;
 
+  /**
+   * Appends one manual review. ASSURE-OPS-01 (R-02): refuses with
+   * `ASSURANCE_ASSESSMENT_IMMUTABLE` (`details.reason: 'terminal_assessment'`)
+   * when the stored assessment is `completed`, `failed` or `superseded`, and
+   * writes nothing. The status read and the insert must be atomic with
+   * respect to every terminal transition (SQLite: one `BEGIN IMMEDIATE`
+   * transaction; in memory: no `await` between check and append). A custom
+   * store must honour the same contract. Existing reviews are never removed.
+   */
   appendManualReview(context: AssuranceAccessContext, review: AssuranceManualReviewRecord): Promise<void>;
   listManualReviews(context: AssuranceAccessContext, assessmentId: string): Promise<readonly AssuranceManualReviewRecord[]>;
 

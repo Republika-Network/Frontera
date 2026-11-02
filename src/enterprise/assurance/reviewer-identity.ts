@@ -1,5 +1,7 @@
 import { matchApiKey } from '../orchestration/credential-matching.js';
 import type { AssuranceReviewerPrincipal } from './contracts.js';
+import { AssuranceError } from './errors.js';
+import { describeReviewerReferenceViolation, reviewerReferenceViolation } from './reviewer-reference.js';
 
 /**
  * Authenticated reviewer identity (ASSURE-SEC-01B).
@@ -43,6 +45,20 @@ export interface AssuranceReviewerAuthenticator {
 }
 
 export function createAssuranceReviewerAuthenticator(credentials: readonly AssuranceReviewerCredential[]): AssuranceReviewerAuthenticator {
+  // ASSURE-OPS-01 (R-04): every embedder, not only the Host loader, is held to
+  // the disclosure policy and to one credential per reviewer id. Values are
+  // never echoed: they may be personal data.
+  const seen = new Set<string>();
+  credentials.forEach((credential, index) => {
+    const violation = reviewerReferenceViolation(credential.reviewerId);
+    if (violation !== undefined) {
+      throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `Assurance reviewer credential [${index}]: reviewerId ${describeReviewerReferenceViolation(violation)}.`, { violation });
+    }
+    if (seen.has(credential.reviewerId)) {
+      throw new AssuranceError('ASSURANCE_VALIDATION_ERROR', `Assurance reviewer credential [${index}] repeats a reviewerId; one id names one reviewer.`, { violation: 'duplicate' });
+    }
+    seen.add(credential.reviewerId);
+  });
   const configured = credentials.map((credential) => Object.freeze({ ...credential, roles: Object.freeze([...credential.roles]) }));
   const issued = new WeakSet<object>();
   return {

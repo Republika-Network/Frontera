@@ -6,7 +6,7 @@ import { computeDigest } from '../governance-store/digest.js';
 import type { EnterpriseEventPublisher, AssuranceEnterpriseEventType } from '../events/enterprise-events.js';
 import type { EnterpriseTelemetry } from '../telemetry/enterprise-telemetry.js';
 import type { EnterpriseLogger } from '../telemetry/enterprise-logger.js';
-import { AssuranceError, isAssuranceError } from './errors.js';
+import { AssuranceError, isAssuranceError, terminalReviewRefusal } from './errors.js';
 import { resolveFrameworkForAssessment, type AssuranceFrameworkRegistry } from './framework-registry.js';
 import { createAssuranceEvidenceResolver, type AssuranceEvidenceSources } from './evidence-resolver.js';
 import { checkManualReviewEvidence } from './manual-review-evidence.js';
@@ -30,8 +30,23 @@ import {
   type CommercialReportRelease,
 } from './commercial-report.js';
 import { assessmentWritePrecondition, requireAssuranceTenantScope, type AssuranceStore } from './assurance-store.js';
+import {
+  COMMERCIAL_RELEASE_PACKAGE_DIRECTORY,
+  COMMERCIAL_RELEASE_PACKAGE_MAX_BYTES,
+  COMMERCIAL_RELEASE_PACKAGE_STATEMENT,
+  COMMERCIAL_RELEASE_PACKAGE_VERSION,
+  assembleCommercialReleasePackageFiles,
+  commercialReleasePackageDigest,
+  describeCommercialReleasePackageFiles,
+  type CommercialReleasePackageExport,
+} from './commercial-release-package.js';
+import { RN_SV_REVIEWER_ROLE } from './frameworks/rn-sv-framework.js';
+
+/** ASSURE-OPS-01: the roles that may export a kept release package -- the assessing reviewer or the release approver, never an implied one. */
+const COMMERCIAL_EXPORT_ROLES: readonly string[] = [RN_SV_REVIEWER_ROLE, COMMERCIAL_REPORT_RELEASE_ROLE];
 import { providesDurableReleaseCustody } from './sqlite-assurance-store.js';
 import {
+  COMMERCIAL_RELEASE_CUSTODY_VERSION_V2,
   buildCommercialReleaseCustodyRecord,
   commercialReleaseConflict,
   verifyCommercialReleaseAgainstCustody,
@@ -233,6 +248,19 @@ export interface AssuranceService {
   getCommercialRelease(context: AssuranceAccessContext, reportId: string): Promise<CommercialReleaseCustodyRecord | null>;
   /** ASSURE-REL-01A: every release kept for an assessment the caller can see, oldest first. */
   listCommercialReleases(context: AssuranceAccessContext, assessmentId: string): Promise<readonly CommercialReleaseCustodyRecord[]>;
+  /**
+   * ASSURE-OPS-01 (R-05): the customer delivery package of a kept release,
+   * from durable custody only. Requires an authenticated Assurance reviewer
+   * credential holding `assure.reviewer` or `assure.report-release`, in the
+   * credential's own organization. Read-only and deterministic: it assembles
+   * the approved content and Markdown kept with the release (custody v2), never
+   * re-drafts a report, and returns only after the assembled files verify
+   * against custody under the REL-01A verification. `null` when no release is
+   * kept for `reportId` in the caller's scope (another organization's release
+   * included). A release kept before artifact custody is refused
+   * (`ASSURANCE_RELEASE_NOT_EXPORTABLE`, `artifacts_not_in_custody`).
+   */
+  exportCommercialReleasePackage(context: AssuranceAccessContext, reportId: string): Promise<CommercialReleasePackageExport | null>;
   /**
    * ASSURE-REL-01A: verifies a delivered package against this Host's own
    * release custody -- the authority is this service's store, never something
@@ -919,6 +947,13 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
           }
           reviewerRole = requiredRole;
         }
+      }
+      // ASSURE-OPS-01 (R-02): authorization and tenant scope are settled above,
+      // so the status is disclosed only to an authorized reviewer of this
+      // assessment's own organization. The store re-checks it atomically with
+      // the insert; this early refusal only avoids building a doomed review.
+      if (ASSURANCE_TERMINAL_STATUSES.includes(assessment.status)) throw terminalReviewRefusal(input.assessmentId, assessment.status);
+      if (control.criteria.type === 'manual_review') {
         // Evidence-bound conclusions (ASSURE-SEC-01A): validated before anything is persisted.
         const evidenceCheck = checkManualReviewEvidence({
           control,
@@ -1333,7 +1368,8 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
         acknowledgements: { limitationsReviewed: true, commercialUseRestrictionAcknowledged: true },
       });
       // The organization is the stored assessment's, through the approver's own scope; the approver is the credential's.
-      const record = buildCommercialReleaseCustodyRecord({ organizationId: approver.organizationId, manifest: draft.manifest, release });
+      // ASSURE-OPS-01 (R-05): the approved content and Markdown are kept with the approval, so the package is exported from custody, never re-drafted.
+      const record = buildCommercialReleaseCustodyRecord({ organizationId: approver.organizationId, manifest: draft.manifest, release, artifacts: { content: draft.content, markdown: draft.markdown } });
       const commit = await custody.commit(approverContext, record);
       // Another release for this report version won the write (a concurrent request): answer as that one dictates.
       if (commit.outcome === 'existing') return replayOrRefuse(commit.record, draft, approver.reviewerId);
@@ -1351,6 +1387,85 @@ export function createAssuranceService(deps: AssuranceServiceDependencies): Assu
       const list = store.listCommercialReleases;
       if (list === undefined) throw custodyUnsupported();
       return list.call(store, context, assessmentId);
+    },
+
+    async exportCommercialReleasePackage(context, reportId) {
+      const operator = context.reviewer;
+      if (!reviewerAuthenticator.isAuthenticated(operator)) {
+        throw unauthorizedReviewer('Exporting a release package requires an authenticated Assurance reviewer credential; a system context or declared identity is not accepted.');
+      }
+      if (!COMMERCIAL_EXPORT_ROLES.some((role) => operator.roles.includes(role))) {
+        throw unauthorizedReviewer(`Exporting a release package requires one of the roles ${COMMERCIAL_EXPORT_ROLES.join(', ')}.`, { requiredRoles: COMMERCIAL_EXPORT_ROLES });
+      }
+      if (context.organizationId !== undefined && context.organizationId !== operator.organizationId) {
+        throw unauthorizedReviewer('The access context names a different organization than the authenticated reviewer.');
+      }
+      if (!providesDurableReleaseCustody(store)) {
+        throw new AssuranceError('ASSURANCE_STORE_UNAVAILABLE', 'A release package can be exported only from durable release custody, which this Assurance Store does not provide.');
+      }
+      // The credential's own tenant scope: another organization's release reads as absent.
+      const operatorContext: AssuranceAccessContext = { system: false, organizationId: operator.organizationId, actorId: operator.reviewerId, roles: operator.roles, reviewer: operator };
+      // The store checks the kept record's digests, columns and artifacts on read (ASSURANCE_INTEGRITY_FAILED otherwise).
+      const record = await releaseCustody().get(operatorContext, reportId);
+      if (record === null) return null;
+      if (record.custodyVersion !== COMMERCIAL_RELEASE_CUSTODY_VERSION_V2 || record.artifacts === undefined) {
+        throw new AssuranceError(
+          'ASSURANCE_RELEASE_NOT_EXPORTABLE',
+          'This release was kept before release custody retained the approved artifacts; its package cannot be exported from custody. Verify the package delivered at the time, or release a new report version.',
+          { reason: 'artifacts_not_in_custody', reportId: record.reportId },
+        );
+      }
+      const assembled = assembleCommercialReleasePackageFiles({ content: record.artifacts.content, markdown: record.artifacts.markdown, manifest: record.manifest, release: record.release });
+      const totalBytes = assembled.reduce((sum, file) => sum + file.bytes.length, 0);
+      if (totalBytes > COMMERCIAL_RELEASE_PACKAGE_MAX_BYTES) {
+        throw new AssuranceError('ASSURANCE_RELEASE_NOT_EXPORTABLE', `The release package exceeds the ${COMMERCIAL_RELEASE_PACKAGE_MAX_BYTES}-byte delivery bound; nothing was exported.`, { reason: 'package_too_large', reportId: record.reportId });
+      }
+      // Fail closed: the bytes about to leave are read back exactly as a recipient
+      // would read them and verified against custody by the REL-01A verification
+      // -- the same function the verify route uses, not a second definition.
+      const bytesOf = (path: string): Buffer => assembled.find((file) => file.path === path)?.bytes ?? Buffer.alloc(0);
+      let verification: CommercialReleaseAuthorityVerification;
+      try {
+        verification = verifyCommercialReleaseAgainstCustody(
+          {
+            content: JSON.parse(bytesOf('report.json').toString('utf8')) as unknown,
+            markdown: bytesOf('report.md').toString('utf8'),
+            manifest: JSON.parse(bytesOf('integrity-manifest.json').toString('utf8')) as CommercialReleasePackage['manifest'],
+            release: JSON.parse(bytesOf('release-record.json').toString('utf8')) as CommercialReportRelease,
+          },
+          { kind: 'record', record },
+        );
+      } catch {
+        verification = { releaseAuthenticated: false } as CommercialReleaseAuthorityVerification;
+      }
+      const markdownExact = bytesOf('report.md').equals(Buffer.from(record.artifacts.markdown, 'utf8'));
+      if (!verification.releaseAuthenticated || !markdownExact) {
+        logger?.warn('assurance.commercial_report.export_refused', { reportId: record.reportId, errorCode: 'export_integrity_mismatch' });
+        throw new AssuranceError('ASSURANCE_INTEGRITY_FAILED', 'The package assembled from custody does not verify against the kept release; nothing was exported. Stop delivering from this store and investigate.', {
+          reason: 'export_integrity_mismatch',
+        });
+      }
+      const files = describeCommercialReleasePackageFiles(assembled);
+      const currentlyAuthorized = reviewerAuthenticator.isCurrentlyAuthorized(record.release.approvedBy, record.organizationId, COMMERCIAL_REPORT_RELEASE_ROLE);
+      return {
+        packageVersion: COMMERCIAL_RELEASE_PACKAGE_VERSION,
+        directory: COMMERCIAL_RELEASE_PACKAGE_DIRECTORY,
+        reportId: record.reportId,
+        assessmentId: record.assessmentId,
+        packageDigest: commercialReleasePackageDigest(files),
+        files,
+        authority: {
+          status: 'RELEASE_MATCHES_AUTHORITY',
+          releaseAuthenticated: true,
+          releaseDigest: record.release.releaseDigest,
+          approvedBy: record.release.approvedBy,
+          approverRole: record.release.approverRole,
+          approvedAt: record.release.approvedAt,
+          approverCurrentlyAuthorized: currentlyAuthorized,
+        },
+        externalSignature: 'EXTERNAL_SIGNATURE_NOT_AVAILABLE',
+        statement: COMMERCIAL_RELEASE_PACKAGE_STATEMENT,
+      };
     },
 
     async verifyCommercialRelease(context, delivered) {

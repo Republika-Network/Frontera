@@ -216,7 +216,7 @@ describe('ASSURE-REL-01B -- the contradiction deadlock has an explicit, safe exi
     await assert.rejects(world.service.buildCommercialReportDraft(PILOT_ORG_CONTEXT, assessmentId, { engagement: PILOT_ENGAGEMENT, issue: PILOT_ISSUE }), isCode('ASSURANCE_ASSESSMENT_INCOMPLETE'));
     await assert.rejects(world.service.buildAssuranceReport(PILOT_ORG_CONTEXT, assessmentId, 'CUSTOMER', 'pilot'), isCode('ASSURANCE_ASSESSMENT_INCOMPLETE'));
     await assert.rejects(world.service.evaluateAssessment(PILOT_ORG_CONTEXT, assessmentId), isCode('ASSURANCE_ASSESSMENT_IMMUTABLE'));
-    await assert.rejects(world.service.recordManualReview(pilotContext(world, 'reviewer'), pilotReviewInput(assessmentId, 'SV-08', 'pass', ['sv08-a'])), isCode('ASSURANCE_MANUAL_REVIEW_INVALID'), 'still no PASS after the end');
+    await assert.rejects(world.service.recordManualReview(pilotContext(world, 'reviewer'), pilotReviewInput(assessmentId, 'SV-08', 'pass', ['sv08-a'])), isCode('ASSURANCE_ASSESSMENT_IMMUTABLE'), 'still no PASS after the end: since ASSURE-OPS-01 (R-02) an ended attempt accepts no review at all');
   });
 
   it('B09 positive and negative cases are reached in the new attempt, on new evidence: one authoritative runbook supports PASS, or a FAIL review bound to it gives FAIL', async () => {
