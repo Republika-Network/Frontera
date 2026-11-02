@@ -108,6 +108,13 @@ so that the policy applies to real data:
   approved by the security lead, and never in chat, email or tickets. Rotation
   happens at engagement end and on any suspected exposure (runbook §2).
 
+> **ASSURE-OPS-02 update.** Sections 3, 8, 11 and 13 are now backed by
+> `scripts/assurance/engagement-ops.mjs`
+> (`docs/security/ASSURE-OPS-02-SECURE-CUSTOMER-DATA.md`): one engagement root
+> per customer, a preflight, sealed backups, verify-by-restore, a derived
+> lifecycle and a gated disposition. Volume encryption is detected, not
+> enforced. Retention values below are **still unapproved**.
+
 ## 8. Storage location and access
 
 - [P] Assurance Store and its backups: on the dedicated Host, on an encrypted
@@ -146,6 +153,13 @@ on the customer's jurisdiction.
 
 ## 11. Deletion and customer offboarding
 
+- [T] ASSURE-OPS-02: `engagement-ops.mjs offboard` lists everything under the
+  engagement root (dry run), and deletes only with a digest-bound approval,
+  the engagement id confirmed and a certificate written outside the root. It
+  refuses while a WAL is non-empty, with foreign rows or with symbolic links.
+  Key destruction and off-host copies remain [P] and are listed in the
+  certificate.
+
 - [T] **No per-record or per-customer delete exists.** The Assurance Store has
   no general update or delete API (`assurance-store.ts`), and release custody
   is append-only by trigger. That is deliberate, for integrity.
@@ -175,6 +189,13 @@ on the customer's jurisdiction.
   Assurance-specific steps are in `OPERATOR_RUNBOOK.md` §16.
 
 ## 13. Backup and restore
+
+- [T] ASSURE-OPS-02: `engagement-ops.mjs backup|verify|restore`: a cold
+  backup:v1 sealed with AES-256-GCM and bound to the engagement and
+  organization in its authenticated header. Verify restores into a throwaway
+  target and checks every release. Restore goes only into the same
+  engagement's empty data directory. This supersedes the "[GAP] not
+  encrypted" item below for engagement backups.
 
 - [T] `npm run backup:v1` includes `stores/assurance.sqlite`, copied with the
   SQLite online backup API, with a manifest and table counts

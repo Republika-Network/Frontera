@@ -27,6 +27,7 @@
 import { createHash, createPublicKey } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { platform, arch } from 'node:os';
 
 import {
@@ -472,7 +473,7 @@ async function main() {
   console.log(JSON.stringify(report, null, 2));
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname);
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch((error) => {
     console.error(`[backup:v1] ${error.message}`);

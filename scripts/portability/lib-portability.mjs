@@ -12,12 +12,13 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, existsSync, statSync, lstatSync, mkdirSync, readdirSync, rmSync, renameSync, mkdtempSync, realpathSync } from 'node:fs';
 import { resolve, join, dirname, relative, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { execSync } from 'node:child_process';
 
 export const BACKUP_FORMAT = 'aoc.enterprise.backup.v1';
 
-export const REPO_ROOT = resolve(new URL('../..', import.meta.url).pathname);
+export const REPO_ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 
 // PROD-02: the store list lives in ONE place, `store-registry.mjs`, and is
 // re-exported here so every existing importer keeps working. Nothing in this
@@ -38,7 +39,7 @@ export async function loadEnterpriseModule() {
     if (!existsSync(distPath)) {
       throw new Error(`Built output not found at ${distPath}. Run "npm run build" before using the portability tooling.`);
     }
-    cachedEnterpriseModule = await import(distPath);
+    cachedEnterpriseModule = await import(pathToFileURL(distPath).href);
   }
   return cachedEnterpriseModule;
 }

@@ -14,6 +14,17 @@
 > client (`packages/enterprise-host-sdk/src/client.ts`). The authorization
 > matrix is REL-01D §3.
 
+## 0. Engagement environment (ASSURE-OPS-02)
+
+[IMPL] `node scripts/assurance/engagement-ops.mjs init --root <root> --engagement-id <id> --organization <org>`
+creates the engagement root (`data/`, `exports/`, `intake/`, `work/`). Point
+every `*_SQLITE_PATH` at `<root>/data/<registry filename>`, keep the
+governed-action file in the root, and set `TMPDIR`/`TEMP` to `<root>/work`.
+[IMPL] `engagement-ops.mjs preflight --root <root> --credential-ledger <ledger> --record-credentials --require-encryption`,
+run with the Host environment, must report `PASS` before the Host starts.
+[MANUAL] Running it is not enforced by the Host.
+See `docs/security/ASSURE-OPS-02-SECURE-CUSTOMER-DATA.md`.
+
 ## 1. Private Host preflight
 
 1. [PROC] Provision a dedicated machine or VM for **one customer**, on an
@@ -194,6 +205,15 @@ Follow REL-01B §15 exactly:
 
 ## 15. Backup and recovery
 
+[IMPL, ASSURE-OPS-02, preferred] With the Host stopped:
+`engagement-ops.mjs backup --root <root> --key-file <key> --output <off-root file>`,
+then `engagement-ops.mjs verify --root <root> --key-file <key> --archive <file>`.
+To recover into an empty data directory: `engagement-ops.mjs restore …`.
+[MANUAL] Generate one key per engagement
+(`node scripts/portability/authority-pilot-backup.mjs keygen --out <file>`)
+and keep it in the secret manager, never beside the backups. The plain
+backup:v1 steps below remain valid but write plaintext.
+
 1. [IMPL] `npm run backup:v1 -- --output <dir> --cold`, with the Host stopped,
    after every release and before any upgrade (`AOC_ENTERPRISE_BACKUP_V1.md`).
    The Assurance Store is `stores/assurance.sqlite`.
@@ -221,6 +241,14 @@ Customer and regulator notifications follow `CUSTOMER_DATA_GOVERNANCE.md` §12
 (legal review pending). Generic triage: `docs/pilot/INCIDENT_TRIAGE.md`.
 
 ## 17. Customer offboarding
+
+[IMPL, ASSURE-OPS-02] `engagement-ops.mjs record --event handoff-accepted …`,
+`record --event retention-set --until … --policy-reference <approved decision> …`,
+`status`, then `offboard --root <root> --plan-out <file>` (dry run). The approver
+signs a `frontera.assurance.disposition-approval.v1` record naming the
+`planDigest`. Then run `offboard --execute --approval <file> --confirm <id> --certificate <file>`.
+[MANUAL] Complete the certificate's outstanding steps: destroy the key,
+delete off-host backups, revoke credentials, destroy the volume.
 
 1. [PROC] Confirm acceptance (draft F) and any open verification requests.
 2. [PROC] Delete Republika-held artifact copies at the agreed time

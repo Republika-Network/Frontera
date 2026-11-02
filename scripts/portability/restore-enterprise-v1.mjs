@@ -33,6 +33,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, copyFileSync, rmSync, renameSync, lstatSync } from 'node:fs';
 import { resolve, join, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   BACKUP_FORMAT,
@@ -550,7 +551,7 @@ async function main() {
   console.log(JSON.stringify(report, null, 2));
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname);
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch((error) => {
     console.error(`[restore:v1] ${error.message}`);
