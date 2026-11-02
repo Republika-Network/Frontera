@@ -1,4 +1,5 @@
 import {
+  HOST_IDENTITY_STATE_KIND,
   HUMAN_IDENTITY_STATE_KINDS,
   authorityStateBindingProblem,
   bindingOf,
@@ -412,8 +413,10 @@ export function createAuthorityStateFreshnessBoundary(options: CreateAuthoritySt
     let witnessed = await anchor.read(binding);
     if (enrollment !== undefined) {
       // CORE-07-FV-WITNESS (defence in depth beside the witness's own atomic rule): an identity store already anchored
-      // in another identity domain of this organization is never enrolled in this one.
-      if (isHumanIdentityStateKind(local.stateKind)) {
+      // in another identity domain of this organization is never enrolled in this one. Checked here for a non-Host
+      // identity domain only: the Host's enrollment ceremony keeps exactly its previous witness calls (PR #258 review),
+      // so it still works against a witness that predates the FV domain; the witness's own rule covers the Host side.
+      if (isHumanIdentityStateKind(local.stateKind) && local.stateKind !== HOST_IDENTITY_STATE_KIND) {
         for (const other of HUMAN_IDENTITY_STATE_KINDS) {
           if (other === local.stateKind) continue;
           const sibling = await anchor.read({ stateKind: other, organizationId });

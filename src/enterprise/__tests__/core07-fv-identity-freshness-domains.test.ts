@@ -250,7 +250,7 @@ describe('CORE-07-FV-WITNESS independence — one witness, one organization, two
     copy.close();
     assert.equal(await slotOf(witness, FV_BOOTSTRAP_IDENTITY_STATE_KIND), undefined);
     // The reverse, in another organization whose Host slot is unbound: an FV store copied to the Host's path and
-    // enrolled by the Host's ceremony is refused, and the Host slot stays unbound.
+    // enrolled by the Host's ceremony is refused by the witness's own rule, and the Host slot stays unbound.
     const otherAdmin = identityAdministratorFor({ plane: 'operator', operatorId: 'ops-admin', organizationId: OTHER_ORG, role: 'organization-administrator', credentialClass: 'operator', actorRef: 'operator-plane:ops-admin' });
     const fv = await openSqliteHumanIdentityStore(join(dir, 'fv-other.sqlite'), {
       organizationId: OTHER_ORG,
@@ -268,6 +268,21 @@ describe('CORE-07-FV-WITNESS independence — one witness, one organization, two
       (error: { code?: string }) => error.code === 'AUTHORITY_FRESHNESS_ALREADY_ENROLLED',
     );
     assert.equal(await slotOf(witness, 'human-identity-state', OTHER_ORG), undefined);
+    // PR #258 review: the Host's enrollment ceremony makes exactly its previous witness calls — never a read of the FV
+    // domain — so it keeps working against a witness that predates the FV kind.
+    const hostCalls = new ScriptedWitnessTransport(createHttpAuthorityStateWitnessTransport({ endpoint: witness.endpoint, credential: WITNESS_TOKEN }));
+    const kindsRead: string[] = [];
+    hostCalls.answer = (request, forward) => {
+      if (request.operation === 'read') kindsRead.push(request.binding.stateKind);
+      return forward();
+    };
+    const hostClient = await connect(witness, { transport: hostCalls });
+    const newHost = await openSqliteHumanIdentityStore(join(dir, 'host-new.sqlite'), { organizationId: 'org-core07-fv-third', now: () => NOW, authenticity, create: true });
+    newHost.close();
+    const enrolled = await openSqliteHumanIdentityStore(join(dir, 'host-new.sqlite'), { organizationId: 'org-core07-fv-third', now: () => NOW, authenticity, freshness: { boundary: createAuthorityStateFreshnessBoundary({ anchor: hostClient.anchor, monitor: hostClient.monitor, organizationId: 'org-core07-fv-third' }), enrollment: { operator: true, operatorId: 'ops', attestation: 'verified-local-state-is-current' } } });
+    enrolled.close();
+    assert.ok(kindsRead.length > 0);
+    assert.deepEqual([...new Set(kindsRead)], ['human-identity-state'], 'the Host enrollment never reads another domain');
     // Without the ceremony, the copy is simply unbound in the Host domain: never adopted.
     await assert.rejects(
       openSqliteHumanIdentityStore(join(dir, 'host-other.sqlite'), { organizationId: OTHER_ORG, now: () => NOW, authenticity, freshness: { boundary: await boundaryFor(witness, OTHER_ORG) } }),

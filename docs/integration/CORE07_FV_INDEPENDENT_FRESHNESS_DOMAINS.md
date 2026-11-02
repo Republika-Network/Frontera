@@ -90,8 +90,10 @@ is a `conflict` with the requested slot still unbound. This rules out:
 
 The rule covers only the two identity kinds; every other kind behaves exactly as before. It is part of the
 witness protocol contract (`protocol.ts`): every witness implementation must enforce it atomically with the
-enrollment. As defence in depth, the client also reads the other identity domain before a baseline
+enrollment. As defence in depth, the client also reads the Host's domain before an **FV-domain** baseline
 enrollment and refuses when it holds the same store id. That check is not atomic; only the witness's is.
+The Host's own enrollment ceremony makes no such read: it keeps exactly its previous witness calls, so it
+still works against a witness that predates the FV kind (pinned by a test); the witness's rule covers it.
 Either refusal is `AUTHORITY_FRESHNESS_ALREADY_ENROLLED`, naming the other domain, and a refused genesis is
 reported the same way (never retried as a lost race).
 
@@ -191,6 +193,17 @@ A separate witness per domain is possible (two boundaries), but nothing requires
 | A cross-domain genesis refusal was reported as a lost race | Info | Fixed: reported as `ALREADY_ENROLLED` |
 | "Conflict with an unbound slot" is read as the cross-domain refusal | Info | Accepted: a lying witness can only cause a refusal |
 
+**Publication review of PR #258** (a second read-only AI review, also not a human):
+
+| Finding | Severity | Resolution |
+|---|---|---|
+| The client-side check also ran in AUTH-04A's baseline enrollment ceremony, reading the FV domain. A witness older than this change refuses that read, so the Host ceremony failed with no FV store anywhere: an availability regression for the Host. Reproduced (simulated older witness) | Medium | Fixed: the client check runs for a non-Host identity domain only; a test pins that the Host enrollment reads only the Host's domain |
+| `exclusive` without freshness gives the FV store no rollback detection; nothing in code forces freshness before activation | Low | Not new; recorded as an activation requirement (§10) |
+| Any in-process caller can perform an FV genesis | Low | Already recorded (§6, §10) |
+
+The reviewer also confirmed the witness rule's atomicity across two witness processes sharing one database
+(60 concurrent rounds, never both enrolled).
+
 Counts are in the increment report and the CHANGELOG.
 
 ## 10. Known limitations
@@ -201,7 +214,10 @@ Counts are in the increment report and the CHANGELOG.
 - Any trusted in-process caller of the AUTH-03 store library can perform an FV genesis; there is no
   registration capability yet. The FV registration ceremony must provide one.
 - The witness handshake does not advertise the kinds it supports.
+- Nothing in code yet requires the FV store to be composed with freshness: an FV store opened without a
+  witness has no rollback detection. Composing it in its domain is an activation requirement.
 - A witness older than this version refuses FV requests (fail-closed); upgrading the witness is a
-  deployment step.
+  deployment step before any FV store is anchored. The Host's slot, including its enrollment ceremony,
+  keeps working with an older witness.
 - B3C-2 (backup and restore), deployment isolation, B6 and FV-P4D remain open. **Operational activation:
   NO-GO.**
