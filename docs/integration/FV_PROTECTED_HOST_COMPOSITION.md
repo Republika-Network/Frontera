@@ -7,9 +7,12 @@ route, CLI or startup path, reaches this composition. Structure tests pin this. 
 
 **Release status: not production-ready.** Before any activation:
 - **A dedicated FV executor process is REQUIRED (§5).** FV-P4C-2B3C-1 adds its runtime, lifecycle and
-  supervisor, non-operational (`FV_DEDICATED_EXECUTOR_LIFECYCLE.md`); the deployment isolation and the
-  identity-store ownership (B3C-3) it still needs are not implemented.
-- **The settlement guard and the AUTH-03 write are not atomic (§11, I3).**
+  supervisor, non-operational (`FV_DEDICATED_EXECUTOR_LIFECYCLE.md`); the deployment isolation it still
+  needs is not implemented.
+- **Identity ownership: FV-P4C-2B3C-3** (`FV_AUTH03_IDENTITY_OWNERSHIP.md`). The composition opens and
+  exclusively holds its own bootstrap identity store (it no longer takes a store handed in), and the
+  settlement write is fenced inside that store's transaction, closing the I3 non-atomic window (§11).
+  Activation still needs a CORE-07 witness slot of the FV store's own.
 - **A compromised filesystem writer running as the same user (or root) is outside current
   protection (§8).**
 - **Whole-system rollback detection remains an FV-P4D dependency (§12).**
@@ -59,7 +62,7 @@ structure test carries exactly this one-file exception.
 | Principal / component | Reads | Writes | Holds | Must never receive | Persists |
 |---|---|---|---|---|---|
 | Host composition root (`composeFvProtectedHost`) | configuration, all FV state | through the components below | the capability, every handle, the boundary | — | nothing itself |
-| AUTH-03 identity store owner | its store | its store | the store | — | identity history (CORE-07 witnessed when composed by AUTH-04A) |
+| AUTH-03 identity store owner | its store | its store | the store | — | identity history (CORE-07 witnessed when composed by AUTH-04A). Since B3C-3, the FV bootstrap identity store's owner is this composition, exclusively. |
 | Bootstrap requester / independent approver | their own challenge | a signed WebAuthn response | a passkey | the service, the capability, any handle | the decision, in AUTH-03 |
 | Kernel-Authority | standing | — | grants | — | its own world |
 | FV coordinator | the request, the status, the history | **the history's one evidence transaction** | a history handle, for one call | the capability, the protected store | evidence in the history |

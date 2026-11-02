@@ -121,6 +121,36 @@ export function confirmExclusivelyHeld(paths: readonly string[]): boolean {
   });
 }
 
+/**
+ * FV-P4C-2B3C-3 — whether **another** process holds a POSIX write lock on the file `path` names now (for
+ * telling a store held by a still-living executor from one refused for any other reason). Reads metadata
+ * only; `false` when unknown.
+ */
+export function heldByAnotherProcess(path: string): boolean {
+  if (typeof path !== 'string' || path === '' || process.platform !== 'linux') return false;
+  const key = lockKeyOf(resolve(path));
+  if (key === undefined) return false;
+  let table: string;
+  try {
+    table = readFileSync('/proc/locks', 'utf8');
+  } catch {
+    return false;
+  }
+  const pid = String(process.pid);
+  return table.split('\n').some((line) => {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 8 || fields.includes('->')) return false;
+    const [, kind, , access, owner, lockKey, start, end] = fields;
+    if (kind !== 'POSIX' || access !== 'WRITE' || owner === pid || lockKey !== key || start === undefined || end === undefined) return false;
+    // SQLite's own exclusive lock only (its whole SHARED range), not any other byte-range lock (review Info).
+    try {
+      return BigInt(start) <= SHARED_FIRST && (end === 'EOF' || BigInt(end) >= SHARED_LAST);
+    } catch {
+      return false;
+    }
+  });
+}
+
 /** Every exclusive connection not yet closed cleanly, by file: held strongly, so no garbage collection can close it. */
 const OPEN_EXCLUSIVE = new Set<{ readonly file: string }>();
 let exitGuardInstalled = false;
