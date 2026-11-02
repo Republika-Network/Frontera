@@ -4,6 +4,22 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Changed — CI-TEST-LOG-01 failure diagnostics for `protocol-tarball-consumption` (CI only; no gate changed)
+- **The problem.** The tarball validator held each battery command's output in memory and kept only the last 3,000 characters of a failed step, then deleted the isolated copy. TAP reports failures where they ran, so the failing test was never named (PRs #255 and #259).
+- **The fix** (`scripts/protocol/lib-test-diagnostics.mjs`):
+  - each command's complete output now streams to its own log file. It is read back only for a failed command, so the diagnostics cannot turn a passing step red, and the old 64 MiB buffer limit is gone;
+  - a failed step lists **every** failing test with its suite path, location, error and bounded stack, plus every totals block, the exit status and the full log's path. TODO, SKIP and parent-only failures are excluded, and the listing is bounded;
+  - a bounded copy goes to the job's step summary.
+- **Workflow.** `publishability.yml` sets `AOC_TARBALL_VALIDATE_LOG_DIR` for the validate step and, only when the job fails or is cancelled, uploads that directory as `protocol-tarball-test-logs-run<run_id>-attempt<attempt>` (14 days, `actions/upload-artifact@v4`). No permissions were added.
+- **Unchanged:** the commands, test discovery, timeouts and concurrency, and the pass/fail decision (only exit status 0 with no signal or spawn error passes). The upload step cannot turn a failed job green.
+- **Tests:** `tests/protocol-tarball-diagnostics.test.mjs` (10, including the default-TAP-reporter pin and the large-log tail). It uses the real Node test runner on synthetic suites:
+  - success; one failure; several failures across files; TODO and SKIP;
+  - early, middle and late failures in multi-megabyte output, which the old tail misses;
+  - the bounds;
+  - a command that cannot start, a crashing runner, no output, and SIGKILL/SIGTERM with partial output kept;
+  - an end-to-end run of the real validator against a synthetic tarball and repository: a failing run (both failures named, log kept, step summary written, exit 1) and a clean run (exit 0, no summary).
+- **Independent review** (an AI agent of the same model family, not a human): nothing Critical or High; a failing test cannot produce a green check. Its Low findings are fixed: the log directory is created before the temp copy, logs are read back only on failure, local notes say a temporary log is removed, and the default TAP reporter is pinned.
+
 ### Fixed — FV-EXEC-LOCK-01 executor lock verification false negatives (internal, not composed, not operational)
 - **The defect, confirmed.** The FV executor confirmed its own SQLite exclusive locks by parsing the global `/proc/locks`. The kernel serves that file one page per `read(2)`, releases the global lock list between reads and resumes by position. A held lock was therefore skipped whenever other processes removed locks earlier in the list.
   - Reproduced with real processes: up to 2% of observations under lock churn, 0 without churn or with a small table. An independent process could never take the lock during a miss.

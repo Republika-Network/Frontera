@@ -132,6 +132,59 @@ Adoption sprint resolved every documented gap — see "Known gaps" below). `.git
 checkout, because `package.json`'s `@aoc/protocol` devDependency now points at the vendored,
 checksummed tarball (`vendor/aoc-protocol-0.2.0-rc.3.tgz`), which is a real, tracked file, not a shim.
 
+### Failure diagnostics (CI-TEST-LOG-01)
+
+**The problem.** Each battery command's output used to be held in memory, and a failed step kept only
+its last 3,000 characters. The isolated copy, and with it everything else, was deleted on exit. Node's
+test runner writes TAP when its output is not a terminal. TAP reports each failure where the test ran
+and prints no list of failures at the end, so the tail held only the last tests and the totals. On PRs
+#255 and #259 the job reported `fail 1` with no way to name the test.
+
+**The flow now** (`scripts/protocol/lib-test-diagnostics.mjs`, used by the validator):
+- Each command's interleaved stdout and stderr streams to its own file, `NN-<command>.log`, as it is
+  produced. Nothing is held in a memory buffer, and the file keeps everything written even if the run is
+  killed. A log is read back only for a failed command: whole up to 128 MiB, and beyond that only its
+  tail. A passing command's output is never loaded.
+- A log that cannot be written (missing or unwritable directory, full disk) does not decide anything. The
+  command still runs, its output goes to the job log, and its own exit status is the outcome. The
+  diagnostics therefore cannot turn a passing step red.
+- One behaviour change: output over 64 MiB used to fail the step (`ENOBUFS`); it no longer does, because
+  the output is no longer buffered in memory.
+- In CI, the validate step sets `AOC_TARBALL_VALIDATE_LOG_DIR` to `$RUNNER_TEMP/protocol-tarball-test-logs`,
+  outside the isolated copy. A local run without it uses a temporary directory and removes it at the end,
+  as before.
+- A failed step's entry in the `== Validation summary ==` lists **every failing test** the runner reported:
+  its suite path, location, error, code, expected and actual values, and a bounded stack. TODO and SKIP
+  results, and parent suites that fail only because a subtest did, are not listed. Then come every
+  totals block, the exit status (and signal or spawn error), the path of the full log and the old tail.
+  The listing is bounded to 25 failures, 40 detail lines each, and 16,000 characters, and says where the
+  rest is.
+- A bounded copy of the listing goes to the job's step summary page.
+- When the job fails or is cancelled, the workflow uploads the log directory as the artifact
+  `protocol-tarball-test-logs-run<run_id>-attempt<attempt>`, with 14-day retention. **To find a full log:**
+  open the failed run, then *Summary* → *Artifacts*.
+
+**What did not change.** The commands, test discovery, Node version, tarball installation, timeouts and
+concurrency are unchanged. **The pass/fail decision is unchanged:** a step passes only on exit status 0
+with no signal and no spawn error, and the validator's exit code is computed exactly as before. The
+upload step runs only after the job has already failed. It cannot make a failing job pass, and if it
+fails itself the job stays failed. On success there is no upload. No permissions were added.
+
+**Content of the artifact.** It holds the battery's own console output, the same kind of test output the
+`ci.yml` validate job already prints in full in its public log. No secrets are given to this step.
+
+**Limits.**
+- A failing test's identity comes from the runner's TAP. A crash before TAP is written, such as a build
+  error, shows the exit status and the tail, and the full log.
+- On a hard job timeout or cancellation, the upload runs only if GitHub still runs `cancelled()` steps.
+- The listing reads Node's TAP shape: indentation, `# Subtest:` and YAML blocks. An unterminated YAML
+  block ends at the first line outside its indentation. The battery's own
+  `node --test` commands pass no reporter flag and rely on TAP being the default for non-TTY output, as
+  in Node 22. A test pins that default, so a future Node that changes it fails visibly.
+- The step summary covers the battery's eight steps. Install and export-resolution failures, and fatal
+  errors, appear in the job log's notes only.
+- A local run without `AOC_TARBALL_VALIDATE_LOG_DIR` removes its logs at exit, and its notes say so.
+
 ## Allowed imports
 
 Enterprise source may import only:
