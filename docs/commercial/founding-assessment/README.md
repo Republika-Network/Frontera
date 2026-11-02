@@ -30,6 +30,7 @@ Assurance · **Offer:** Republika Sovereignty Assessment · **Framework:**
 | 7 | [`ASSURE_COMMERCIAL_GO_NO_GO.md`](ASSURE_COMMERCIAL_GO_NO_GO.md) | The launch gate. Final decision: **NO-GO** | DRAFT |
 | 8 | [`drafts/`](drafts/) | Customer-facing document drafts A–J | DRAFT — professional review |
 | 9 | [`governance/`](governance/GOVERNANCE_READINESS.md) | ASSURE-GOV-01: framework commercial authorization and independent assurance governance package | DRAFT — nothing approved |
+| 10 | [`governance/external-review/`](governance/external-review/README.md) | ASSURE-GOV-02: handoff package to engage a qualified outside reviewer (statement of work, evidence index, reproduction guide, blank templates). No reviewer is engaged and no review exists | DRAFT — nothing approved |
 
 ### Customer-facing drafts (`drafts/`)
 
