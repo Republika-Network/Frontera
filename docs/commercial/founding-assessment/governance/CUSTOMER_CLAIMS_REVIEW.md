@@ -5,6 +5,11 @@
 > reviewed by counsel. The customer-facing drafts in `../drafts/` and the
 > report generator are **not** edited by this mission. Labels: VERIFIED ·
 > PROPOSED · PENDING · BLOCKED.
+>
+> **ASSURE-CLAIMS-01 update.** A later mission corrected the drafts and the
+> generator (`aoc.assurance.commercial-report.v3`); see §7. The "Present
+> today?" column below describes the GOV-01 baseline. Legal review of the
+> corrected wording is still **PENDING**.
 
 ## 1. Claims Republika must not make
 
@@ -43,7 +48,7 @@
 | Draft A L11; service spec §1 | "an independent, evidence-based view" | "an outside, evidence-based, human-reviewed view" |
 | Draft A L25 | "**Independent sign-off**: the person who approves your report did not review its controls." | "**Separate approval**: a second Republika person, who reviewed none of your controls, approves the report before release." |
 | Draft H L21 | "A Republika approver, independent of the reviewers, approved this exact content" | "A Republika approver, different from the reviewers, approved this exact content" |
-| Report cover commercial-use statement (generator; R-06b or a generator mission, not this one) | "…requires an authenticated human approver to acknowledge that restriction and act as that review…" | Per D-02. If (a): "Release required an authenticated Republika approver's acknowledgement. [The release was also reviewed by <reviewer>, independent of Republika, under <scope>.]" If (b): keep, adding "The approver is a Republika employee or contractor." |
+| Report cover commercial-use statement (generator; R-06b or a generator mission, not this one) | Historical v1/v2 generators: "…requires an authenticated human approver to acknowledge that restriction and act as that review…" | Per D-02. If (a): "Release required an authenticated Republika approver's acknowledgement. [The release was also reviewed by <reviewer>, independent of Republika, under <scope>.]" If (b): keep, adding "The approver is a Republika employee or contractor." |
 | Draft G (add) | — | "**Who performed this assessment.** Republika wrote the framework, operates the software used, and performed and approved this assessment. It is independent of your organization, not of the framework or the tooling." |
 | Draft G (add) | — | "**What is not covered.** Only the ten controls listed. In particular, not: infrastructure or network security testing, availability, supply-chain security, the jurisdictional exposure of your providers, or the behaviour of any AI model." (list to be confirmed in R1) |
 
@@ -77,3 +82,20 @@ Any other public reference needs Republika's written consent.
 | L7 | Liability cap, disclaimers, governing law (draft B) | Contract |
 | L8 | Privacy notice to operators about reviewer IDs in reports | Personal data |
 | L9 | Any naming of a customer as a founding customer or reference | Consent |
+
+## 7. ASSURE-CLAIMS-01 disposition (IMPLEMENTED; legal review PENDING)
+
+| # | Treatment | Where | Status |
+| --- | --- | --- | --- |
+| C7 | "independent, evidence-based view" → "a structured, evidence-based assessment conducted by Republika reviewers"; "Independent sign-off" → "Separate release approval"; draft H "independent of the reviewers" → "a different authorized Republika approver"; service spec §1/§1a, draft F, draft G "Who performs the assessment" | drafts A, F, G, H; `SERVICE_SPECIFICATION.md` | IMPLEMENTED |
+| C8 | New reports use generator `aoc.assurance.commercial-report.v3`: internal review, internal release approval, external review (none recorded) and commercial authorization are stated apart; internal approval "does not constitute an independent external review" and does not remove the restriction. Historical v1/v2 reports keep their original wording and bytes, and the independent verifier labels that wording as historical | `commercial-report-format.ts`, `verify-commercial-package.mjs` | IMPLEMENTED |
+| C9 | Headline → "Know who can act on your behalf — and see the evidence behind it" | draft A | IMPLEMENTED |
+| C5 | v3 report text: "This report is not digitally signed" and confirm the release digest with Republika over a separate, trusted channel (§4 Option A, in substance) | report `integrity.limitation` | IMPLEMENTED; B7 remains OPEN |
+
+The §3 wording was adapted, not adopted verbatim: §3 proposed "an outside …
+view" for draft A, which the mission brief replaced with the more precise
+"conducted by Republika reviewers". D-02 is **not** decided by this change:
+the v3 text neither says the approver is the controlled review nor that the
+restriction is satisfied. "IMPLEMENTED" here means the text is changed and
+covered by tests; it is not legal approval (L1–L9 remain PENDING) and not an
+independent review. Record: `docs/security/ASSURE-CLAIMS-01-REPORT-DISCLOSURE-INTEGRITY.md`.

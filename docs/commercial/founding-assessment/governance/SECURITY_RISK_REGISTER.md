@@ -229,8 +229,8 @@ mitigation** · **Evidence** · **Proposed additional mitigation** · **Residual
 | --- | --- |
 | Threat | Republika authors the framework, builds the tool, performs the review and approves the release; the customer believes the result is independent |
 | Likelihood / impact | Medium / Medium |
-| Existing mitigation | Separation of duties between reviewer and approver (per credential) |
-| Evidence | REL-01D separation-of-duties tests (this run) |
+| Existing mitigation | Separation of duties between reviewer and approver (per credential). ASSURE-CLAIMS-01: customer drafts and generator v3 reports disclose that Republika authors the framework, operates the tooling and performs and approves the assessment |
+| Evidence | REL-01D separation-of-duties tests (this run); `assure-claims-01-commercial-disclosures.test.ts` G06-01…G06-06 |
 | Proposed additional mitigation | R2 for at least the first engagement; drop "independent" from customer wording (GF-06); disclose the relationship (IND residual in candidate spec §3.2) |
 | Residual | Medium |
 | Recommendation | **Mitigate and disclose** |
@@ -245,8 +245,8 @@ mitigation** · **Evidence** · **Proposed additional mitigation** · **Residual
 | --- | --- |
 | Threat | The report cover states that the approver acts as the controlled review (GF-01); drafts claim independence and "prove it" (GF-06) |
 | Likelihood / impact | High (present in the text today) / Medium |
-| Existing mitigation | None |
-| Evidence | `commercial-report.ts:787-791`; drafts A, H; service spec §1 |
+| Existing mitigation | ASSURE-CLAIMS-01 (IMPLEMENTED, legal review PENDING): generator v3 no longer conflates internal approval with external review; drafts A, F, G, H and the service spec corrected. Historical v1/v2 reports keep their wording by design (immutable) |
+| Evidence | `commercial-report-format.ts` `DISCLOSURE_WORDING_V3`; `assure-claims-01-commercial-disclosures.test.ts`; `docs/security/ASSURE-CLAIMS-01-REPORT-DISCLOSURE-INTEGRITY.md` |
 | Proposed additional mitigation | Draft corrections per `CUSTOMER_CLAIMS_REVIEW.md`; D-02 decision; generator wording per version (R-06b) |
 | Residual | Low after mitigation |
 | Recommendation | **Mitigate before any customer delivery** |
