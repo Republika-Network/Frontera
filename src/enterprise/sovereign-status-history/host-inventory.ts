@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { isIdentifier } from './bootstrap-contract.js';
 import type { BootstrapEvidenceInventorySnapshot } from './authority-settlement.js';
 import { assessHistoryContinuity, captureHistoryContinuity, openRecordedHistory } from './history-continuity.js';
-import type { BootstrapIntent, HistoryContinuityAssessment, HistoryContinuityRecord } from './history-continuity.js';
+import type { BootstrapIntent, ExclusiveOpen, HistoryContinuityAssessment, HistoryContinuityRecord } from './history-continuity.js';
 import { storeCommittedRequestOf } from './sqlite-status-high-water-mark-store.js';
 import type { SqliteStatusHighWaterMarkStore } from './sqlite-status-high-water-mark-store.js';
 
@@ -82,7 +82,16 @@ export interface HostInventoryStatus {
   readonly histories: readonly HistoryContinuityAssessment[];
 }
 
-export type TrackedBootstrapRefusal = 'HISTORY_NOT_ADMITTED' | 'INVENTORY_REFRESHING';
+export type TrackedBootstrapRefusal = 'HISTORY_NOT_ADMITTED' | 'INVENTORY_REFRESHING' | 'EXECUTOR_NOT_HELD';
+
+/**
+ * FV-P4C-2B3B — the inventory as the exclusive executor: histories are opened exclusively with
+ * `beforeWrite` as their write fence, and `confirmHeld(namespace)` must hold before a tracked
+ * bootstrap starts and again before its intent is completed (otherwise it stays pending).
+ */
+export interface ExclusiveInventory extends ExclusiveOpen {
+  confirmHeld(namespace: string): boolean;
+}
 
 export interface HostHistoryInventory {
   /** Loads the configuration, opens and assesses every configured history, resolves intents by evidence. */
@@ -103,8 +112,19 @@ export function createHostHistoryInventory(options: {
   readonly configuration: () => HostHistoryConfiguration | undefined;
   readonly records: HistoryContinuityRecordPort;
   readonly now: () => string;
+  readonly exclusive?: ExclusiveInventory;
 }): HostHistoryInventory {
-  const { configuration, records, now } = options ?? ({} as never);
+  const { configuration, records, now, exclusive } = options ?? ({} as never);
+  if (exclusive !== undefined && (typeof exclusive?.beforeWrite !== 'function' || typeof exclusive.confirmHeld !== 'function')) throw new TypeError('An exclusive inventory needs its write fence and its lock check.');
+  const exclusiveOpen: ExclusiveOpen | undefined = exclusive === undefined ? undefined : Object.freeze({ beforeWrite: (file: string) => exclusive.beforeWrite(file) });
+  const confirmHeld = (namespace: string): boolean => {
+    if (exclusive === undefined) return true;
+    try {
+      return exclusive.confirmHeld(namespace) === true;
+    } catch {
+      return false;
+    }
+  };
   for (const method of ['load', 'save', 'pendingIntents', 'beginIntent', 'completeIntent'] as const) {
     if (typeof (records as unknown as Record<string, unknown> | undefined)?.[method] !== 'function') throw new TypeError('A Host history inventory needs its continuity record and intent port.');
   }
@@ -160,6 +180,8 @@ export function createHostHistoryInventory(options: {
   function admittedNow(namespace: string): { readonly store: SqliteStatusHighWaterMarkStore; readonly databasePath: string } | undefined {
     const entry = admitted.get(namespace);
     if (entry === undefined) return undefined;
+    // FV-P4C-2B3B: an exclusive inventory serves only histories this process still holds.
+    if (!confirmHeld(namespace)) return undefined;
     const pending = pendingOf(namespace);
     if (pending === undefined || pending.length > 0) return undefined;
     let record: unknown;
@@ -227,6 +249,14 @@ export function createHostHistoryInventory(options: {
     const nextAdmitted = new Map<string, { store: SqliteStatusHighWaterMarkStore; databasePath: string }>();
     const nextAssessments: HistoryContinuityAssessment[] = [];
     const nextOpened: SqliteStatusHighWaterMarkStore[] = [];
+    if (exclusive !== undefined) {
+      // FV-P4C-2B3B: an exclusively held file is never opened a second time (nor read raw) by this process,
+      // so every held handle is closed before any reopen. Nothing is served meanwhile.
+      readiness = 'not-loaded';
+      admitted = new Map();
+      assessments = [];
+      closeAll(opened.splice(0));
+    }
     for (const { namespace, databasePath } of resolved) {
       const unavailable = Object.freeze({ namespace, class: 'UNAVAILABLE' as const, admitted: false, proof: 'not-applicable' as const, committedIntents: Object.freeze([]) });
       let record: unknown;
@@ -241,7 +271,7 @@ export function createHostHistoryInventory(options: {
         nextAssessments.push(unavailable);
         continue;
       }
-      const { assessment, store } = await openRecordedHistory(record, { namespace, databasePath, pendingIntents: pending });
+      const { assessment, store } = await openRecordedHistory(record, { namespace, databasePath, pendingIntents: pending, ...(exclusiveOpen !== undefined ? { exclusive: exclusiveOpen } : {}) });
       if (store === undefined) {
         nextAssessments.push(assessment);
         continue;
@@ -315,6 +345,7 @@ export function createHostHistoryInventory(options: {
       }
       if (refreshing) return Object.freeze({ outcome: 'refused' as const, reason: 'INVENTORY_REFRESHING' as const });
       if (entry === undefined || assessed === undefined || !assessed.admitted) return Object.freeze({ outcome: 'refused' as const, reason: 'HISTORY_NOT_ADMITTED' as const });
+      if (!confirmHeld(namespace)) return Object.freeze({ outcome: 'refused' as const, reason: 'EXECUTOR_NOT_HELD' as const });
       let written = false;
       const ensureIntent = (): void => {
         if (written) return;
@@ -341,8 +372,10 @@ export function createHostHistoryInventory(options: {
             // Release review M1: evidence this handle committed that is now gone means the file was rolled back
             // under it; the intent stays pending, so no negative is ever read from it.
             const absent = committed === false && !storeCommittedRequestOf(entry.store, requestId);
+            // FV-P4C-2B3B: the outcome is believed only while this process still holds the files exclusively.
+            const held = confirmHeld(namespace);
             // Evidence: re-capture first. Anything else stays pending.
-            const settled = absent || (committed === true && pending !== undefined && recapture(namespace, entry, pending, configurationGeneration));
+            const settled = held && (absent || (committed === true && pending !== undefined && recapture(namespace, entry, pending, configurationGeneration)));
             if (settled) {
               try {
                 records.completeIntent(namespace, requestId);
