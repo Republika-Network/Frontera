@@ -79,6 +79,22 @@ jobs:
         # in docs/integration/PROTOCOL_PACKAGE_CONSUMPTION.md, which now
         # records zero open gaps. This step must pass; do not reintroduce
         # continue-on-error without a documented, evidenced reason.
+        #
+        # CI-TEST-LOG-01: every battery command's complete output is written to
+        # AOC_TARBALL_VALIDATE_LOG_DIR (outside the isolated copy, which is deleted),
+        # and a failed step prints every failing test it reported, not only a tail.
+        env:
+          AOC_TARBALL_VALIDATE_LOG_DIR: ${{ runner.temp }}/protocol-tarball-test-logs
         run: |
           TARBALL=$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('${{ runner.temp }}/protocol-tarball-result.json','utf8')).tarballPath)")
           node scripts/protocol/validate-enterprise-against-protocol-tarball.mjs "$TARBALL"
+      - name: Upload the battery's complete logs (only when the job did not succeed)
+        # Diagnostics only: this step cannot turn a failed job green, and it does not run on success.
+        # The logs are the same test output the CI validate job prints in full in its own log.
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: protocol-tarball-test-logs-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/protocol-tarball-test-logs/
+          if-no-files-found: warn
+          retention-days: 14

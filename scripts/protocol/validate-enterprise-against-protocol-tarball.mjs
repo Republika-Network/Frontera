@@ -14,14 +14,14 @@
 // Never modifies the real repository's package.json or package-lock.json --
 // all mutation happens inside a throwaway temporary copy that is deleted on exit.
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { cp, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isPackageScopedProtocolImport } from './lib-protocol-artifact.mjs';
+import { runLogged, summarizeTapFailures, tailOf } from './lib-test-diagnostics.mjs';
 
 const REPO_ROOT = resolve(process.cwd());
 
@@ -61,20 +61,62 @@ function log(message) {
   process.stderr.write(`[tarball-validate] ${message}\n`);
 }
 
+// CI-TEST-LOG-01: every command's complete output is written to its own log file in this directory (set
+// in `main`), streamed as it is produced. In CI the workflow points AOC_TARBALL_VALIDATE_LOG_DIR outside the
+// isolated copy and uploads it when the job fails; otherwise it is a temporary directory removed at the end.
+let logDir;
+let logsKept = false;
+let logSequence = 0;
+
 function run(cmd, args, cwd, { allowFailure = true } = {}) {
   log(`$ ${cmd} ${args.join(' ')} (cwd=${cwd})`);
-  // node's spawnSync default maxBuffer is 1 MiB; the full validation battery
-  // (in particular `npm run test`, which runs the entire root + workspace
-  // test suites with verbose TAP output) can legitimately exceed that,
-  // which kills the child with ENOBUFS/SIGTERM (status: null) -- a tooling
-  // limitation, not a real command failure. 64 MiB comfortably covers this.
-  const result = spawnSync(cmd, args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  const combined = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-  const ok = result.status === 0;
-  if (!ok && !allowFailure) {
-    throw new Error(`Command failed (${result.status}): ${cmd} ${args.join(' ')}\n${combined}`);
+  // The output streams to a file, not an in-memory buffer: the full validation battery (in particular
+  // `npm run test`, the entire root + workspace suites with verbose TAP output) is never cut short by a
+  // buffer limit, and a failure early in it is still on disk. Only exit status 0 is success.
+  logSequence += 1;
+  const slug = `${cmd} ${args.join(' ')}`.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').slice(0, 60);
+  const logFile = join(logDir, `${String(logSequence).padStart(2, '0')}-${slug}.log`);
+  const result = runLogged(cmd, args, cwd, logFile);
+  // Read back only for a failed command (its diagnostics): a successful command's output, however large,
+  // is never loaded, so the diagnostics can never turn a passing step into a failure. A log too large to
+  // read falls back to its tail; the complete file stays on disk either way.
+  let output = '';
+  if (!result.ok) {
+    try {
+      output = readFileSync(logFile, 'utf8');
+    } catch {
+      output = tailOf(logFile, 1_000_000);
+    }
   }
-  return { ok, status: result.status, output: combined };
+  if (!result.ok && !allowFailure) {
+    throw new Error(`Command failed (${String(result.status)}): ${cmd} ${args.join(' ')}\n${output}`);
+  }
+  return { ok: result.ok, status: result.status, signal: result.signal, error: result.error, output, logFile };
+}
+
+/** A failed step's notes: every failing test it reported (TAP), where its full log is, and its tail. */
+function failureNotes(result, tailChars) {
+  const { failures, summary } = summarizeTapFailures(result.output);
+  const exit = `exit status=${String(result.status)} signal=${String(result.signal)}${result.error ? ` error=${result.error}` : ''}`;
+  return [
+    ...(failures.length > 0 ? [summary] : []),
+    `${exit}; full log: ${result.logFile}${logsKept ? '' : ' (temporary: removed when the validator exits; set AOC_TARBALL_VALIDATE_LOG_DIR to keep it)'}`,
+    `--- last ${String(tailChars)} characters ---`,
+    tailOf(result.logFile, tailChars),
+  ].join('\n');
+}
+
+/** CI-TEST-LOG-01: a bounded failure summary in the job's step summary page, when GitHub provides one. */
+function writeStepSummary(label, result) {
+  const target = process.env.GITHUB_STEP_SUMMARY;
+  if (!target) return;
+  const { failures, summary } = summarizeTapFailures(result.output, { maxChars: 12_000 });
+  const body = failures.length > 0 ? summary : `No failing test was identified in the output; see the log tail and the uploaded log artifact.`;
+  try {
+    appendFileSync(target, `### protocol-tarball-consumption: \`${label}\` failed\n\nExit status ${String(result.status)}, signal ${String(result.signal)}. The complete output is in the \`protocol-tarball-test-logs\` artifact.\n\n\`\`\`text\n${body.replace(/\`\`\`/g, "'''")}\n\`\`\`\n`);
+  } catch {
+    // A summary that cannot be written changes nothing: the step's own result stands.
+  }
 }
 
 async function copyRepoExcluding(sourceDir, destDir) {
@@ -199,7 +241,7 @@ async function resolveProtocolExports(tempDir, installedProtocolPkg) {
   await writeFile(scriptPath, specifiers.map((s) => `import.meta.resolve(${JSON.stringify(s)});`).join('\n'));
   const result = run('node', ['__resolve-protocol-exports.mjs'], tempDir);
   await rm(scriptPath, { force: true }).catch(() => {});
-  return { specifiers, ok: result.ok, notes: result.ok ? specifiers.join(', ') : result.output.slice(-2000) };
+  return { specifiers, ok: result.ok, notes: result.ok ? specifiers.join(', ') : failureNotes(result, 2000) };
 }
 
 export async function declarationLeakScan(tempDir) {
@@ -240,6 +282,17 @@ async function main() {
   const tarballSha256 = createHash('sha256').update(tarballBuffer).digest('hex');
   log(`Validating against tarball ${tarballPath} (sha256=${tarballSha256}, ${tarballBuffer.length} bytes).`);
 
+  // CI-TEST-LOG-01: the log directory lives outside the isolated copy, which is deleted below. It is created
+  // first, so a log directory that cannot be created fails the run before any copy exists to leak.
+  const configuredLogDir = process.env.AOC_TARBALL_VALIDATE_LOG_DIR;
+  if (configuredLogDir) {
+    logDir = resolve(configuredLogDir);
+    mkdirSync(logDir, { recursive: true });
+    logsKept = true;
+  } else {
+    logDir = await mkdtemp(join(tmpdir(), 'aoc-enterprise-tarball-validate-logs-'));
+  }
+  log(`Writing each command's complete output to ${logDir}.`);
   const tempDir = await mkdtemp(join(tmpdir(), 'aoc-enterprise-tarball-validate-'));
   const stepResults = [];
   let exitCode = 0;
@@ -305,7 +358,7 @@ async function main() {
 
     // --- Install ---
     const install = run('npm', ['install', '--no-audit', '--no-fund'], tempDir);
-    stepResults.push({ step: 'npm install (tarball-backed)', ok: install.ok, notes: install.ok ? 'installed' : install.output.slice(-2000) });
+    stepResults.push({ step: 'npm install (tarball-backed)', ok: install.ok, notes: install.ok ? 'installed' : failureNotes(install, 2000) });
     if (!install.ok) throw new Error('npm install failed against the tarball-backed package.json; aborting remaining checks.');
 
     // --- Verify the resulting lockfile/node_modules resolve to the tarball, not a sibling path ---
@@ -341,8 +394,11 @@ async function main() {
     ];
     for (const [label, npmArgs] of battery) {
       const result = run('npm', npmArgs, tempDir);
-      stepResults.push({ step: label, ok: result.ok, notes: result.ok ? 'passed' : result.output.slice(-3000) });
-      if (!result.ok) exitCode = 1;
+      stepResults.push({ step: label, ok: result.ok, notes: result.ok ? 'passed' : failureNotes(result, 3000) });
+      if (!result.ok) {
+        exitCode = 1;
+        writeStepSummary(label, result);
+      }
     }
 
     // --- Forbidden import / declaration-leak scans ---
@@ -360,6 +416,8 @@ async function main() {
     exitCode = 1;
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    // A local run's logs go with it; a configured directory is kept for the CI artifact.
+    if (!configuredLogDir && logDir) await rm(logDir, { recursive: true, force: true }).catch(() => {});
   }
 
   log('== Validation summary ==');
@@ -373,6 +431,7 @@ async function main() {
         tarballSha256,
         verifiedPublicExports,
         results: stepResults.map(({ step, ok }) => ({ step, ok })),
+        ...(configuredLogDir ? { logDirectory: logDir } : {}),
         exitCode,
       },
       null,
