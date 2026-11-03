@@ -1,6 +1,6 @@
 import { conformanceDigest } from './canonical.js';
 import { SYNTHETIC_DESIGNATION, isIdentifier, readClosed, toMs, toTimestamp, type TransitionRecord } from './contracts.js';
-import { ConformanceStoreError } from './sqlite-conformance-p.store.js';
+import { ConformanceStoreError } from './sqlite-conformance-store.js';
 import {
   MAX_STATUS_ASSERTION_LIFETIME_MS,
   STATUS_ASSERTION_PURPOSE,
@@ -264,7 +264,7 @@ export function createStatusRegistry(deps: {
       if (credential === undefined) return undefined;
       const bound = Math.max(1, Math.min(MAX_TRANSITIONS_PAGE, Math.floor(limit)));
       return Object.freeze(
-        store
+        p.store
           .listTransitions(credential.organizationId, credentialId)
           .filter((row) => row.stateVersion > afterStateVersion)
           .slice(0, bound)
