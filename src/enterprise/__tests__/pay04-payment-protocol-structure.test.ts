@@ -186,6 +186,10 @@ describe('PAY-04 M39 — no payment-protocol vocabulary in CORE', () => {
       'src/enterprise/authority-state-freshness/checkpoint.ts',
       'src/enterprise/composition/composition-root.ts',
       'src/enterprise/configuration/enterprise-configuration.ts',
+      // RN-CONFORM-03 (approved mission scope): the simulated anchor intent's fixed network label `XRPL_TESTNET` — a CHECK
+      // constraint and a literal, no transaction, client, SDK or rail logic (prepared intents only; ledger work is RN-CONFORM-03X).
+      'src/enterprise/conformance/anchor-intent.ts',
+      'src/enterprise/conformance/sqlite-conformance-store.ts',
       'src/enterprise/external-authority-signer/protocol.ts',
       'src/enterprise/host/enterprise-host.ts',
       'src/enterprise/host/host-configuration.ts',

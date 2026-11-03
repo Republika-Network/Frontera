@@ -18,7 +18,9 @@ import {
   type StatusRefusalResult,
 } from './status-contracts.js';
 import { projectCredentialStatus, type StatusProjectionDeps, type StatusProjectionResult } from './status-projection.js';
-import { projectionOf, statusRequestMac, type StatusIssuerKeyRecord, type StatusSignerPort, type StatusSignerRefusal } from './status-signer.js';
+import type { KeyObject } from 'node:crypto';
+
+import { authenticateStatusRequest, projectionOf, type StatusIssuerKeyRecord, type StatusSignerPort, type StatusSignerRefusal } from './status-signer.js';
 
 /**
  * RN-CONFORM-03 / WP-03–WP-06, WP-09 — the status registry: issues signed
@@ -115,7 +117,8 @@ export function createStatusRegistry(deps: {
   readonly projection: StatusProjectionDeps;
   readonly clock: { now(): string };
   readonly signer: StatusSignerPort;
-  readonly requester: { readonly id: string; readonly secret: Buffer };
+  /** The registry's own requester identity towards the signer (not the issuer key, which it never holds). */
+  readonly requester: { readonly id: string; readonly key: KeyObject };
   readonly issuer: string;
   readonly onlineLifetimeMs?: number;
   readonly stapledLifetimeMs?: number;
@@ -134,7 +137,7 @@ export function createStatusRegistry(deps: {
     operation,
     requesterId: requester.id,
     payload,
-    mac: statusRequestMac(requester.secret, { operation, requesterId: requester.id, payload }),
+    authentication: authenticateStatusRequest(requester.key, { operation, requesterId: requester.id, payload }),
   });
 
   const refusal = (credentialId: string, nonce: string, result: StatusRefusalResult): StatusIssueOutcome => {

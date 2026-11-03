@@ -1,7 +1,7 @@
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
-import { createServer as createTcpServer, type AddressInfo } from 'node:net';
+import { createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
@@ -28,7 +28,7 @@ const post = (body: string, contentType = 'application/json') => req({ method: '
 function httpCall(port: number, options: { method?: string; path: string; body?: string; host?: string; headers?: Record<string, string>; timeoutMs?: number }): Promise<{ status: number; headers: Record<string, unknown>; body: string } | { error: string }> {
   return new Promise((settle) => {
     const r = request(
-      { host: '127.0.0.1', port, method: options.method ?? 'GET', path: options.path, headers: { host: options.host ?? `127.0.0.1:${port}`, ...(options.headers ?? {}) }, timeout: options.timeoutMs ?? 2000 },
+      { host: '127.0.0.1', port, agent: false, method: options.method ?? 'GET', path: options.path, headers: { host: options.host ?? `127.0.0.1:${port}`, connection: 'close', ...(options.headers ?? {}) }, timeout: options.timeoutMs ?? 2000 },
       (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
@@ -147,10 +147,12 @@ describe('RN-CONFORM-03 local listener: disabled by default, loopback only (WP-0
     assert.ok('error' in gone);
     assert.equal(s.verify(undefined, credentialId, { kind: 'stapled' }).conformant, false);
     // A peer that accepts and never answers: the client times out; nothing to verify.
-    const silent = createTcpServer(() => undefined);
+    const held: Socket[] = [];
+    const silent = createTcpServer((socket) => held.push(socket));
     await new Promise<void>((settle) => silent.listen(0, '127.0.0.1', () => settle()));
     const timedOut = await httpCall((silent.address() as AddressInfo).port, { path: '/conformance/v1/keys', timeoutMs: 200 });
     assert.deepEqual(timedOut, { error: 'timeout' });
+    for (const socket of held) socket.destroy();
     await new Promise<void>((settle) => silent.close(() => settle()));
     s.cleanup();
   });

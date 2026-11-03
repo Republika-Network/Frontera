@@ -32,6 +32,8 @@ export const CONFORMANCE_SIGNING_DOMAINS = Object.freeze({
   status: 'frontera:conformance-status:v1\n',
   /** RN-CONFORM-03: signed refusals (subject/profile mismatch, unknown credential, reused nonce). Never carries credential state. */
   statusRefusal: 'frontera:conformance-status-refusal:v1\n',
+  /** RN-CONFORM-03: a requesting component's authentication of one signing request to the status signer (never an artifact). */
+  statusSigningRequest: 'frontera:conformance-status-signing-request:v1\n',
 } as const);
 
 export type ConformanceSigningKind = keyof typeof CONFORMANCE_SIGNING_DOMAINS;

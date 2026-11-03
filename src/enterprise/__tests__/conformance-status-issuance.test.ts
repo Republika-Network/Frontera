@@ -10,9 +10,9 @@ import { openConformanceStore } from '../conformance/sqlite-conformance-store.js
 import { toMs, toTimestamp } from '../conformance/contracts.js';
 import { parseStatusArtifact, statusArtifactDigest } from '../conformance/status-contracts.js';
 import { projectCredentialStatus } from '../conformance/status-projection.js';
-import { statusRequestMac } from '../conformance/status-signer.js';
+import { authenticateStatusRequest } from '../conformance/status-signer.js';
 import { ORG_A, activeCredential, cleanupAll, issue, observe, runBaseline, submit } from './conformance-support.js';
-import { ISSUER, assertionText, buildStatusCircuit, freshNonce, requesterSecret, type StatusCircuit } from './conformance-status-support.js';
+import { ISSUER, assertionText, buildStatusCircuit, freshNonce, requesterKey, type StatusCircuit } from './conformance-status-support.js';
 
 /**
  * RN-CONFORM-03 / WP-03, WP-04, WP-06, WP-09, WP-10 — issuance from committed
@@ -288,7 +288,7 @@ describe('RN-CONFORM-03 independent review regressions (signer state high-water 
       issuedAt: at, validUntil: toTimestamp(toMs(at) + 60_000), designation: 'SYNTHETIC-NON-PRODUCTION',
     };
     const request = { operation: 'signStatusAssertion' as const, requesterId: 'status-registry', payload: payload as never };
-    assert.deepEqual(s.signer.sign({ ...request, mac: statusRequestMac(requesterSecret(), request) }), { ok: false, refusal: 'STATE_ROLLBACK' });
+    assert.deepEqual(s.signer.sign({ ...request, authentication: authenticateStatusRequest(requesterKey(), request) }), { ok: false, refusal: 'STATE_ROLLBACK' });
     assert.equal(s.registry.issueOnline(s.onlineRequest(credentialId)).kind, 'unavailable');
     s.cleanup();
   });

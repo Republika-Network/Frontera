@@ -101,6 +101,11 @@ export async function startLocalStatusServer(options: {
   return Object.freeze({
     host,
     port: boundPort,
-    close: () => new Promise<void>((settle) => server.close(() => settle())),
+    close: () =>
+      new Promise<void>((settle) => {
+        server.close(() => settle());
+        // Idle keep-alive and in-flight sockets are ended so close completes deterministically.
+        server.closeAllConnections();
+      }),
   });
 }

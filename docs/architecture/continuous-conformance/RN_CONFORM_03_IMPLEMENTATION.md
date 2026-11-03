@@ -57,10 +57,12 @@ artifact is accepted only as its exact canonical text (one byte representation).
 
 ## 4. Key management (CC-D-07, provisional)
 
-* The registry holds no private key (INV-07): it holds a `StatusSignerPort` and a requester secret.
+* The registry holds no issuer key (INV-07): it holds a `StatusSignerPort` and its own requester key,
+  with which it authenticates each signing request (Ed25519, domain `frontera:conformance-status-signing-request:v1\n`;
+  no HMAC — the repository forbids shared-secret signers in the Enterprise runtime).
   Tests scan the database file and the signer journal for key material.
-* The signer (in-process, CORE-02 structured pattern) authenticates the requester (HMAC-SHA256,
-  constant-time), accepts only `signStatusAssertion` / `signStatusRefusal`, re-parses the payload,
+* The signer (in-process, CORE-02 structured pattern) authenticates the requester against its pinned
+  public key, accepts only `signStatusAssertion` / `signStatusRefusal`, re-parses the payload,
   refuses another issuer, a lifetime > 15 min or `issuedAt` beyond ± 5 s of its clock, **recomputes the
   projection itself** and refuses unless the payload equals it (`NOT_CURRENT`), and enforces
   `sequence = last + 1` linked to the last digest **in its own journal**, a separate file outside the
@@ -173,6 +175,7 @@ mission brief. It confirmed questions 1, 3, 4, 7, 9–12 and 16 held; its findin
 
 | # | Sev | Finding | Disposition |
 |---|---|---|---|
+| CI-5–7 | — | (Found by CI after review.) HMAC requester authentication violated the repository's no-HMAC-signer rule (CTRL-02, CORE-02 structure suites); the `XRPL_TESTNET` label put two conformance files in PAY-04's pinned list of CORE files naming XRPL; a listener test left a socket pending | **Fixed**: Ed25519 request authentication; the two files added to the PAY-04 list with an RN-CONFORM-03 note (label only — no rail logic); deterministic connection teardown |
 | CI-1–4 | — | Corrupted import path; an out-of-scope `store`; a key-material marker literal in a `conformance-*` test; the listener's directory named in a module comment | **Fixed** (the first two had already failed CI and were fixed in `b30efc21`) |
 | P1-A | P1 | Online and stapled share one chain, so the platform's still-current stapled assertion presented after any online check looked like a rollback, and a latch made it permanent | **Fixed**: continuity judged on committed state (§6); same-state older/gap sequences accepted. Test `review P1-A …` |
 | P1-B | P1 | The signer journaled before the registry's append could fail (clock stepped back; nonce raced by a second issuer), burning the sequence and wedging the credential | **Fixed**: nonce and clock re-checked under the lock before signing (`CLOCK_BEHIND`, `NONCE_REUSED`). Tests `review P1-B …` (two) |

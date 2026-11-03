@@ -119,7 +119,7 @@ describe('RN-CONFORM-03 signed credential status — end to end (§16)', () => {
     assert.equal(intent.canonicalPayloadDigest, conformanceDigest(anchorPayload(credentialId, JSON.parse(t5.recordJson), t5.transitionDigest)));
     assert.deepEqual(Object.keys(intent).sort(), ['anchorSchemaVersion', 'canonicalPayloadDigest', 'confirmationState', 'credentialId', 'networkIntent', 'preparedAt', 'profileVersion', 'synthetic', 'transitionDigest', 'transitionId']);
     assert.ok(!/txHash|ledgerIndex|validated|evidence|validator/i.test(canonicalizeConformance(intent)), 'no ledger result is invented; no evidence or validator data');
-    assert.deepEqual(stateOf(a3).anchors, [], 'a prepared intent is never listed as an anchor');
+    assert.equal(stateOf(a3).anchors.length, 0, 'a prepared intent is never listed as an anchor');
     t.diagnostic(`state sequence: ${transitions.map((tr) => `${tr.stateVersion}:${tr.to}`).join(' → ')}; status sequences ${stateOf(a1).sequence} → ${stateOf(a2).sequence} → ${s3.sequence}`);
     s.cleanup();
   });

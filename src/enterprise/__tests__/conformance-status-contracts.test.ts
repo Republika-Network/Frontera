@@ -6,9 +6,9 @@ import { canonicalizeConformance } from '../conformance/canonical.js';
 import { toMs, toTimestamp } from '../conformance/contracts.js';
 import { publicKeyPemOf, signConformancePayload } from '../conformance/signing.js';
 import { parseStatusArtifact, type StatusAssertionPayload } from '../conformance/status-contracts.js';
-import { createStatusIssuerKeyRegistry, statusIssuerKeyRecord, statusRequestMac, type StatusSignerOperation } from '../conformance/status-signer.js';
+import { authenticateStatusRequest, createStatusIssuerKeyRegistry, statusIssuerKeyRecord, type StatusSignerOperation } from '../conformance/status-signer.js';
 import { activeCredential, cleanupAll, testKey } from './conformance-support.js';
-import { ISSUER, KEY_VALID_FROM, KEY_VALID_UNTIL, assertionText, buildStatusCircuit, freshNonce, requesterSecret, type StatusCircuit } from './conformance-status-support.js';
+import { ISSUER, KEY_VALID_FROM, KEY_VALID_UNTIL, assertionText, buildStatusCircuit, freshNonce, requesterKey, type StatusCircuit } from './conformance-status-support.js';
 
 /**
  * RN-CONFORM-03 / WP-01, WP-02 — the status assertion contract, its signature,
@@ -33,8 +33,8 @@ const payloadOf = (text: string): StatusAssertionPayload => {
   assert.ok(parsed.ok && parsed.kind === 'assertion');
   return parsed.payload;
 };
-const signRequest = (s: StatusCircuit, operation: string, payload: unknown, secret = requesterSecret(), requesterId = 'status-registry') =>
-  s.signer.sign({ operation, requesterId, payload, mac: statusRequestMac(secret, { operation: operation as StatusSignerOperation, requesterId, payload: payload as StatusAssertionPayload }) });
+const signRequest = (s: StatusCircuit, operation: string, payload: unknown, key = requesterKey(), requesterId = 'status-registry') =>
+  s.signer.sign({ operation, requesterId, payload, authentication: authenticateStatusRequest(key, { operation: operation as StatusSignerOperation, requesterId, payload: payload as StatusAssertionPayload }) });
 
 describe('RN-CONFORM-03 status assertion contract (WP-01)', () => {
   it('accepts a valid canonical assertion signed by the pinned issuer, binding every required field', () => {
@@ -47,10 +47,10 @@ describe('RN-CONFORM-03 status assertion contract (WP-01)', () => {
       'adapter', 'anchors', 'credentialId', 'credentialValidUntil', 'designation', 'effectiveAt', 'evidenceFreshness', 'historyRef', 'issuedAt', 'issuer', 'lastSuccessfulVerificationAt',
       'previousAssertionDigest', 'profile', 'purpose', 'reasonCode', 'requestNonce', 'schema', 'scope', 'sdk', 'sequence', 'signature', 'state', 'stateVersion', 'subject', 'validUntil',
     ]);
-    assert.deepEqual(a.scope, { coveredOperations: ['document.export', 'document.open'], declaredExclusions: ['document.share'] });
+    assert.deepEqual(JSON.parse(JSON.stringify(a.scope)), { coveredOperations: ['document.export', 'document.open'], declaredExclusions: ['document.share'] });
     assert.equal(a.evidenceFreshness.status, 'FRESH');
     assert.ok(toMs(a.validUntil) - toMs(a.issuedAt) <= 15 * 60 * 1000);
-    assert.deepEqual(a.anchors, []);
+    assert.equal(a.anchors.length, 0);
     assert.equal(a.signature.algorithm, 'ed25519-v1');
     assert.equal(a.signature.keyId, s.trusted.list()[0]!.keyId);
     assert.equal(s.verify(text, credentialId, { kind: 'stapled' }).result, 'CONFORMANT');
@@ -123,9 +123,11 @@ describe('RN-CONFORM-03 isolated status signer (WP-02, CC-D-07)', () => {
     const { s, text } = active();
     const payload = payloadOf(text);
     const next = { ...payload, sequence: 2, previousAssertionDigest: `sha256:${'c'.repeat(64)}` };
-    assert.deepEqual(s.signer.sign({ operation: 'signStatusAssertion', requesterId: 'status-registry', payload: next, mac: 'forged' }), { ok: false, refusal: 'UNAUTHENTICATED' });
-    assert.deepEqual(signRequest(s, 'signStatusAssertion', next, requesterSecret('intruder')), { ok: false, refusal: 'UNAUTHENTICATED' });
-    assert.deepEqual(signRequest(s, 'signStatusAssertion', next, requesterSecret(), 'intruder'), { ok: false, refusal: 'UNAUTHENTICATED' });
+    assert.deepEqual(s.signer.sign({ operation: 'signStatusAssertion', requesterId: 'status-registry', payload: next, authentication: 'forged' }), { ok: false, refusal: 'UNAUTHENTICATED' });
+    assert.deepEqual(signRequest(s, 'signStatusAssertion', next, requesterKey('intruder')), { ok: false, refusal: 'UNAUTHENTICATED' });
+    // The issuer's own key is not a requester key: a request signed with it is refused too.
+    assert.deepEqual(signRequest(s, 'signStatusAssertion', next, s.issuerKey), { ok: false, refusal: 'UNAUTHENTICATED' });
+    assert.deepEqual(signRequest(s, 'signStatusAssertion', next, requesterKey(), 'intruder'), { ok: false, refusal: 'UNAUTHENTICATED' });
     assert.deepEqual(s.signer.sign(null), { ok: false, refusal: 'UNAUTHENTICATED' });
     assert.deepEqual(signRequest(s, 'signGrant', next), { ok: false, refusal: 'UNSUPPORTED_OPERATION' });
     assert.deepEqual(signRequest(s, 'signBytes', 'aGVsbG8'), { ok: false, refusal: 'UNSUPPORTED_OPERATION' });

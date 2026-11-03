@@ -1,4 +1,4 @@
-import { createHmac, createPublicKey, timingSafeEqual, type KeyObject } from 'node:crypto';
+import { createPublicKey, type KeyObject } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -8,7 +8,7 @@ import type { AuthoritySignature } from '../authority-authenticity/authority-sig
 import { AUTHORITY_ARTIFACT_VERSION } from '../authority-authenticity/signature-envelope.js';
 import { canonicalizeConformance, conformanceDigest } from './canonical.js';
 import { isIdentifier, isTimestamp, toMs } from './contracts.js';
-import { deriveConformanceKeyId, publicKeyPemOf, signConformancePayload } from './signing.js';
+import { deriveConformanceKeyId, publicKeyPemOf, signConformancePayload, verifyConformanceSignature } from './signing.js';
 import {
   STATUS_CLOCK_SKEW_MS,
   hasValidLifetime,
@@ -30,8 +30,10 @@ import type { StatusProjection, StatusProjectionResult } from './status-projecti
  * `signStatusAssertion` or `signStatusRefusal` — carrying the structured payload,
  * never "sign these bytes". The signer:
  *
- * 1. authenticates the requesting component (HMAC-SHA256 over the canonical
- *    request, per-requester secret, constant-time comparison);
+ * 1. authenticates the requesting component (an Ed25519 signature over the
+ *    canonical request in its own domain, under the requester's pinned public
+ *    key — no shared secret, so the signer cannot be impersonated by anyone
+ *    who can verify requests);
  * 2. accepts only those two operations;
  * 3. re-validates the payload through the closed status schema;
  * 4. refuses any issuer but its own, any lifetime over 15 minutes and any
@@ -113,8 +115,8 @@ export interface StatusSigningRequest {
   readonly operation: StatusSignerOperation;
   readonly requesterId: string;
   readonly payload: StatusAssertionPayload | StatusRefusalPayload;
-  /** HMAC-SHA256 (base64url) over `canonical({ operation, requesterId, payload })` with the requester's secret. */
-  readonly mac: string;
+  /** The requester's Ed25519 signature over `{ operation, requesterId, payload }` in the `statusSigningRequest` domain. */
+  readonly authentication: AuthoritySignature;
 }
 
 export type StatusSignerRefusal =
@@ -138,8 +140,9 @@ export interface StatusSignerPort {
   publicKeys(): readonly StatusIssuerKeyRecord[];
 }
 
-export function statusRequestMac(secret: Buffer, request: Omit<StatusSigningRequest, 'mac'>): string {
-  return createHmac('sha256', secret).update(canonicalizeConformance({ operation: request.operation, requesterId: request.requesterId, payload: request.payload }), 'utf8').digest('base64url');
+/** Authenticates one signing request as the requesting component (its own key; never the issuer key). */
+export function authenticateStatusRequest(requesterKey: KeyObject, request: Omit<StatusSigningRequest, 'authentication'>): AuthoritySignature {
+  return signConformancePayload('statusSigningRequest', { operation: request.operation, requesterId: request.requesterId, payload: request.payload }, requesterKey);
 }
 
 /** The projection fields of an assertion payload, for comparison with an independently computed projection. */
@@ -225,7 +228,8 @@ export interface SyntheticStatusSigner extends StatusSignerPort {
 export function createSyntheticStatusSigner(deps: {
   readonly issuer: string;
   readonly keys: readonly { readonly privateKey: KeyObject; readonly validFrom: string; readonly validUntil: string; readonly revokedAt?: string | null }[];
-  readonly requesters: readonly { readonly id: string; readonly secret: Buffer }[];
+  /** Pinned requesting components: id → public key. */
+  readonly requesters: readonly { readonly id: string; readonly publicKeyPem: string }[];
   readonly clock: { now(): string };
   /** The signer's own journal file, outside the registry's database. */
   readonly journalPath: string;
@@ -238,7 +242,7 @@ export function createSyntheticStatusSigner(deps: {
     return Object.freeze({ privateKey: k.privateKey, record: Object.freeze({ issuer: deps.issuer, keyId: deriveConformanceKeyId(publicKeyPem), publicKeyPem, validFrom: k.validFrom, validUntil: k.validUntil, revokedAt: k.revokedAt ?? null }) });
   });
   const registry = createStatusIssuerKeyRegistry(keys.map((k) => k.record));
-  const secrets = new Map(deps.requesters.map((r) => [r.id, Buffer.from(r.secret)]));
+  const requesters = new Map(deps.requesters.map((r) => [r.id, r.publicKeyPem]));
   const journal = openSignerJournal(deps.journalPath);
   let available = true;
 
@@ -256,11 +260,15 @@ export function createSyntheticStatusSigner(deps: {
         if (typeof request !== 'object' || request === null) return refuse('UNAUTHENTICATED');
         const r = request as Partial<StatusSigningRequest>;
         // 1 — authenticate the requesting component.
-        const secret = typeof r.requesterId === 'string' ? secrets.get(r.requesterId) : undefined;
-        if (secret === undefined || typeof r.mac !== 'string' || r.payload === undefined || typeof r.operation !== 'string') return refuse('UNAUTHENTICATED');
-        const expected = Buffer.from(statusRequestMac(secret, { operation: r.operation as StatusSignerOperation, requesterId: r.requesterId as string, payload: r.payload }), 'utf8');
-        const given = Buffer.from(r.mac, 'utf8');
-        if (expected.length !== given.length || !timingSafeEqual(expected, given)) return refuse('UNAUTHENTICATED');
+        const requesterPem = typeof r.requesterId === 'string' ? requesters.get(r.requesterId) : undefined;
+        if (requesterPem === undefined || r.payload === undefined || typeof r.operation !== 'string') return refuse('UNAUTHENTICATED');
+        let authenticated = false;
+        try {
+          authenticated = verifyConformanceSignature('statusSigningRequest', { operation: r.operation, requesterId: r.requesterId, payload: r.payload }, r.authentication, requesterPem).ok;
+        } catch {
+          authenticated = false;
+        }
+        if (!authenticated) return refuse('UNAUTHENTICATED');
         // 2 — only the structured status operations.
         if (!(STATUS_SIGNER_OPERATIONS as readonly string[]).includes(r.operation)) return refuse('UNSUPPORTED_OPERATION');
         // 3 — the payload through the closed schema (with a placeholder envelope, so the parser sees a complete artifact).

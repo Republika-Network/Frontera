@@ -1,6 +1,7 @@
-import { createHash, randomBytes, type KeyObject } from 'node:crypto';
+import { randomBytes, type KeyObject } from 'node:crypto';
 import { join } from 'node:path';
 
+import { publicKeyPemOf } from '../conformance/signing.js';
 import type { StatusProjectionDeps } from '../conformance/status-projection.js';
 import { projectCredentialStatus } from '../conformance/status-projection.js';
 import { createStatusRegistry, type OnlineStatusRequest, type StatusRegistry } from '../conformance/status-registry.js';
@@ -21,8 +22,8 @@ export const ISSUER = 'republika-synthetic-status-issuer';
 export const KEY_VALID_FROM = T0;
 export const KEY_VALID_UNTIL = '2027-11-02T09:00:00.000Z';
 
-/** A deterministic, run-time-derived requester secret (test only). */
-export const requesterSecret = (label = 'status-registry') => createHash('sha256').update(`rn-conform-03:synthetic-requester:${label}`).digest();
+/** The registry's requester key towards the signer: a deterministic, run-time-derived test key (never committed). */
+export const requesterKey = (label = 'status-registry') => testKey(`status-requester:${label}`);
 
 export interface StatusCircuit {
   readonly c: Circuit;
@@ -61,12 +62,12 @@ export function buildStatusCircuit(options: { readonly seed?: string; readonly s
   const signer = createSyntheticStatusSigner({
     issuer: ISSUER,
     keys,
-    requesters: [{ id: 'status-registry', secret: requesterSecret() }],
+    requesters: [{ id: 'status-registry', publicKeyPem: publicKeyPemOf(requesterKey()) }],
     clock: c.clock,
     journalPath: signerJournal,
     source: (credentialId, at) => projectCredentialStatus(projection, credentialId, at),
   });
-  const base = { projection, clock: c.clock, signer, requester: { id: 'status-registry', secret: requesterSecret() }, issuer: ISSUER };
+  const base = { projection, clock: c.clock, signer, requester: { id: 'status-registry', key: requesterKey() }, issuer: ISSUER };
   const registry = createStatusRegistry(base);
   const trusted = options.trusted ?? createStatusIssuerKeyRegistry(keys.map((k) => statusIssuerKeyRecord(ISSUER, k.privateKey, k.validFrom, k.validUntil, k.revokedAt ?? null)));
   let verifiers = 0;
