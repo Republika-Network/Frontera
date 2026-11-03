@@ -333,16 +333,17 @@ function enrollmentEvents(events: readonly FvIdentityRegistrationEvent[]): { rea
   const intents: RecordedIntent[] = [];
   for (const event of events) {
     if (event.kind !== INTENT_EVENT) continue;
+    // A malformed intent is ignored, never fatal: the store decides which intent is real, and a record its host's
+    // user wrote garbage into must not block a genuine enrolment (publication review, finding 1).
     try {
       const parsed = JSON.parse(event.detail) as Record<string, unknown>;
       const { enrollmentId, capabilityId, capabilityIssuer, capability, signature, nonce, attestation, plan } = parsed;
-      if (typeof enrollmentId !== 'string' || !ENROLLMENT_ID.test(enrollmentId) || typeof capabilityId !== 'string' || typeof capabilityIssuer !== 'string' || typeof capability !== 'string' || typeof nonce !== 'string') return 'corrupt';
+      if (typeof enrollmentId !== 'string' || !ENROLLMENT_ID.test(enrollmentId) || typeof capabilityId !== 'string' || typeof capabilityIssuer !== 'string' || typeof capability !== 'string' || typeof nonce !== 'string') continue;
       intents.push(Object.freeze({ enrollmentId, capabilityId, capabilityIssuer, capability, signature, nonce, attestation, plan: firstAdministratorPlanOf(plan) }));
     } catch {
-      return 'corrupt';
+      continue;
     }
   }
-  if (enrolled && intents.length === 0) return 'corrupt';
   return { intents, enrolled };
 }
 
@@ -484,8 +485,8 @@ export async function enrollFvFirstAdministrator(
     if (verification.verification !== 'verified') return refused('CAPABILITY_REJECTED', verification.failure);
     if (verification.capability.executionId !== enrollmentId) return refused('CAPABILITY_REJECTED', 'EXECUTION_MISMATCH');
 
-    // 3. No completed enrolment of this record. (An earlier intent whose ceremony never wrote the store is
-    // superseded below; one the store holds is pending.)
+    // 3. The recorded intents. Whether an enrolment exists is decided below by the store, never by the record's
+    // events (publication review, finding 1): an intent whose ceremony never wrote the store is superseded.
     let events: ReturnType<typeof enrollmentEvents>;
     try {
       events = enrollmentEvents(record.events());
@@ -493,7 +494,6 @@ export async function enrollFvFirstAdministrator(
       return refused('RECORD_CORRUPT');
     }
     if (events === 'corrupt') return refused('RECORD_CORRUPT');
-    if (events.enrolled) return refused('ALREADY_ENROLLED');
     if (!(await fvRegistrarInternals.authenticityRoundTrips(registrar, current.storeId))) return refused('AUTHENTICITY_UNVERIFIED');
 
     // 4. The store, exclusively, under freshness: it must hold no row at all.
@@ -508,7 +508,8 @@ export async function enrollFvFirstAdministrator(
         const head = store.head();
         const history = store.history();
         if (history.length !== 0 || head.sequence !== 0 || head.chainDigest !== genesis || head.storeId !== current.storeId) {
-          return refused(intentsInStore(history, events.intents).length > 0 ? 'ENROLLMENT_PENDING' : 'STORE_NOT_EMPTY');
+          const held = intentsInStore(history, events.intents);
+          return refused(held.some((entry) => entry.progress === 3) ? 'ALREADY_ENROLLED' : held.length > 0 ? 'ENROLLMENT_PENDING' : 'STORE_NOT_EMPTY');
         }
       } catch {
         return refused('STORE_UNAVAILABLE');
@@ -669,7 +670,7 @@ export async function resumeFvFirstAdministratorEnrollment(options: FvFirstAdmin
   }
 }
 
-/** Non-secret view of a registration's first-administrator enrolment, as its record holds it. */
+/** Non-secret view of a registration's first-administrator enrolment, **as its record holds it** (record-only evidence, not authority). */
 export type FvFirstAdministratorEnrollmentView =
   | { readonly state: 'none' }
   | { readonly state: 'pending' | 'enrolled'; readonly enrollmentId: string; readonly operatorId: string; readonly credentialId: string; readonly credentialDigest: string; readonly capabilityId: string };

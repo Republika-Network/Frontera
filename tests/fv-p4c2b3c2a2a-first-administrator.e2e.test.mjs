@@ -525,6 +525,13 @@ describe('FV-P4C-2B3C-2A2A — a forged record never completes an administrator 
     assert.deepEqual(await resume(w, witness, misled.request), { outcome: 'refused', reason: 'NO_ENROLLMENT', detail: 'STORE_EMPTY' });
     assert.equal(await ledgerState(w, misled.capability.capabilityId), 'absent');
     assert.deepEqual(await kinds(w, witness, registration), []);
+    // Publication review 1: a forged completion event and a malformed intent, inserted beside it, block nothing either.
+    {
+      const db2 = new Database(w.paths.record);
+      db2.prepare('INSERT INTO fv_registration_events (at, kind, detail) VALUES (?, ?, ?)').run(new Date().toISOString(), 'first-administrator-enrolled', JSON.stringify({ enrollmentId: binding.enrollmentId }));
+      db2.prepare('INSERT INTO fv_registration_events (at, kind, detail) VALUES (?, ?, ?)').run(new Date().toISOString(), 'first-administrator-intent', '{not json');
+      db2.close();
+    }
     // The inserted intent blocks nothing: a genuine enrolment supersedes it.
     assert.equal((await enroll(w, witness, enrollRequest(adminBinding(registration)).request)).outcome, 'enrolled');
   });

@@ -79,7 +79,7 @@ describe('FV-P4C-2B3C-2A2A structure — the first-administrator enrolment is in
   it('enrol: lock the registration, verify, refuse an earlier enrolment and a non-empty store, prove possession, re-verify, consume, record the plan, then write', () => {
     const ceremony = read(CEREMONY);
     const enroll = ceremony.slice(ceremony.indexOf('export async function enrollFvFirstAdministrator('), ceremony.indexOf('export async function resumeFvFirstAdministratorEnrollment('));
-    const order = ['await registeredRecord(config)', 'const verification = verify()', "if (events.enrolled) return refused('ALREADY_ENROLLED')", "'STORE_NOT_EMPTY'", 'await authenticator(issued.options)', 'await verifyFirstAdministratorAttestation(', 'plan = newFirstAdministratorPlan(', 'const fresh = verify()', "claim(config, record, ledger, 'enroll-first-administrator', fresh)", 'record.appendEvent(iso(config), INTENT_EVENT', 'await complete('].map((marker) => enroll.indexOf(marker));
+    const order = ['await registeredRecord(config)', 'const verification = verify()', "events = enrollmentEvents(record.events())", "held.some((entry) => entry.progress === 3) ? 'ALREADY_ENROLLED'", 'await authenticator(issued.options)', 'await verifyFirstAdministratorAttestation(', 'plan = newFirstAdministratorPlan(', 'const fresh = verify()', "claim(config, record, ledger, 'enroll-first-administrator', fresh)", 'record.appendEvent(iso(config), INTENT_EVENT', 'await complete('].map((marker) => enroll.indexOf(marker));
     assert.ok(order.every((index) => index > 0), JSON.stringify(order));
     assert.deepEqual([...order].sort((a, b) => a - b), order);
     const resume = ceremony.slice(ceremony.indexOf('export async function resumeFvFirstAdministratorEnrollment('), ceremony.indexOf('export async function readFvFirstAdministratorEnrollment('));
@@ -93,6 +93,8 @@ describe('FV-P4C-2B3C-2A2A structure — the first-administrator enrolment is in
     assert.equal((ceremony.match(/config\.observer\?\.\(step\)/g) ?? []).length, 1);
     // Re-review 2: the ceremony settles only claims it made in this call (HF01's rule covers the rest); never one an intent merely names.
     assert.equal(/for \(const superseded of/.test(ceremony), false);
+    // Publication review 1: the record's events never decide that an enrolment exists; the store does.
+    assert.equal(/if \(events\.enrolled\)/.test(ceremony), false);
   });
 
   it('the store is opened only as its exclusive, pinned, FV-domain owner under freshness: never created, never a baseline enrollment', () => {

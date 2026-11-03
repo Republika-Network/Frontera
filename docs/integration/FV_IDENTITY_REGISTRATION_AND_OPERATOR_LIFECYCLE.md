@@ -543,10 +543,10 @@ the dedicated executor or its supervisor reaches either, and neither is exported
 1. Lock the registration record exclusively. It must be `registered`, for exactly this configuration, signed over
    its binding by a pinned issuer, on the file the registration reserved.
 2. Verify the capability against the recomputed binding. Nothing is consumed yet.
-3. Refuse a completed enrolment of this record (`ALREADY_ENROLLED`).
+3. Read the recorded intents. A malformed one is ignored. Whether an enrolment exists is decided by the store in step 4, never by the record's events.
 4. Open the store as its exclusive, pinned, FV-domain owner under CORE-07 freshness, never creating it. It must
-   hold **no row at all**: otherwise `ENROLLMENT_PENDING` when its rows are a recorded intent's, else
-   `STORE_NOT_EMPTY`. An earlier intent whose ceremony never wrote the store is superseded, and its capability
+   hold **no row at all**. Otherwise it is refused: `ALREADY_ENROLLED` when its rows are a recorded intent's
+   complete plan, `ENROLLMENT_PENDING` when they are the beginning of one, and `STORE_NOT_EMPTY` otherwise. An earlier intent whose ceremony never wrote the store is superseded, and its capability
    claim is settled `failed`.
 5. **Proof of possession, before consumption.** The candidate's authenticator answers a challenge derived from
    the capability id and a fresh nonce. The attestation is verified the way AUTH-02 verifies an ordinary
@@ -601,8 +601,12 @@ exactly the plan's credential (`RECORD_CORRUPT: AUTHORIZATION_UNVERIFIED` otherw
     supersedes it;
   - after it, a rewritten intent matches nothing the store pinned and is refused, even with a resume capability
     a misled issuer signed for the forged credential;
-  - what remains is a denial of service (a rewritten intent makes the genuine resume `ENROLLMENT_CONFLICT` until
-    the record is restored), and the view (`readFvFirstAdministratorEnrollment`) can show a forged digest. The
+  - what remains is a denial of service: a rewritten or deleted intent makes the genuine resume
+    `ENROLLMENT_CONFLICT` or `NO_ENROLLMENT` until the record is restored;
+  - the view (`readFvFirstAdministratorEnrollment`) is **record-only evidence**: it can show a forged digest, or
+    `enrolled` over an empty store;
+  - forged completion events and malformed intents block nothing, because enrolment decides from the store
+    (publication review, finding 1). The
     issuer of a resume capability must confirm `credentialDigest` with the candidate's own authenticator out of
     band.
 
@@ -699,6 +703,12 @@ exactly the plan's credential (`RECORD_CORRUPT: AUTHORIZATION_UNVERIFIED` otherw
     - AUTH-02 ignores `role`, so 2A2B must read it from the signed row.
     - The view can be misled by a forged record.
     - The authenticator has no timeout, which is a liveness limit only.
+- **Publication review of `3f76f21e`** (PR #265; a fresh read-only AI agent, **not human**). No finding blocks merge,
+  and all 14 priority questions came back clean for authority. One Low was reproduced: a forged completion event
+  inserted into the unsigned record made a genuine enrolment `ALREADY_ENROLLED` (a denial of service), and a
+  malformed intent made it `RECORD_CORRUPT`. **Fixed:** enrolment decides from the store's rows, and malformed
+  intents are ignored. Tested. Info, documented: Host administration of an FV store (2A2B); a resume of a
+  complete enrolment is not consumed; the allowed origins come from the ceremony's configuration, as its pins do.
 
 This remains internal and non-operational. Nothing new is reachable from the Host, the executor or its supervisor; the executor gate is unchanged; `bootstrapExecution` stays `disabled`.
 
