@@ -100,24 +100,28 @@ export interface StatusVerdict {
 export type StatusContinuity = 'FIRST_OBSERVATION' | 'NEXT' | 'SAME' | 'OLDER_SAME_STATE' | 'GAP_SAME_STATE' | 'GAP_ACCEPTED_ONLINE';
 
 export type HighWaterDecision =
-  | { readonly kind: 'ok'; readonly continuity: StatusContinuity }
+  /** `trustedNowMs`: the later of the presented time and the latched trusted time — the validity window is judged against it (review N-3). */
+  | { readonly kind: 'ok'; readonly continuity: StatusContinuity; readonly trustedNowMs: number }
   | { readonly kind: 'refused'; readonly result: 'ROLLBACK_DETECTED' | 'CONFLICT_DETECTED' | 'CONTINUITY_UNPROVEN' | 'CLOCK_ROLLBACK'; readonly detail: string };
 
 export interface StatusVerifierStore {
   readonly path: string;
   /**
-   * Atomically checks the trusted clock and the credential's high-water mark and advances them (one IMMEDIATE
-   * transaction). Continuity is judged on **committed state**, with the sequence used to detect equivocation:
+   * Atomically checks the trusted clock and the credential's marks and advances them (one IMMEDIATE transaction).
+   * Marks are kept per (issuer, credential). Two kinds:
    *
-   * - lower `stateVersion` than seen → ROLLBACK_DETECTED (refused, not latched: a genuine but stale artifact is
-   *   not evidence of tampering, and latching it would let anyone deny service by replaying one);
-   * - same `stateVersion` naming another transition digest, the same sequence with another digest, the next
-   *   sequence not linking to the one seen, or another issuer → CONFLICT_DETECTED, **latched** (two signed,
-   *   contradictory artifacts are evidence of equivocation or tampering);
-   * - an older or non-adjacent sequence of the **same** committed state → accepted (OLDER_SAME_STATE,
-   *   GAP_SAME_STATE): online and stapled assertions share one chain, so honest gaps are normal;
-   * - a newer state reached through a gap → online: accepted and recorded (the nonce proves currency);
-   *   offline: CONTINUITY_UNPROVEN and **not** recorded, until an online check re-anchors the mark.
+   * - **Floors** — raised by every authentic artifact, whether or not its continuity is proven, and never lowered:
+   *   the highest committed `stateVersion` seen (with its transition digest), and, at that state version, the
+   *   issue time of the newest artifact that did **not** state fresh evidence. Below the state floor →
+   *   ROLLBACK_DETECTED; a FRESH artifact issued before the freshness floor → ROLLBACK_DETECTED (an older,
+   *   better-looking view after a signed degradation, review N-1); a second transition at the floor state →
+   *   CONFLICT_DETECTED.
+   * - **The continuity anchor** (sequence, digest, state) — moved only by a proven link, a same-state gap, or an
+   *   online check. Equivocation against it (same sequence, other digest; next sequence not linking) →
+   *   CONFLICT_DETECTED, latched. A newer state reached across a gap offline → CONTINUITY_UNPROVEN, the anchor
+   *   unmoved (but the floor raised, so nothing older passes afterwards — review N-2), until an online check.
+   *
+   * Rollbacks refuse without latching (a genuine stale artifact is not tampering); only contradictions latch.
    */
   observe(input: {
     readonly credentialId: string;
@@ -128,11 +132,13 @@ export interface StatusVerifierStore {
     readonly stateVersion: number;
     readonly transitionDigest: string;
     readonly state: CredentialState;
+    readonly fresh: boolean;
+    readonly issuedAtMs: number;
     readonly nowMs: number;
     readonly online: boolean;
   }): HighWaterDecision;
-  /** The latched conflict for this credential, or `undefined`. Latches are append-only; there is no API that clears one (§6). */
-  latch(credentialId: string): { readonly kind: string; readonly detail: string } | undefined;
+  /** The latched conflict for this credential (any issuer, or the given one), or `undefined`. Latches are append-only; no API clears one (§6). */
+  latch(credentialId: string, issuer?: string): { readonly kind: string; readonly detail: string } | undefined;
   close(): void;
 }
 
@@ -140,17 +146,22 @@ const VERIFIER_SCHEMA = `
 CREATE TABLE vs_meta (id INTEGER PRIMARY KEY CHECK (id = 1), schema_version TEXT NOT NULL);
 CREATE TABLE vs_clock (id INTEGER PRIMARY KEY CHECK (id = 1), max_trusted_ms INTEGER NOT NULL);
 CREATE TABLE vs_high_water (
-  credential_id TEXT PRIMARY KEY,
   issuer TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
   sequence INTEGER NOT NULL,
   assertion_digest TEXT NOT NULL,
   state_version INTEGER NOT NULL,
   transition_digest TEXT NOT NULL,
   state TEXT NOT NULL,
-  observed_at_ms INTEGER NOT NULL
+  floor_state_version INTEGER NOT NULL,
+  floor_transition_digest TEXT NOT NULL,
+  freshness_floor_ms INTEGER NOT NULL,
+  observed_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (issuer, credential_id)
 );
 CREATE TABLE vs_latches (
   latch_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  issuer TEXT NOT NULL,
   credential_id TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind = 'CONFLICT_DETECTED'),
   detail TEXT NOT NULL,
@@ -159,11 +170,13 @@ CREATE TABLE vs_latches (
 -- No conflict clause can replace a row: INSERT OR REPLACE deletes without firing DELETE triggers, so every key is guarded.
 CREATE TRIGGER vs_meta_no_duplicate BEFORE INSERT ON vs_meta BEGIN SELECT RAISE(ABORT, 'vs:duplicate') WHERE EXISTS (SELECT 1 FROM vs_meta); END;
 CREATE TRIGGER vs_clock_no_duplicate BEFORE INSERT ON vs_clock BEGIN SELECT RAISE(ABORT, 'vs:duplicate') WHERE EXISTS (SELECT 1 FROM vs_clock); END;
-CREATE TRIGGER vs_high_water_no_duplicate BEFORE INSERT ON vs_high_water BEGIN SELECT RAISE(ABORT, 'vs:duplicate') WHERE EXISTS (SELECT 1 FROM vs_high_water h WHERE h.credential_id = NEW.credential_id); END;
+CREATE TRIGGER vs_high_water_no_duplicate BEFORE INSERT ON vs_high_water BEGIN SELECT RAISE(ABORT, 'vs:duplicate') WHERE EXISTS (SELECT 1 FROM vs_high_water h WHERE h.issuer = NEW.issuer AND h.credential_id = NEW.credential_id); END;
 CREATE TRIGGER vs_latches_no_duplicate BEFORE INSERT ON vs_latches BEGIN SELECT RAISE(ABORT, 'vs:duplicate') WHERE EXISTS (SELECT 1 FROM vs_latches l WHERE l.latch_seq = NEW.latch_seq); END;
--- Forward only: a high-water mark never moves back in state, and the trusted clock never decreases.
+-- Forward only: the anchor never moves back in sequence or state, the floors never decrease, the trusted clock never decreases.
 CREATE TRIGGER vs_high_water_forward BEFORE UPDATE ON vs_high_water BEGIN
-  SELECT RAISE(ABORT, 'vs:high-water mark moved backwards') WHERE NEW.sequence < OLD.sequence OR NEW.state_version < OLD.state_version OR NEW.credential_id <> OLD.credential_id OR NEW.issuer <> OLD.issuer;
+  SELECT RAISE(ABORT, 'vs:high-water mark moved backwards') WHERE NEW.sequence < OLD.sequence OR NEW.state_version < OLD.state_version OR NEW.floor_state_version < OLD.floor_state_version
+    OR (NEW.floor_state_version = OLD.floor_state_version AND (NEW.freshness_floor_ms < OLD.freshness_floor_ms OR NEW.floor_transition_digest <> OLD.floor_transition_digest))
+    OR NEW.credential_id <> OLD.credential_id OR NEW.issuer <> OLD.issuer;
 END;
 CREATE TRIGGER vs_high_water_no_delete BEFORE DELETE ON vs_high_water BEGIN SELECT RAISE(ABORT, 'vs:immutable'); END;
 CREATE TRIGGER vs_clock_forward BEFORE UPDATE ON vs_clock BEGIN SELECT RAISE(ABORT, 'vs:clock moved backwards') WHERE NEW.max_trusted_ms < OLD.max_trusted_ms OR NEW.id <> OLD.id; END;
@@ -173,7 +186,7 @@ CREATE TRIGGER vs_latches_no_delete BEFORE DELETE ON vs_latches BEGIN SELECT RAI
 CREATE TRIGGER vs_meta_no_update BEFORE UPDATE ON vs_meta BEGIN SELECT RAISE(ABORT, 'vs:immutable'); END;
 CREATE TRIGGER vs_meta_no_delete BEFORE DELETE ON vs_meta BEGIN SELECT RAISE(ABORT, 'vs:immutable'); END;
 `;
-const VERIFIER_SCHEMA_VERSION = 'rn.conformance.status-verifier-store/1';
+const VERIFIER_SCHEMA_VERSION = 'rn.conformance.status-verifier-store/2';
 
 /** Name and SQL text of every table, index and trigger: a same-name object with another body is another schema. */
 function schemaOf(db: Database.Database): string {
@@ -211,17 +224,23 @@ export function openStatusVerifierStore(path: string, options: { readonly create
       db.prepare('INSERT INTO vs_clock (id, max_trusted_ms) VALUES (1, 0)').run();
     }).immediate();
   } else {
-    const meta = db.prepare('SELECT schema_version FROM vs_meta WHERE id = 1').get() as { schema_version: string } | undefined;
-    if (meta?.schema_version !== VERIFIER_SCHEMA_VERSION || schemaOf(db) !== expectedVerifierSchema()) {
+    let intact = false;
+    try {
+      const meta = db.prepare('SELECT schema_version FROM vs_meta WHERE id = 1').get() as { schema_version: string } | undefined;
+      intact = meta?.schema_version === VERIFIER_SCHEMA_VERSION && schemaOf(db) === expectedVerifierSchema();
+    } catch {
+      intact = false;
+    }
+    if (!intact) {
       db.close();
       throw new Error('The verifier store is not intact.');
     }
   }
-  const latchOf = db.prepare('SELECT kind, detail FROM vs_latches WHERE credential_id = ? ORDER BY latch_seq LIMIT 1');
-  const addLatch = db.prepare('INSERT INTO vs_latches (credential_id, kind, detail, at_ms) VALUES (?, ?, ?, ?)');
+  const latchOf = db.prepare('SELECT kind, detail FROM vs_latches WHERE credential_id = ? AND (? IS NULL OR issuer = ?) ORDER BY latch_seq LIMIT 1');
+  const addLatch = db.prepare('INSERT INTO vs_latches (issuer, credential_id, kind, detail, at_ms) VALUES (?, ?, ?, ?, ?)');
   return Object.freeze<StatusVerifierStore>({
     path: file,
-    latch: (credentialId: string) => latchOf.get(credentialId) as { kind: string; detail: string } | undefined,
+    latch: (credentialId: string, issuer?: string) => latchOf.get(credentialId, issuer ?? null, issuer ?? null) as { kind: string; detail: string } | undefined,
     close: () => db.close(),
     observe(input) {
       return db.transaction((): HighWaterDecision => {
@@ -229,53 +248,73 @@ export function openStatusVerifierStore(path: string, options: { readonly create
         // Clock rollback: the trusted clock may not run backwards beyond the supported tolerance.
         if (input.nowMs < clock - STATUS_CLOCK_SKEW_MS) return { kind: 'refused', result: 'CLOCK_ROLLBACK', detail: `${clock - input.nowMs}ms` };
         if (input.nowMs > clock) db.prepare('UPDATE vs_clock SET max_trusted_ms = ? WHERE id = 1').run(input.nowMs);
-        const latched = latchOf.get(input.credentialId) as { kind: 'CONFLICT_DETECTED'; detail: string } | undefined;
+        const trustedNowMs = Math.max(input.nowMs, clock);
+        const ok = (continuity: StatusContinuity): HighWaterDecision => ({ kind: 'ok', continuity, trustedNowMs });
+        const latched = latchOf.get(input.credentialId, input.issuer, input.issuer) as { detail: string } | undefined;
         if (latched !== undefined) return { kind: 'refused', result: 'CONFLICT_DETECTED', detail: `latched: ${latched.detail}` };
-        const hw = db.prepare('SELECT * FROM vs_high_water WHERE credential_id = ?').get(input.credentialId) as
-          | { issuer: string; sequence: number; assertion_digest: string; state_version: number; transition_digest: string }
+        const hw = db.prepare('SELECT * FROM vs_high_water WHERE issuer = ? AND credential_id = ?').get(input.issuer, input.credentialId) as
+          | { sequence: number; assertion_digest: string; state_version: number; transition_digest: string; state: string; floor_state_version: number; floor_transition_digest: string; freshness_floor_ms: number }
           | undefined;
+        const notFreshMark = input.fresh ? 0 : input.issuedAtMs;
+        if (hw === undefined) {
+          db.prepare(
+            'INSERT INTO vs_high_water (issuer, credential_id, sequence, assertion_digest, state_version, transition_digest, state, floor_state_version, floor_transition_digest, freshness_floor_ms, observed_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          ).run(input.issuer, input.credentialId, input.sequence, input.digest, input.stateVersion, input.transitionDigest, input.state, input.stateVersion, input.transitionDigest, notFreshMark, input.nowMs);
+          return ok('FIRST_OBSERVATION');
+        }
         const conflict = (detail: string): HighWaterDecision => {
-          addLatch.run(input.credentialId, 'CONFLICT_DETECTED', detail, input.nowMs);
+          addLatch.run(input.issuer, input.credentialId, 'CONFLICT_DETECTED', detail, input.nowMs);
           return { kind: 'refused', result: 'CONFLICT_DETECTED', detail };
         };
-        const record = () =>
-          hw === undefined
-            ? db
-                .prepare('INSERT INTO vs_high_water (credential_id, issuer, sequence, assertion_digest, state_version, transition_digest, state, observed_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-                .run(input.credentialId, input.issuer, input.sequence, input.digest, input.stateVersion, input.transitionDigest, input.state, input.nowMs)
-            : db
-                .prepare('UPDATE vs_high_water SET sequence = ?, assertion_digest = ?, state_version = ?, transition_digest = ?, state = ?, observed_at_ms = ? WHERE credential_id = ?')
-                .run(input.sequence, input.digest, input.stateVersion, input.transitionDigest, input.state, input.nowMs, input.credentialId);
-        if (hw === undefined) {
-          record();
-          return { kind: 'ok', continuity: 'FIRST_OBSERVATION' };
-        }
-        // Equivocation and forks: latched.
-        if (hw.issuer !== input.issuer) return conflict('issuer changed');
-        if (input.sequence === hw.sequence) return input.digest === hw.assertion_digest ? { kind: 'ok', continuity: 'SAME' } : conflict(`sequence ${input.sequence} with two digests`);
+        // Equivocation against the anchor and forks at the floor state: latched.
+        if (input.sequence === hw.sequence && input.digest !== hw.assertion_digest) return conflict(`sequence ${input.sequence} with two digests`);
         if (input.sequence === hw.sequence + 1 && input.previousDigest !== hw.assertion_digest) return conflict(`sequence ${input.sequence} does not link to ${hw.sequence}`);
+        if (input.stateVersion === hw.floor_state_version && input.transitionDigest !== hw.floor_transition_digest) return conflict(`stateVersion ${input.stateVersion} names two transitions`);
         if (input.stateVersion === hw.state_version && input.transitionDigest !== hw.transition_digest) return conflict(`stateVersion ${input.stateVersion} names two transitions`);
-        // An older committed state: refused, never latched.
-        if (input.stateVersion < hw.state_version) return { kind: 'refused', result: 'ROLLBACK_DETECTED', detail: `stateVersion ${input.stateVersion} < ${hw.state_version}` };
-        // The same committed state, through an older or non-adjacent sequence.
+        // Floors: an older state, or an older better-looking view of the floor state, refuses (never latches).
+        if (input.stateVersion < hw.floor_state_version) return { kind: 'refused', result: 'ROLLBACK_DETECTED', detail: `stateVersion ${input.stateVersion} < ${hw.floor_state_version}` };
+        if (input.stateVersion === hw.floor_state_version && input.fresh && input.issuedAtMs < hw.freshness_floor_ms) {
+          return { kind: 'refused', result: 'ROLLBACK_DETECTED', detail: `fresh view issued before a signed degradation at ${new Date(hw.freshness_floor_ms).toISOString()}` };
+        }
+        // Raise the floors from this authentic artifact (whatever its continuity).
+        const raiseState = input.stateVersion > hw.floor_state_version;
+        const floorState = raiseState ? input.stateVersion : hw.floor_state_version;
+        const floorDigest = raiseState ? input.transitionDigest : hw.floor_transition_digest;
+        const freshnessFloor = raiseState ? notFreshMark : Math.max(hw.freshness_floor_ms, notFreshMark);
+        const anchor = (moved: boolean) =>
+          db
+            .prepare(
+              'UPDATE vs_high_water SET sequence = ?, assertion_digest = ?, state_version = ?, transition_digest = ?, state = ?, floor_state_version = ?, floor_transition_digest = ?, freshness_floor_ms = ?, observed_at_ms = ? WHERE issuer = ? AND credential_id = ?',
+            )
+            .run(
+              moved ? input.sequence : hw.sequence, moved ? input.digest : hw.assertion_digest, moved ? input.stateVersion : hw.state_version, moved ? input.transitionDigest : hw.transition_digest,
+              moved ? input.state : hw.state,
+              floorState, floorDigest, freshnessFloor, input.nowMs, input.issuer, input.credentialId,
+            );
+        // The anchor itself, presented again (only after the floors: a re-presented anchor can be superseded too).
+        if (input.sequence === hw.sequence) {
+          anchor(false);
+          return ok('SAME');
+        }
+        // The anchor state: an older sequence of it is an older view of the same state.
         if (input.sequence < hw.sequence) {
-          // An older artifact never moves the mark back; it can only be of the same state (lower state was refused above), unless it claims a newer one.
           if (input.stateVersion > hw.state_version) return conflict(`older sequence ${input.sequence} claims a newer stateVersion ${input.stateVersion}`);
-          return { kind: 'ok', continuity: 'OLDER_SAME_STATE' };
+          anchor(false);
+          return ok('OLDER_SAME_STATE');
         }
         if (input.sequence === hw.sequence + 1) {
-          record();
-          return { kind: 'ok', continuity: 'NEXT' };
+          anchor(true);
+          return ok('NEXT');
         }
         if (input.stateVersion === hw.state_version) {
-          record();
-          return { kind: 'ok', continuity: 'GAP_SAME_STATE' };
+          anchor(true);
+          return ok('GAP_SAME_STATE');
         }
-        // A newer state reached through a gap.
         if (input.online) {
-          record();
-          return { kind: 'ok', continuity: 'GAP_ACCEPTED_ONLINE' };
+          anchor(true);
+          return ok('GAP_ACCEPTED_ONLINE');
         }
+        anchor(false);
         return { kind: 'refused', result: 'CONTINUITY_UNPROVEN', detail: `state ${hw.state_version} → ${input.stateVersion} across sequences ${hw.sequence} → ${input.sequence}; re-anchor online` };
       }).immediate();
     },
@@ -350,6 +389,7 @@ export function verifyConformanceStatus(input: {
     if (s.profile.id !== e.profileId || s.profile.version !== e.profileVersion || (e.profileDigest !== undefined && s.profile.digest !== e.profileDigest)) return verdict('PROFILE_MISMATCH', null, at);
     // 6 — continuity against the durable high-water mark (also latches clock rollback).
     let continuity: StatusVerdict['continuity'] = 'NOT_TRACKED';
+    let trustedNowMs = nowMs;
     if (input.highWaterMark !== undefined) {
       const decision = input.highWaterMark.observe({
         credentialId: s.credentialId,
@@ -360,20 +400,25 @@ export function verifyConformanceStatus(input: {
         stateVersion: s.stateVersion,
         transitionDigest: s.historyRef.latestTransitionDigest,
         state: s.state,
+        fresh: s.evidenceFreshness.status === 'FRESH',
+        issuedAtMs: toMs(s.issuedAt),
         nowMs,
         online: input.mode.kind === 'online',
       });
       if (decision.kind === 'refused') return verdict(decision.result, decision.detail, at);
       continuity = decision.continuity;
+      // A clock stepped back within the tolerance never extends validity: judge expiry against the latched trusted time too.
+      trustedNowMs = decision.trustedNowMs;
+      if (trustedNowMs >= toMs(s.validUntil)) return verdict('EXPIRED_ASSERTION', 'EXPIRED', at);
     }
     const final = { ...at, continuity };
     // 7 — term, state, scope, evidence freshness.
-    if (nowMs >= toMs(s.credentialValidUntil)) return verdict('EXPIRED_CREDENTIAL', null, final);
+    if (trustedNowMs >= toMs(s.credentialValidUntil)) return verdict('EXPIRED_CREDENTIAL', null, final);
     if (s.state !== 'ACTIVE') return verdict('NOT_CONFORMANT', `state ${s.state}${s.reasonCode === null ? '' : ` (${s.reasonCode})`}`, final);
     if (s.scope.declaredExclusions.includes(e.operation)) return verdict('SCOPE_MISMATCH', 'OPERATION_EXCLUDED', final);
     if (!s.scope.coveredOperations.includes(e.operation)) return verdict('SCOPE_MISMATCH', 'OPERATION_NOT_COVERED', final);
     const freshUntil = s.evidenceFreshness.freshUntil;
-    if (s.evidenceFreshness.status !== 'FRESH' || freshUntil === null || nowMs >= toMs(freshUntil)) return verdict('STALE_EVIDENCE', s.evidenceFreshness.status, final);
+    if (s.evidenceFreshness.status !== 'FRESH' || freshUntil === null || trustedNowMs >= toMs(freshUntil)) return verdict('STALE_EVIDENCE', s.evidenceFreshness.status, final);
     return verdict('CONFORMANT', null, final);
   } catch {
     return verdict('UNAVAILABLE', 'verifier error');

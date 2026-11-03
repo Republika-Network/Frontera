@@ -99,13 +99,16 @@ sequence used to detect equivocation (§13, review P1-A/P2-A/P2-B):
 
 | Presented, relative to the mark | Result | Latched |
 |---|---|---|
-| Lower `stateVersion` | `ROLLBACK_DETECTED` | no — a genuine stale artifact is not tampering; latching would let anyone deny service |
+| Below the **state floor** (highest `stateVersion` from any authentic artifact, raised even when continuity is unproven) | `ROLLBACK_DETECTED` | no — a genuine stale artifact is not tampering; latching would let anyone deny service |
+| A FRESH view of the floor state issued before the newest signed non-FRESH view of it (**freshness floor**) | `ROLLBACK_DETECTED` | no |
 | Same sequence, other digest; next sequence not linking; same `stateVersion` naming another transition; another issuer | `CONFLICT_DETECTED` | **yes** (append-only, persisted; no API clears it — recovery is an explicitly provisioned new verifier store) |
 | Next sequence, linked | accepted (`NEXT`) | — |
 | Older or non-adjacent sequence of the **same** state | accepted (`OLDER_SAME_STATE`, `GAP_SAME_STATE`) — online and stapled share one chain, so honest gaps are normal | — |
 | Newer state across a gap | online: accepted and recorded (`GAP_ACCEPTED_ONLINE`); offline: `CONTINUITY_UNPROVEN`, **not** recorded, until an online check re-anchors | — |
 
-The trusted clock is latched forward; > 5 s behind is `CLOCK_ROLLBACK`. Every verifier-store key is
+Marks are kept per (issuer, credential). The trusted clock is latched forward; > 5 s behind is
+`CLOCK_ROLLBACK`, and validity, credential term and evidence freshness are judged against the later of
+the presented and the latched time (a clock stepped back within the tolerance extends nothing). Every verifier-store key is
 guarded against `INSERT OR REPLACE`, and the store refuses to open unless every table and trigger has
 exactly its schema's SQL. Without a store the verifier reports `continuity: NOT_TRACKED`.
 
@@ -217,6 +220,29 @@ mission brief. It confirmed questions 1, 3, 4, 7, 9–12 and 16 held; its findin
 * The rate limiter is in-memory and test-only. No authentication on status reads (by design, §5 of
   STATUS_VERIFICATION.md); production abuse controls are out of scope.
 * Latch recovery is out-of-band only.
+* Operator hazard (review N-7): restoring the signer journal together with the registry database makes the
+  signer re-issue used sequences — real equivocation, which every verifier that saw the originals latches.
+  The signer journal must never be restored from backup. A forward clock jump seen by issuer and signer
+  makes issuance `CLOCK_BEHIND` until wall time passes the last assertion.
+* File-level tampering with a verifier store or the signer journal (replacing the file, or dropping and
+  recreating identical triggers) is not prevented; the open-time check detects schema substitution only.
 * Public disclosure contract needs legal approval (CC-D-13).
 * RN-CONFORM-03X: a ledger adapter consuming `cc_anchor_intents` after CC-D-06. RN-CONFORM-04/05:
   Fileverse PEP fixtures, real validators.
+
+### 13.1 Re-review of the corrected head (AI reviewer, static only)
+
+A second reviewer read `6bd6836d..ffa9fe6d`. No P0/P1. It considered P1-A, P1-B, P1-C, P2-A, P2-B, P2-C (conflict
+clauses), P2-E (cache) and the fixed P3s closed, and predicted no CI failures (confirmed: all 13 checks green on
+`ffa9fe6d`). New findings:
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| N-1 | P2 | (Regression from P1-A) an older FRESH view of a state was accepted after a newer signed degraded view of the same state | **Fixed**: freshness floor. Test `review N-1 …` |
+| N-2 | P2 | An unproven-gap newer state was discarded entirely, so the pre-suspension ACTIVE (even the anchor itself) still passed | **Fixed**: state floor raised by every authentic artifact; floors checked before the anchor. Test in `… re-anchors the mark` |
+| N-3 | P3 | A clock stepped back ≤ 5 s could accept an artifact up to 5 s past `validUntil` | **Fixed**: judged against the latched trusted time. Test `review N-3 …` |
+| N-4 | P3 | Raw file-level tampering (drop/recreate identical triggers, replace or pre-seed the file) is not prevented | **Documented**: triggers stop API misuse and conflict clauses; the open check detects schema substitution, not file replacement |
+| N-5 | P3 | Signer journal integrity check was name-only | **Fixed**: full schema SQL comparison at open |
+| N-6 | P3 | Marks keyed by credential only: a second pinned issuer could force an `issuer changed` latch | **Fixed**: marks and latches keyed by (issuer, credential) |
+| N-7 | P3 | `CLOCK_BEHIND` wedges issuance until wall time passes the last `issuedAt`; restoring **both** registry and signer journal re-uses sequences (genuine equivocation → verifiers latch) | **Documented** operator hazard: never restore the signer journal |
+| N-8 | P3 | Verifier store handle leaked on a malformed file | **Fixed** |

@@ -192,9 +192,25 @@ function openSignerJournal(path: string): SignerJournal {
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = FULL');
   if (fresh) db.exec(JOURNAL_SCHEMA);
-  else if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'sj_signed_contiguous'").get() === undefined) {
-    db.close();
-    throw new Error('The status signer journal is not intact.');
+  else {
+    // Every table and trigger must carry exactly this schema's SQL (review N-5): a same-name trigger with another body is refused.
+    let intact = false;
+    try {
+      const probe = new Database(':memory:');
+      try {
+        probe.exec(JOURNAL_SCHEMA);
+        const schema = (d: Database.Database) => JSON.stringify(d.prepare("SELECT type, name, sql FROM sqlite_master WHERE type IN ('table', 'index', 'trigger') ORDER BY type, name").all());
+        intact = schema(db) === schema(probe);
+      } finally {
+        probe.close();
+      }
+    } catch {
+      intact = false;
+    }
+    if (!intact) {
+      db.close();
+      throw new Error('The status signer journal is not intact.');
+    }
   }
   const last = db.prepare('SELECT sequence, assertion_digest FROM sj_signed WHERE credential_id = ? ORDER BY sequence DESC LIMIT 1');
   const highest = db.prepare('SELECT state_version, transition_digest FROM sj_signed WHERE credential_id = ? ORDER BY state_version DESC, sequence DESC LIMIT 1');

@@ -9,7 +9,7 @@ import { signConformancePayload } from '../conformance/signing.js';
 import { parseStatusArtifact, type StatusAssertionPayload } from '../conformance/status-contracts.js';
 import { openStatusVerifierStore, verifyConformanceStatus, type StatusExpectation } from '../conformance/status-verifier.js';
 import { ORG_A, activeCredential, cleanupAll, issue, observe, submit } from './conformance-support.js';
-import { assertionText, buildStatusCircuit, freshNonce, type StatusCircuit } from './conformance-status-support.js';
+import { ISSUER, assertionText, buildStatusCircuit, freshNonce, type StatusCircuit } from './conformance-status-support.js';
 
 /**
  * RN-CONFORM-03 / WP-05, WP-06, WP-07, WP-10 — the verifier library: validity
@@ -197,7 +197,8 @@ describe('RN-CONFORM-03 verifier: durable continuity judged on committed state (
     assert.ok(payloadOf(stapledSuspended).sequence >= 3);
     assert.equal(s.verify(stapledSuspended, credentialId, { kind: 'stapled' }, { store }).result, 'CONTINUITY_UNPROVEN');
     assert.equal(s.verify(stapledSuspended, credentialId, { kind: 'stapled' }, { store }).result, 'CONTINUITY_UNPROVEN', 'presenting it twice proves nothing');
-    assert.equal(s.verify(t1, credentialId, { kind: 'stapled' }, { store }).result, 'CONFORMANT', 'the mark did not move: the last proven state is still the one seen');
+    // Review N-2: the unproven SUSPENDED still raised the state floor — the pre-suspension ACTIVE (even the anchor itself) no longer passes.
+    assert.equal(s.verify(t1, credentialId, { kind: 'stapled' }, { store }).result, 'ROLLBACK_DETECTED');
     const nonce = freshNonce();
     const online = s.verify(assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, nonce))), credentialId, { kind: 'online', nonce }, { store });
     assert.deepEqual([online.result, online.continuity], ['NOT_CONFORMANT', 'GAP_ACCEPTED_ONLINE']);
@@ -226,7 +227,11 @@ describe('RN-CONFORM-03 verifier: durable continuity judged on committed state (
     assert.throws(() => db.prepare('DELETE FROM vs_high_water').run(), /vs:immutable/);
     assert.throws(() => db.prepare('DELETE FROM vs_latches').run(), /vs:immutable/);
     assert.throws(() => db.prepare('UPDATE vs_clock SET max_trusted_ms = 0').run(), /vs:clock moved backwards/);
-    assert.throws(() => db.prepare("INSERT OR REPLACE INTO vs_high_water (credential_id, issuer, sequence, assertion_digest, state_version, transition_digest, state, observed_at_ms) VALUES (?, 'x', 0, 'x', 0, 'x', 'ACTIVE', 0)").run(credentialId), /vs:duplicate/);
+    assert.throws(
+      () =>
+        db.prepare("INSERT OR REPLACE INTO vs_high_water (issuer, credential_id, sequence, assertion_digest, state_version, transition_digest, state, floor_state_version, floor_transition_digest, freshness_floor_ms, observed_at_ms) VALUES (?, ?, 0, 'x', 0, 'x', 'ACTIVE', 0, 'x', 0, 0)").run(ISSUER, credentialId),
+      /vs:duplicate/,
+    );
     assert.throws(() => db.prepare('INSERT OR REPLACE INTO vs_clock (id, max_trusted_ms) VALUES (1, 0)').run(), /vs:duplicate/);
     assert.throws(() => db.prepare("INSERT OR REPLACE INTO vs_latches (latch_seq, credential_id, kind, detail, at_ms) SELECT latch_seq, 'crd_other', kind, detail, at_ms FROM vs_latches").run(), /vs:duplicate/);
     assert.equal(first.latch(credentialId)?.kind, 'CONFLICT_DETECTED');
@@ -234,6 +239,42 @@ describe('RN-CONFORM-03 verifier: durable continuity judged on committed state (
     db.exec("DROP TRIGGER vs_clock_forward; CREATE TRIGGER vs_clock_forward BEFORE UPDATE ON vs_clock BEGIN SELECT 1; END;");
     db.close();
     assert.throws(() => openStatusVerifierStore(first.path), /not intact/, 'a same-name trigger with another body is refused at open');
+    s.cleanup();
+  });
+});
+
+describe('RN-CONFORM-03 verifier: re-review regressions (N-1, N-3)', () => {
+  it('review N-1: after a signed degradation of freshness at the same state version, an older FRESH view is refused', () => {
+    const { s, credentialId } = setup();
+    const fresh = assertionText(s.registry.stapled(credentialId));
+    s.c.clock.advance(60);
+    assert.ok(submit(s.c, observe(s.c, s.c.validators.C, issue(s.c, 'G01', [s.c.validators.C]), { outcome: 'allowed' })).accepted);
+    const nonce = freshNonce();
+    const degraded = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, nonce)));
+    assert.deepEqual([payloadOf(degraded).state, payloadOf(degraded).stateVersion, payloadOf(degraded).evidenceFreshness.status], ['ACTIVE', 2, 'UNDER_INVESTIGATION']);
+    const store = s.verifierStore();
+    assert.equal(s.verify(degraded, credentialId, { kind: 'online', nonce }, { store }).result, 'STALE_EVIDENCE');
+    s.c.clock.set(toTimestamp(toMs(payloadOf(fresh).validUntil) - 1000));
+    const older = s.verify(fresh, credentialId, { kind: 'stapled' }, { store });
+    assert.equal(older.result, 'ROLLBACK_DETECTED');
+    assert.match(older.detail ?? '', /fresh view issued before a signed degradation/);
+    assert.equal(s.verify(fresh, credentialId, { kind: 'stapled' }).result, 'CONFORMANT', 'a stateless verifier has no such memory (bounded by the 15-minute window)');
+    s.cleanup();
+  });
+
+  it('review N-3: a clock stepped back within the tolerance does not extend validity', () => {
+    const { s, credentialId } = setup();
+    const n1 = freshNonce();
+    const a = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, n1)));
+    const until = toMs(payloadOf(a).validUntil);
+    s.c.clock.set(toTimestamp(until + 2000));
+    const n2 = freshNonce();
+    const b = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, n2)));
+    const store = s.verifierStore();
+    assert.equal(s.verify(b, credentialId, { kind: 'online', nonce: n2 }, { store }).result, 'CONFORMANT');
+    s.c.clock.set(toTimestamp(until - 1000));
+    assert.equal(s.verify(a, credentialId, { kind: 'stapled' }).result, 'CONFORMANT', 'by the presented clock alone it would still be valid');
+    assert.deepEqual(result(s.verify(a, credentialId, { kind: 'stapled' }, { store })), ['EXPIRED_ASSERTION', 'EXPIRED']);
     s.cleanup();
   });
 });
