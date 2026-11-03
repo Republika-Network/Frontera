@@ -178,7 +178,9 @@ export type HumanIdentityErrorCode =
   /** FV-P4C-2B3C-2A2B: AUTH-02's general (Host) administration, enrolment-token registration or owner revocation was attempted on an FV identity store. Nothing was written. */
   | 'HUMAN_IDENTITY_FV_ADMINISTRATION_REFUSED'
   /** FV-P4C-2B3C-2A2B: an FV operator enrolment's evidence does not verify against the store's signed history (administrator, assertion, candidate, prior head, window), or its rows conflict with it. Nothing was written. */
-  | 'HUMAN_IDENTITY_FV_OPERATOR_REFUSED';
+  | 'HUMAN_IDENTITY_FV_OPERATOR_REFUSED'
+  /** FV-P4C-2B3C-2A2B: an FV operator enrolment is unfinished on this FV store; nothing else is written until it is resumed. */
+  | 'HUMAN_IDENTITY_FV_ENROLLMENT_PENDING';
 
 export class HumanIdentityError extends Error {
   constructor(

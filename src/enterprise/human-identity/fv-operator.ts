@@ -4,7 +4,7 @@ import { canonicalJson, humanIdentityGenesisDigest, nextHumanIdentityChainDigest
 import { HumanIdentityError, type AuthenticationOptionsJSON, type RegistrationOptionsJSON } from './contracts.js';
 import { challengeDigestOf, webAuthnChallengeOf } from './decision-challenge.js';
 import { FIRST_ADMINISTRATOR_ENROLMENT_EXPIRES_AT, firstAdministratorCredentialDigest, type FirstAdministratorCredential } from './first-administrator.js';
-import { FV_OPERATOR_RECORDER, FV_OPERATOR_ROLE, fvRolesOf } from './fv-domain.js';
+import { FV_OPERATOR_RECORDER, FV_OPERATOR_ROLE, fvOperatorPlanUnfinished, fvRolesOf } from './fv-domain.js';
 import type { RelyingPartyConfiguration } from './relying-party.js';
 import { humanIdentityStateOf } from './service.js';
 import type { HumanIdentityStore } from './sqlite-human-identity-store.js';
@@ -131,27 +131,8 @@ export function fvOperatorCandidateChallenge(requestId: string, nonce: string): 
   return createHash('sha256').update(`${CANDIDATE_CHALLENGE_DOMAIN}\n${requestId}\n${nonce}`, 'utf8').digest('base64url');
 }
 
-/**
- * Codex P2 (PR #267) — whether a verified history ends in an unfinished FV operator plan: its last operator-ceremony
- * `credential_used` row is not followed by that plan's three other rows. Plans are appended contiguously, one
- * ceremony at a time, so an unfinished one is always the history's suffix. A new enrolment over it would strand it
- * (its rows would no longer be the suffix a resume needs, and its principal would block a new authorization), so a new
- * enrolment is refused until it is resumed.
- */
-export function fvOperatorPlanUnfinished(history: readonly StoredHumanIdentityRow[]): boolean {
-  let start = -1;
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const row = history[index]!;
-    if (row.kind === 'credential_used' && row.recordedBy === FV_OPERATOR_RECORDER) {
-      start = index;
-      break;
-    }
-  }
-  if (start < 0) return false;
-  const rest = history.slice(start + 1, start + 4);
-  const operatorId = rest[0]?.operatorId;
-  return !(rest.length === 3 && rest.every((row, i) => row.kind === ROW_KINDS[i + 1] && row.recordedBy === FV_OPERATOR_RECORDER && row.operatorId === operatorId));
-}
+/** The unfinished-plan rule (`fv-domain.ts`), re-exported for the operator ceremony. */
+export { fvOperatorPlanUnfinished };
 
 /** The chain digest at `sequence` of a verified history (the head the store had after its first `sequence` rows). */
 export function chainDigestAt(history: readonly StoredHumanIdentityRow[], storeId: string, organizationId: string, sequence: number): string | undefined {

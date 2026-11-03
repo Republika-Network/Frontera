@@ -79,6 +79,30 @@ export function fvRolesOf(history: readonly StoredHumanIdentityRow[]): ReadonlyM
 }
 
 /**
+ * FV-P4C-2B3C-2A2B (Codex P2 on PR #267; fix-commit review F1/F2) — whether a verified history ends in an unfinished FV
+ * operator plan: its last plan start (an operator-ceremony `credential_used` row whose stored contract recomputes to
+ * the commitment it names; a garbage row is no plan start) is not followed by that plan's three other rows, for the
+ * contract's candidate. While one is unfinished, nothing else may be appended to the FV store (AUTH-02's writes and
+ * any new enrolment are refused), so it stays the history's suffix and its resume can always complete it.
+ */
+export function fvOperatorPlanUnfinished(history: readonly StoredHumanIdentityRow[]): boolean {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const row = history[index]!;
+    if (row.kind !== 'credential_used' || row.recordedBy !== FV_OPERATOR_RECORDER) continue;
+    const used = payloadOf(row);
+    const contract = used['authorization'];
+    if (typeof contract !== 'object' || contract === null || Array.isArray(contract)) continue;
+    const commitment = `sha256:${createHash('sha256').update(canonicalJson(contract as HumanIdentityJson), 'utf8').digest('hex')}`;
+    if (used['authorizationCommitment'] !== commitment) continue;
+    const candidate = ((contract as Record<string, unknown>)['candidate'] as Record<string, unknown> | undefined)?.['operatorId'];
+    const rest = history.slice(index + 1, index + 4);
+    const kinds = ['principal_created', 'enrolment_authorized', 'credential_registered'];
+    return !(rest.length === 3 && rest.every((r, i) => r.kind === kinds[i] && r.recordedBy === FV_OPERATOR_RECORDER && r.operatorId === candidate));
+  }
+  return false;
+}
+
+/**
  * Whether a verified history is an FV identity store's: its first row is the FV administrator's. Durable and signed
  * (the head covers it), unlike how a file happens to be opened. Together with the exclusive (FV) owner's handle, it
  * is what AUTH-02's general administration refuses (`HUMAN_IDENTITY_FV_ADMINISTRATION_REFUSED`).

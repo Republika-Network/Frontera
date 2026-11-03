@@ -366,6 +366,11 @@ describe('FV-P4C-2B3C-2A2B — crash consistency: SIGKILL at every durable step,
       await withStore(w, witness, async (store) => {
         const evidence = await evidenceFor(w, witness, store, { operatorId: 'fv-operator-b' });
         assert.deepEqual(await verifyFvOperatorEvidence(store.history(), store, evidence, contextOf(w, witness)), { verified: false, reason: 'PLAN_INCOMPLETE' });
+        // Fix-commit review F1: nothing else is written either (an AUTH-02 authentication would strand the plan for good).
+        const before = store.history().length;
+        const identity = createHumanIdentityService({ store, relyingParty: RP, operatorIds: [ADMIN] });
+        await assert.rejects(identity.finishAuthentication(w.admin.assert(identity.beginAuthentication(), { counter: 9_000 })), { code: 'HUMAN_IDENTITY_FV_ENROLLMENT_PENDING' });
+        assert.equal(store.history().length, before);
       });
       bump(w);
       // The unfinished plan resumes (its rows are still the history's suffix), then the next enrolment proceeds.
@@ -511,7 +516,8 @@ describe('FV-P4C-2B3C-2A2B — review findings: the role needs the administrator
       // An intermediate row between them.
       const c4 = contractFor('gapped');
       await used(c4);
-      await identity.finishAuthentication(w.admin.assert(identity.beginAuthentication(), { counter: 10_000 }));
+      // (A forged plan start leaves the store mid-plan: AUTH-02 now refuses to write, so the gap is a raw row.)
+      await store.append({ kind: 'credential_used', operatorId: ADMIN, objectId: w.adminCredentialId, payload: canonical({ backedUp: false, challengeDigest: `sha256:${randomBytes(32).toString('hex')}`, counter: (counter += 1) }), recordedBy: 'webauthn-ceremony', recordedAt: now }, () => undefined);
       await principal('gapped', digest(c4));
       // The contract's role changed.
       const c5 = contractFor('admin-role', { role: 'fv-administrator' });
@@ -548,6 +554,13 @@ describe('FV-P4C-2B3C-2A2B — review findings: the role needs the administrator
       assert.equal(fvRolesOf(store.history()).get('fv-op-stale'), 'fv-operator', 'structurally recognizable');
       assert.deepEqual([...(await verifyFvOperatorRoles(store.history(), w.world.org, RP))], [], 'never a verified operator');
     });
+  });
+
+  it('fix-commit review F2: a garbage operator-ceremony row is no plan start and blocks nothing', async () => {
+    const { witness, w } = await world();
+    await withStore(w, witness, (store) => store.append({ kind: 'credential_used', operatorId: ADMIN, objectId: w.adminCredentialId, payload: JSON.stringify({ challengeDigest: `sha256:${randomBytes(32).toString('hex')}`, counter: 1 }), recordedBy: 'fv-operator-enrollment-ceremony', recordedAt: new Date().toISOString() }, () => undefined));
+    bump(w);
+    assert.equal((await enroll(w, witness, operatorRequest(w).request)).outcome, 'enrolled');
   });
 
   it('a request under another deployment’s configuration is refused; a rolled-back store never revives a consumed authorization', async () => {

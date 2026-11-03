@@ -805,7 +805,11 @@ The registration record holds only *progress* (`operator-enrollment-intent`, car
 |---|---|---|
 | The candidate's or the administrator's proof, before the intent | Unchanged | Nothing to resume (`NO_REQUEST`); make a new request |
 | The intent | Unchanged | A resume completes it, while the window is open and the head unchanged; otherwise `WINDOW_CLOSED` or `STALE_HEAD`, and the enrolment must be authorized again |
-| 1–3 rows | The first row pins the plan | A resume completes exactly that plan, even after the window (the first row was its consumption, in time). Until then, every **new** enrolment is refused (`ENROLLMENT_PENDING`; AUTH-03 `PLAN_INCOMPLETE`). A new one would otherwise strand this plan: its rows would no longer be the suffix a resume needs, and its principal would block a new authorization (Codex P2 on PR #267) |
+| 1–3 rows | The first row pins the plan | A resume completes exactly that plan, even after the window (the first row was its consumption, in time). Until then, **nothing else is written to the store**:
+  - every new enrolment is refused (`ENROLLMENT_PENDING`; AUTH-03 `PLAN_INCOMPLETE`);
+  - every AUTH-02 write (authentication, decisions, settlements, counter anomalies) is refused (`HUMAN_IDENTITY_FV_ENROLLMENT_PENDING`).
+
+  So the plan stays the history's suffix, which is what its resume needs. Otherwise it would be stranded, and its principal would block a new authorization (Codex P2 on PR #267; the fix-commit review's F1). This fails closed: the FV store accepts no human authentication or decision until the enrolment is resumed |
 | All 4 rows, before completion is reported | Complete | A resume reports `enrolled` and writes nothing |
 | A finalize that never reached the witness | The last row is prepared at the witness | `pending`, never `enrolled`. A resume reopens the store, CORE-07 finalizes it, and the resume completes |
 | A prepare the witness applied, its answer lost | — | `pending`; the resume is refused `STORE_REFUSED` (`AUTHORITY_FRESHNESS_PENDING_RECOVERY`). This is the existing CORE-07 limit and fails closed; recovery is B3C-2B |
@@ -826,6 +830,8 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
 - **WebAuthn assurance.** It is the same as §15.4: attestation `none` for the candidate, and no authenticator provenance. The tests use software authenticators, so this is **not** a production assurance claim. The administrator's assertion requires user verification.
 - **The candidate's identity** (operator id, display name) is whatever the administrator approves. Binding it to a real person is the out-of-band ceremony's job.
 - **The ceremony's deployment, state kind and witness** come from its trusted configuration, checked against the registration record. AUTH-03 trusts the caller for that scope, the same trust level as the pinned issuers.
+- **Mid-plan crash.** Until the enrolment is resumed, the FV store accepts no AUTH-02 authentication or decision
+  (fail closed). A signing-key holder's consistent forged plan start blocks the store the same way until B3C-2A3.
 - **Signing-key holder (a trust root).** The store's signing key, the deployment's authority key (CORE-02), signs
   every row, so its holder can append any row (§12).
   - **What review M1's fix gives:** a bare `fv-operator` row gets no role, and a structurally consistent forged pair
@@ -844,7 +850,7 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
 ### 16.8 Evidence
 
 - **Tests.**
-  - `tests/fv-p4c2b3c2a2b-operator-enrollment.e2e.test.mjs`: 30 tests, with real child processes paused or SIGKILLed. They include a role-forgery matrix, each case scored both structurally and by the verifier, a request under another deployment's configuration, and a rolled-back store that never revives a consumed authorization.
+  - `tests/fv-p4c2b3c2a2b-operator-enrollment.e2e.test.mjs`: 31 tests, with real child processes paused or SIGKILLed. They include a role-forgery matrix, each case scored both structurally and by the verifier, a request under another deployment's configuration, and a rolled-back store that never revives a consumed authorization.
   - `fv-p4c2b3c2a2b-operator-enrollment-structure.test.ts`: 5 tests.
 - **Existing tests that wrote to FV stores through Host administration** were moved to an FV-legitimate write. Every one of their assertions is kept:
   - the B3B support's anchored FV worlds now enrol their humans the FV way;
@@ -856,7 +862,7 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
 
   | Suite | Result |
   |---|---|
-  | B3C-2A2B | 30/30 |
+  | B3C-2A2B | 31/31 |
   | B3C-2A2A | 22/22 |
   | HF01 | 16/16 |
   | B3C-2A1 | 43/43 |
@@ -871,7 +877,7 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
   | PROD-02 | 57/57 |
 
   Gates, all passing: typecheck, lint, `check:aoc-boundaries`, `check:release-coherence`, `check:protocol-consumption`, `validate:publishability` and `legal:check`.
-- **Targeted mutants: 23 of 25 applicable killed** (including the publication review's verifier-position check and the unfinished-plan refusal). Removing both unfinished-plan checks, which is the pre-fix behaviour, fails all three Codex P2 regression tests. They ran on the compiled code in a separate copy, and every file was restored and hash-checked.
+- **Targeted mutants: 24 of 26 applicable killed** (including the publication review's verifier-position check and the unfinished-plan refusal). Removing both unfinished-plan checks, which is the pre-fix behaviour, fails all three Codex P2 regression tests. They ran on the compiled code in a separate copy, and every file was restored and hash-checked.
   - **Killed:**
     - Host administration accepted on an FV store;
     - the FV marker taken only from the handle, or only from the history;
@@ -890,6 +896,7 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
     - the store fence unchecked (a store file replaced under a paused ceremony);
     - bootstrap enabled.
   - **The consumed-challenge check: killed, after correcting an earlier classification.** It was first classified as unreachable, but re-checking showed it is reachable. A direct AUTH-03 caller can present a *new* candidate credential answering an earlier, consumed candidate challenge (the same request id and nonce) under a genuine administrator signature at the new head. Without the check, AUTH-02 would read the doubly consumed challenge as a corrupt store. It is now tested.
+  - **Killed: AUTH-02 writing to an FV store mid-plan** (the fix-commit review's F1).
   - **Surviving: the ceremony's early unfinished-plan refusal: B, redundant.** AUTH-03 refuses the same plan (`PLAN_INCOMPLETE`, killed when removed). The early check only spares the humans a ceremony that would be refused.
   - **Surviving: the append guard's length and chain check: B, redundant under store invariants** (corrected from "equivalent" by the publication review). The guard's plan-prefix check does not imply them by itself; for a history shorter than the prior head it returns 0. They are implied only by the store's own invariants: an append-only, chain-verified history, the exclusive write fence, the file-identity check, and CORE-07's rollback refusal. These are tested in B3C-3, 2A1 and here. It is not exploitable.
   - **Not applicable:** "accept a forged recovery record" has no record-trusting branch to mutate; the checks a forged record must pass (the signature and the candidate) are mutated and killed. "Wrong-slot witness evidence" is CORE-07's, covered by HF01's H03 and H04.
@@ -916,6 +923,15 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
   unfinished operator plan. Plans are contiguous, so an unfinished one is always the suffix. The check is in AUTH-03
   and, earlier, in the ceremony. Tested at each partial-plan boundary: the stranded plan then resumes, and the next
   enrolment proceeds.
+- **Review of the two fix commits** (a fresh read-only AI agent, not human). The verifier fix holds. It reproduced:
+  - **F1, Medium:** an AUTH-02 write after a mid-plan crash (authentication is allowed on FV stores) stranded the plan.
+    With the P2 fix, that then blocked every future enrolment. **Fixed:** AUTH-02 refuses every write to an FV store
+    while a plan is unfinished, so the plan stays the suffix and resumes. Tested: the authentication is refused, then
+    the resume and the next enrolment succeed. The reviewer's probe now shows the refusal.
+  - **F2, Low:** one garbage operator-ceremony row by a signing-key holder blocked enrolment for good. **Fixed:** a
+    plan start needs a contract that recomputes to its commitment. Tested. A *consistent* forged plan start by a
+    signing-key holder can still block the store until B3C-2A3's governance recovery (a trust-root denial of service,
+    documented).
 
 This remains internal and non-operational. Nothing new is reachable from the Host, the executor or its supervisor; the executor gate is unchanged; `bootstrapExecution` stays `disabled`.
 

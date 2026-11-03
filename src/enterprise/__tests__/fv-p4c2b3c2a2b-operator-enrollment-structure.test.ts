@@ -34,7 +34,7 @@ describe('FV-P4C-2B3C-2A2B structure — Host administration never reaches an FV
     assert.match(service, /function administrator\(value: IdentityAdministrator\): IdentityAdministrator \{\n\s+notFvOwned\(\);/);
     assert.match(service, /if \(store\.exclusiveOwner \|\| fvOwnedHistory\(history\)\) throw new HumanIdentityError\('HUMAN_IDENTITY_FV_ADMINISTRATION_REFUSED'/);
     for (const kind of ['principal_created', 'principal_revoked', 'enrolment_authorized', 'enrolment_revoked', 'credential_revoked']) {
-      assert.match(service, new RegExp(`await store\\.append\\(row\\('${kind}'[^\\n]*\\(history\\) => \\{\\n\\s+notFvOwned\\(history\\);`), kind);
+      assert.match(service, new RegExp(`await guardedAppend\\(row\\('${kind}'[^\\n]*\\(history\\) => \\{\\n\\s+notFvOwned\\(history\\);`), kind);
     }
     const registration = service.slice(service.indexOf('    async finishRegistration('), service.indexOf('    beginAuthentication() {'));
     assert.match(registration, /^    async finishRegistration\(enrolmentToken, raw\) \{\n\s+notFvOwned\(\);/);
@@ -43,6 +43,9 @@ describe('FV-P4C-2B3C-2A2B structure — Host administration never reaches an FV
     const owner = service.slice(service.indexOf('    beginOwnerRevocation(credentialId) {'), service.indexOf('    beginDecision(input) {'));
     assert.equal((owner.match(/notFvOwned\(/g) ?? []).length, 3, 'begin, finish and its guard');
     assert.match(read(join(IDENTITY, 'sqlite-human-identity-store.ts')), /\n\s+exclusiveOwner: exclusive !== undefined,\n/);
+    // Fix-commit review F1: every write of the service goes through the guard that refuses while an FV plan is unfinished.
+    assert.equal((service.match(/await store\.append\(/g) ?? []).length, 0, 'no unguarded service write');
+    assert.match(service, /if \(\(store\.exclusiveOwner \|\| fvOwnedHistory\(history\)\) && fvOperatorPlanUnfinished\(history\)\) \{\n\s+throw new HumanIdentityError\('HUMAN_IDENTITY_FV_ENROLLMENT_PENDING'/);
   });
 
   it('FV roles come from signed rows only: the administrator is the first row, recorded by its ceremony; an operator, recorded by its own, right after the administrator’s authorizing row', () => {

@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import type { EnterpriseOperatorPrincipal } from '../operator-control/operator-authenticator.js';
 import { canonicalJson, type HumanIdentityJson, type StoredHumanIdentityRow } from './chain.js';
-import { fvOwnedHistory } from './fv-domain.js';
+import { fvOperatorPlanUnfinished, fvOwnedHistory } from './fv-domain.js';
 import {
   HumanIdentityError,
   type AuthenticationOptionsJSON,
@@ -656,6 +656,24 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     if (store.exclusiveOwner || fvOwnedHistory(history)) throw new HumanIdentityError('HUMAN_IDENTITY_FV_ADMINISTRATION_REFUSED', 'This is an FV identity store: Host administration, enrolment tokens and owner revocation do not apply to it.');
   }
 
+  /**
+   * FV-P4C-2B3C-2A2B (fix-commit review F1) — every write of this service to an FV store is refused while an FV
+   * operator plan is unfinished (a crash mid-enrolment), so that plan stays the history's suffix and its resume can
+   * complete it; otherwise it would be stranded and every later enrolment blocked. Decided in the append's guard,
+   * against the verified history. Fails closed until the enrolment is resumed.
+   */
+  const guardedAppend: HumanIdentityStore['append'] = (content, guard, consume) =>
+    store.append(
+      content,
+      (history) => {
+        if ((store.exclusiveOwner || fvOwnedHistory(history)) && fvOperatorPlanUnfinished(history)) {
+          throw new HumanIdentityError('HUMAN_IDENTITY_FV_ENROLLMENT_PENDING', 'An FV operator enrolment is unfinished on this store: resume it before anything else is written.');
+        }
+        guard(history);
+      },
+      consume,
+    );
+
   function administrator(value: IdentityAdministrator): IdentityAdministrator {
     notFvOwned();
     if (!ADMINISTRATORS.has(value)) throw new HumanIdentityError('HUMAN_IDENTITY_ADMINISTRATOR_REQUIRED', 'An administrative act requires an administrator established by the operator plane.');
@@ -785,7 +803,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
   };
 
   const anomaly = (credential: CredentialRecord, challengeDigest: string, presented: number) => async (): Promise<void> => {
-    await store.append(row('credential_counter_anomaly', credential.view.operatorId, credential.view.credentialId, { presented, stored: credential.view.counter, challengeDigest }, CEREMONY_RECORDER), (history) => void notUsed(challengeDigest)(history));
+    await guardedAppend(row('credential_counter_anomaly', credential.view.operatorId, credential.view.credentialId, { presented, stored: credential.view.counter, challengeDigest }, CEREMONY_RECORDER), (history) => void notUsed(challengeDigest)(history));
   };
 
   const FORMAT_OF = { 'core-05': HUMAN_DECISION_CHALLENGE_FORMAT, 'bootstrap-authority': BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT } as const;
@@ -890,7 +908,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       evidence = core05;
       evidenceDigest = humanDecisionEvidenceDigest(core05);
     }
-    await store.append(
+    await guardedAppend(
       // One row (CORE-07 advances one position per append): the decision also records the credential's use.
       row('decision_authorized', contract.operatorId, commitment, { evidence: { ...evidence }, evidenceDigest, challengeDigest, counter: use.counter, backedUp: use.backedUp }, CEREMONY_RECORDER),
       (history) => {
@@ -946,7 +964,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       if (typeof operatorId !== 'string' || !OPERATOR_ID.test(operatorId) || !operatorIds.has(operatorId)) throw new HumanIdentityError('HUMAN_IDENTITY_UNKNOWN_OPERATOR', "That operator id is not one of this Host's configured operators.");
       const displayName = input.displayName;
       if (typeof displayName !== 'string' || displayName.trim() !== displayName || displayName.length === 0 || displayName.length > 128) throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'displayName must be a non-empty trimmed string of at most 128 characters.');
-      await store.append(row('principal_created', operatorId, null, { displayName, userHandle: randomBytes(32).toString('base64url') }, actor.actorRef), (history) => {
+      await guardedAppend(row('principal_created', operatorId, null, { displayName, userHandle: randomBytes(32).toString('base64url') }, actor.actorRef), (history) => {
         notFvOwned(history);
         if (project(history, organizationId).principals.has(operatorId)) throw new HumanIdentityError('HUMAN_IDENTITY_PRINCIPAL_EXISTS', 'A human principal already exists for that operator.');
       });
@@ -956,7 +974,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     async revokePrincipal(admin, operatorId, reason) {
       const actor = administrator(admin);
       const why = reasonOf(reason);
-      await store.append(row('principal_revoked', operatorId, null, { reason: why }, actor.actorRef), (history) => {
+      await guardedAppend(row('principal_revoked', operatorId, null, { reason: why }, actor.actorRef), (history) => {
         notFvOwned(history);
         const found = project(history, organizationId).principals.get(operatorId);
         if (found === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_UNKNOWN_PRINCIPAL', 'No human principal exists for that operator.');
@@ -971,7 +989,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const enrolmentId = `enr-${randomBytes(16).toString('hex')}`;
       const secret = randomBytes(32).toString('base64url');
       const expiresAt = after(enrolmentTtl);
-      await store.append(row('enrolment_authorized', operatorId, enrolmentId, { expiresAt, tokenVerifier: verifierOf(secret) }, actor.actorRef), (history) => {
+      await guardedAppend(row('enrolment_authorized', operatorId, enrolmentId, { expiresAt, tokenVerifier: verifierOf(secret) }, actor.actorRef), (history) => {
         notFvOwned(history);
         const current = project(history, organizationId);
         activePrincipal(current, operatorId);
@@ -989,7 +1007,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       if (typeof enrolmentId !== 'string' || !ENROLMENT_ID.test(enrolmentId)) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'That is not an enrolment id.');
       const current = state().enrolments.get(enrolmentId);
       if (current === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'No such enrolment.');
-      await store.append(row('enrolment_revoked', current.operatorId, enrolmentId, { reason: why }, actor.actorRef), (history) => {
+      await guardedAppend(row('enrolment_revoked', current.operatorId, enrolmentId, { reason: why }, actor.actorRef), (history) => {
         notFvOwned(history);
         const record = project(history, organizationId).enrolments.get(enrolmentId);
         if (record === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'No such enrolment.');
@@ -1028,7 +1046,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       }
       const verified = await verifyRegistration(response, challenge.challenge, relyingParty);
       const challengeDigest = challengeDigestOf(challenge.challenge);
-      await store.append(
+      await guardedAppend(
         row(
             'credential_registered',
             enrolment.operatorId,
@@ -1072,7 +1090,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const challengeDigest = challengeDigestOf(challenge.challenge);
       const known = state().credentials.get(response.id);
       const use = await verifiedUse(response, challenge.challenge, null, known === undefined ? async () => undefined : anomaly(known, challengeDigest, signatureCounterOf(response.response.authenticatorData)));
-      await store.append(
+      await guardedAppend(
         row('credential_used', use.credential.view.operatorId, use.credential.view.credentialId, { counter: use.counter, backedUp: use.backedUp, challengeDigest }, CEREMONY_RECORDER),
         (history) => {
           const current = notUsed(challengeDigest)(history);
@@ -1099,7 +1117,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const why = reasonOf(reason);
       const existing = state().credentials.get(credentialId);
       if (existing === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'No such credential.');
-      await store.append(row('credential_revoked', existing.view.operatorId, credentialId, { reason: why, revokedBy: 'administrator' }, actor.actorRef), (history) => {
+      await guardedAppend(row('credential_revoked', existing.view.operatorId, credentialId, { reason: why, revokedBy: 'administrator' }, actor.actorRef), (history) => {
         notFvOwned(history);
         const credential = project(history, organizationId).credentials.get(credentialId);
         if (credential === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'No such credential.');
@@ -1132,7 +1150,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const target = state().credentials.get(credentialId);
       if (target === undefined || target.view.operatorId !== use.credential.view.operatorId) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_OWNERSHIP_MISMATCH', 'Only the human who owns a credential may revoke it this way.');
       const asserting = use.credential.view.credentialId;
-      await store.append(
+      await guardedAppend(
         // One row (CORE-07 advances one position per append): the revocation also records the asserting credential's use.
         row('credential_revoked', target.view.operatorId, credentialId, { reason: why, revokedBy: 'owner', assertedWith: asserting, counter: use.counter, backedUp: use.backedUp, challengeDigest }, `owner:${asserting}`),
         (history) => {
@@ -1181,7 +1199,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       // FV-P4C-2B2B: a CORE-05 outcome (recorded, refused, abandoned) never settles a bootstrap-authority decision.
       if (decided === undefined || decided.domain !== 'core-05') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
       const payload = outcome.outcome === 'recorded' ? { outcome: 'recorded', verdictRowDigest: outcome.verdictRowDigest } : outcome.outcome === 'refused' ? { outcome: 'refused', code: outcome.code } : { outcome: 'abandoned' };
-      await store.append(row('decision_outcome', decided.evidence.operatorId, commitment, payload, CEREMONY_RECORDER), (history) => {
+      await guardedAppend(row('decision_outcome', decided.evidence.operatorId, commitment, payload, CEREMONY_RECORDER), (history) => {
         const current = project(history, organizationId).decisions.get(commitment);
         if (current === undefined || current.domain !== 'core-05') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
         if (current.outcome !== undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That decision already has a recorded outcome.');
@@ -1252,7 +1270,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       if (decided.settlement !== undefined) return 'unchanged';
       const read = settlementOf(settlement, decided.evidence) as BootstrapAuthoritySettlement;
       try {
-        await store.append(row('decision_outcome', decided.evidence.operatorId, commitment, { ...read }, CEREMONY_RECORDER), (history) => {
+        await guardedAppend(row('decision_outcome', decided.evidence.operatorId, commitment, { ...read }, CEREMONY_RECORDER), (history) => {
           const current = project(history, organizationId);
           const now = checkSettlement(current, commitment, read);
           // Settled meanwhile (identically, or checkSettlement would have refused): nothing to append.
