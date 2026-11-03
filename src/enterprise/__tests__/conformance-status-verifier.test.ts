@@ -111,96 +111,129 @@ describe('RN-CONFORM-03 verifier: exact subject, profile and scope (INV-02)', ()
   });
 });
 
-describe('RN-CONFORM-03 verifier: durable continuity (WP-06, INV-05)', () => {
-  it('advances on the next link; re-delivery is idempotent; a lower sequence is a latched rollback, also after restart', () => {
+const suspend = (s: StatusCircuit, credentialId: string) => {
+  s.c.platform.bypass = 'unauthorized-operation';
+  const g01 = issue(s.c, 'G01', [s.c.validators.A, s.c.validators.B]);
+  submit(s.c, observe(s.c, s.c.validators.A, g01));
+  submit(s.c, observe(s.c, s.c.validators.B, g01));
+  s.c.services().lifecycle.evaluate(ORG_A, credentialId);
+  assert.equal(s.c.store.getHead(ORG_A, credentialId)?.state, 'SUSPENDED');
+};
+
+describe('RN-CONFORM-03 verifier: durable continuity judged on committed state (WP-06, INV-05)', () => {
+  it('review P1-A: online and stapled traffic share one chain without false rollbacks — older or non-adjacent sequences of the same state are accepted', () => {
     const { s, credentialId } = setup();
-    const t1 = assertionText(s.registry.stapled(credentialId));
+    const stapled = assertionText(s.registry.stapled(credentialId));
     const n2 = freshNonce();
-    const t2 = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, n2)));
-    const t3 = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)));
+    const online = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, n2)));
+    assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)));
+    const later = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)));
     const store = s.verifierStore();
-    assert.deepEqual([s.verify(t1, credentialId, { kind: 'stapled' }, { store }).result, s.verify(t1, credentialId, { kind: 'stapled' }, { store }).continuity], ['CONFORMANT', 'SAME']);
-    const second = s.verify(t2, credentialId, { kind: 'online', nonce: n2 }, { store });
-    assert.deepEqual([second.result, second.continuity, second.sequence], ['CONFORMANT', 'NEXT', 2]);
-    assert.equal(s.verify(t2, credentialId, { kind: 'stapled' }, { store }).continuity, 'SAME');
-    assert.deepEqual(result(s.verify(t1, credentialId, { kind: 'stapled' }, { store })), ['ROLLBACK_DETECTED', 'sequence 1 < 2']);
-    // Latched: even the genuine next link is refused until an authorized recovery (there is no API that clears a latch).
-    assert.equal(s.verify(t3, credentialId, { kind: 'stapled' }, { store }).result, 'ROLLBACK_DETECTED');
-    store.close();
-    const reopened = openStatusVerifierStore(store.path);
-    assert.equal(s.verify(t3, credentialId, { kind: 'stapled' }, { store: reopened }).result, 'ROLLBACK_DETECTED', 'the latch persists across a restart');
-    assert.equal(reopened.latch(credentialId)?.kind, 'ROLLBACK_DETECTED');
-    reopened.close();
+    assert.deepEqual([s.verify(stapled, credentialId, { kind: 'stapled' }, { store }).continuity], ['FIRST_OBSERVATION']);
+    assert.equal(s.verify(stapled, credentialId, { kind: 'stapled' }, { store }).continuity, 'SAME');
+    const next = s.verify(online, credentialId, { kind: 'online', nonce: n2 }, { store });
+    assert.deepEqual([next.result, next.continuity, next.sequence], ['CONFORMANT', 'NEXT', 2]);
+    assert.deepEqual([s.verify(later, credentialId, { kind: 'stapled' }, { store }).result, s.verify(later, credentialId, { kind: 'stapled' }, { store }).continuity], ['CONFORMANT', 'SAME'], 'a same-state gap is benign');
+    // The platform's still-current stapled assertion, presented after newer online traffic: accepted, not a rollback, nothing latched.
+    const older = s.verify(stapled, credentialId, { kind: 'stapled' }, { store });
+    assert.deepEqual([older.result, older.continuity], ['CONFORMANT', 'OLDER_SAME_STATE']);
+    assert.equal(store.latch(credentialId), undefined);
     s.cleanup();
   });
 
-  it('an older ACTIVE after a newer SUSPENDED observation is rejected', () => {
+  it('an older ACTIVE after a newer SUSPENDED is refused as a rollback; review P2-B: such a replay never latches, and it survives a restart', () => {
     const { s, credentialId } = setup();
     const active = assertionText(s.registry.stapled(credentialId));
     const store = s.verifierStore();
     assert.equal(s.verify(active, credentialId, { kind: 'stapled' }, { store }).result, 'CONFORMANT');
-    s.c.platform.bypass = 'unauthorized-operation';
-    const g01 = issue(s.c, 'G01', [s.c.validators.A, s.c.validators.B]);
-    submit(s.c, observe(s.c, s.c.validators.A, g01));
-    submit(s.c, observe(s.c, s.c.validators.B, g01));
-    s.c.services().lifecycle.evaluate(ORG_A, credentialId);
+    suspend(s, credentialId);
     const nonce = freshNonce();
     const suspended = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, nonce)));
     assert.deepEqual([s.verify(suspended, credentialId, { kind: 'online', nonce }, { store }).result, payloadOf(suspended).state], ['NOT_CONFORMANT', 'SUSPENDED']);
-    assert.equal(s.verify(active, credentialId, { kind: 'stapled' }, { store }).result, 'ROLLBACK_DETECTED', 'the stapled ACTIVE is still inside its validity window, and still refused');
+    assert.deepEqual(result(s.verify(active, credentialId, { kind: 'stapled' }, { store })), ['ROLLBACK_DETECTED', 'stateVersion 2 < 3'], 'still inside its validity window, and still refused');
+    assert.equal(store.latch(credentialId), undefined, 'a genuine but stale artifact is not evidence of tampering');
+    assert.equal(s.verify(suspended, credentialId, { kind: 'stapled' }, { store }).result, 'NOT_CONFORMANT', 'the newer status still verifies (no denial of service)');
+    store.close();
+    const reopened = openStatusVerifierStore(store.path);
+    assert.equal(s.verify(active, credentialId, { kind: 'stapled' }, { store: reopened }).result, 'ROLLBACK_DETECTED', 'the high-water mark persists');
+    reopened.close();
     s.cleanup();
   });
 
-  it('same sequence with another digest, or a link to the wrong predecessor, is a latched conflict; a gap is unproven offline and accepted online', () => {
+  it('equivocation (same sequence, two digests), a broken link and a second history at one state version are latched conflicts, persisted across restart', () => {
     const { s, credentialId } = setup();
     const t1 = assertionText(s.registry.stapled(credentialId));
     const t2 = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)));
     const t3 = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)));
-    // Equivocation: a second, differently signed sequence 2.
     const fork = resign(s, t2, (o) => (o['issuedAt'] = toTimestamp(toMs(String(o['issuedAt'])) + 1)));
     const a = s.verifierStore();
     s.verify(t2, credentialId, { kind: 'stapled' }, { store: a });
     assert.deepEqual(result(s.verify(fork, credentialId, { kind: 'stapled' }, { store: a })), ['CONFLICT_DETECTED', 'sequence 2 with two digests']);
     assert.equal(s.verify(t3, credentialId, { kind: 'stapled' }, { store: a }).result, 'CONFLICT_DETECTED', 'latched');
-    // A next sequence that does not link to what this verifier saw.
+    a.close();
+    const reopened = openStatusVerifierStore(a.path);
+    assert.equal(s.verify(t2, credentialId, { kind: 'stapled' }, { store: reopened }).result, 'CONFLICT_DETECTED', 'the latch persists');
+    assert.equal(reopened.latch(credentialId)?.kind, 'CONFLICT_DETECTED');
+    reopened.close();
     const b = s.verifierStore();
     s.verify(t1, credentialId, { kind: 'stapled' }, { store: b });
     const unlinked = resign(s, t2, (o) => (o['previousAssertionDigest'] = `sha256:${'f'.repeat(64)}`));
     assert.equal(s.verify(unlinked, credentialId, { kind: 'stapled' }, { store: b }).result, 'CONFLICT_DETECTED');
-    // A gap: offline it is unproven (and recorded, so nothing older passes later); online the nonce proves currency.
     const c = s.verifierStore();
     s.verify(t1, credentialId, { kind: 'stapled' }, { store: c });
-    assert.deepEqual(result(s.verify(t3, credentialId, { kind: 'stapled' }, { store: c })), ['CONTINUITY_UNPROVEN', 'gap 1 → 3']);
-    assert.equal(s.verify(t2, credentialId, { kind: 'stapled' }, { store: c }).result, 'ROLLBACK_DETECTED');
-    const d = s.verifierStore();
-    s.verify(t1, credentialId, { kind: 'stapled' }, { store: d });
-    const n4 = freshNonce();
-    s.registry.issueOnline(s.onlineRequest(credentialId));
-    const t5 = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, n4)));
-    const online = s.verify(t5, credentialId, { kind: 'online', nonce: n4 }, { store: d });
-    assert.deepEqual([online.result, online.continuity], ['CONFORMANT', 'GAP_ACCEPTED_ONLINE']);
-    // A stateless verifier cannot detect rollback, and says so.
-    assert.equal(s.verify(t1, credentialId, { kind: 'stapled' }).continuity, 'NOT_TRACKED');
+    const otherHistory = resign(s, t3, (o) => (o['historyRef'] = { ...(o['historyRef'] as object), latestTransitionDigest: `sha256:${'e'.repeat(64)}` }));
+    assert.deepEqual(result(s.verify(otherHistory, credentialId, { kind: 'stapled' }, { store: c })), ['CONFLICT_DETECTED', 'stateVersion 2 names two transitions']);
     s.cleanup();
   });
 
-  it('concurrent verifiers sharing one store observe deliveries deterministically; the store refuses to move backwards or forget', () => {
+  it('a newer state reached through a gap is unproven offline — review P2-A: also when presented again — until an online check re-anchors the mark', () => {
     const { s, credentialId } = setup();
     const t1 = assertionText(s.registry.stapled(credentialId));
-    const t2 = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)));
+    const store = s.verifierStore();
+    s.verify(t1, credentialId, { kind: 'stapled' }, { store });
+    s.registry.issueOnline(s.onlineRequest(credentialId));
+    suspend(s, credentialId);
+    const stapledSuspended = assertionText(s.registry.stapled(credentialId));
+    assert.ok(payloadOf(stapledSuspended).sequence >= 3);
+    assert.equal(s.verify(stapledSuspended, credentialId, { kind: 'stapled' }, { store }).result, 'CONTINUITY_UNPROVEN');
+    assert.equal(s.verify(stapledSuspended, credentialId, { kind: 'stapled' }, { store }).result, 'CONTINUITY_UNPROVEN', 'presenting it twice proves nothing');
+    assert.equal(s.verify(t1, credentialId, { kind: 'stapled' }, { store }).result, 'CONFORMANT', 'the mark did not move: the last proven state is still the one seen');
+    const nonce = freshNonce();
+    const online = s.verify(assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, nonce))), credentialId, { kind: 'online', nonce }, { store });
+    assert.deepEqual([online.result, online.continuity], ['NOT_CONFORMANT', 'GAP_ACCEPTED_ONLINE']);
+    assert.deepEqual([s.verify(stapledSuspended, credentialId, { kind: 'stapled' }, { store }).result, s.verify(stapledSuspended, credentialId, { kind: 'stapled' }, { store }).continuity], ['NOT_CONFORMANT', 'OLDER_SAME_STATE']);
+    assert.equal(s.verify(t1, credentialId, { kind: 'stapled' }, { store }).result, 'ROLLBACK_DETECTED');
+    assert.equal(s.verify(t1, credentialId, { kind: 'stapled' }).continuity, 'NOT_TRACKED', 'a stateless verifier cannot detect rollback, and says so');
+    s.cleanup();
+  });
+
+  it('concurrent verifiers sharing one store are deterministic; review P2-C: no conflict clause or rewritten trigger can reset or forget the mark', () => {
+    const { s, credentialId } = setup();
+    const t2text = (() => {
+      s.registry.stapled(credentialId);
+      return assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)));
+    })();
     const first = s.verifierStore('shared');
     const second = openStatusVerifierStore(first.path);
-    assert.equal(s.verify(t2, credentialId, { kind: 'stapled' }, { store: first }).continuity, 'FIRST_OBSERVATION');
-    assert.equal(s.verify(t2, credentialId, { kind: 'stapled' }, { store: second }).continuity, 'SAME');
-    assert.equal(s.verify(t1, credentialId, { kind: 'stapled' }, { store: second }).result, 'ROLLBACK_DETECTED');
-    assert.equal(s.verify(t2, credentialId, { kind: 'stapled' }, { store: first }).result, 'ROLLBACK_DETECTED', 'the latch is shared');
+    assert.equal(s.verify(t2text, credentialId, { kind: 'stapled' }, { store: first }).continuity, 'FIRST_OBSERVATION');
+    assert.equal(s.verify(t2text, credentialId, { kind: 'stapled' }, { store: second }).continuity, 'SAME');
+    const fork = resign(s, t2text, (o) => (o['issuedAt'] = toTimestamp(toMs(String(o['issuedAt'])) + 1)));
+    assert.equal(s.verify(fork, credentialId, { kind: 'stapled' }, { store: second }).result, 'CONFLICT_DETECTED');
+    assert.equal(s.verify(t2text, credentialId, { kind: 'stapled' }, { store: first }).result, 'CONFLICT_DETECTED', 'the latch is shared');
     second.close();
     const db = new Database(first.path);
     assert.throws(() => db.prepare('UPDATE vs_high_water SET sequence = 1').run(), /vs:high-water mark moved backwards/);
     assert.throws(() => db.prepare('DELETE FROM vs_high_water').run(), /vs:immutable/);
     assert.throws(() => db.prepare('DELETE FROM vs_latches').run(), /vs:immutable/);
     assert.throws(() => db.prepare('UPDATE vs_clock SET max_trusted_ms = 0').run(), /vs:clock moved backwards/);
+    assert.throws(() => db.prepare("INSERT OR REPLACE INTO vs_high_water (credential_id, issuer, sequence, assertion_digest, state_version, transition_digest, state, observed_at_ms) VALUES (?, 'x', 0, 'x', 0, 'x', 'ACTIVE', 0)").run(credentialId), /vs:duplicate/);
+    assert.throws(() => db.prepare('INSERT OR REPLACE INTO vs_clock (id, max_trusted_ms) VALUES (1, 0)').run(), /vs:duplicate/);
+    assert.throws(() => db.prepare("INSERT OR REPLACE INTO vs_latches (latch_seq, credential_id, kind, detail, at_ms) SELECT latch_seq, 'crd_other', kind, detail, at_ms FROM vs_latches").run(), /vs:duplicate/);
+    assert.equal(first.latch(credentialId)?.kind, 'CONFLICT_DETECTED');
+    first.close();
+    db.exec("DROP TRIGGER vs_clock_forward; CREATE TRIGGER vs_clock_forward BEFORE UPDATE ON vs_clock BEGIN SELECT 1; END;");
     db.close();
+    assert.throws(() => openStatusVerifierStore(first.path), /not intact/, 'a same-name trigger with another body is refused at open');
     s.cleanup();
   });
 });

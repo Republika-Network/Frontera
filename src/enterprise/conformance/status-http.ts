@@ -6,7 +6,7 @@ import { MAX_TRANSITIONS_PAGE, type StatusIssueOutcome, type StatusRegistry } fr
  * RN-CONFORM-03 / WP-08, WP-09 — the read-only status HTTP binding as a pure
  * request handler. No sockets here: this module maps a parsed request to a
  * response. The only listener that can carry it is the loopback-only,
- * disabled-by-default local adapter in `src/enterprise/conformance-status-local/`.
+ * disabled-by-default local test adapter (see RN_CONFORM_03_IMPLEMENTATION.md §8).
  * It is **not** part of the frozen Enterprise Host API (`release/api-surface.v1.json`)
  * and is composed by no Host.
  *
@@ -121,7 +121,12 @@ export function createStatusHttpHandler(deps: { readonly registry: StatusRegistr
 
       const match = CREDENTIAL_PATH.exec(path);
       if (match === null) return error(404, 'NOT_FOUND');
-      const credentialId = decodeURIComponent(match[1]!);
+      let credentialId: string;
+      try {
+        credentialId = decodeURIComponent(match[1]!);
+      } catch {
+        return error(400, 'MALFORMED_REQUEST');
+      }
       if (!isIdentifier(credentialId)) return error(400, 'MALFORMED_REQUEST');
 
       if (match[2] === 'status') {

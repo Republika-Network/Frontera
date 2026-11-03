@@ -92,12 +92,20 @@ retries (≤ 3), then `RETRY_EXHAUSTED` (nothing signed). The `cc_status_asserti
 refuses any row that is not `max(sequence) + 1`, does not link to its predecessor's digest, does not name
 the **currently committed** head, exceeds 15 min, or runs backwards in time; the table is append-only.
 
-Verifier continuity (`vs_high_water`, its own file): next link → accepted; same digest → idempotent;
-lower sequence or lower state version → `ROLLBACK_DETECTED` (latched); same sequence with another
-digest, a wrong predecessor or another issuer → `CONFLICT_DETECTED` (latched); a gap → recorded and
-`CONTINUITY_UNPROVEN` offline, accepted online (the nonce proves currency). Latches are append-only and
-persist across restarts; **no API clears one** — recovery is an out-of-band procedure (a new, explicitly
-provisioned verifier store). Without a store the verifier reports `continuity: NOT_TRACKED`.
+Verifier continuity (`vs_high_water`, its own file) is judged on **committed state**, with the
+sequence used to detect equivocation (§13, review P1-A/P2-A/P2-B):
+
+| Presented, relative to the mark | Result | Latched |
+|---|---|---|
+| Lower `stateVersion` | `ROLLBACK_DETECTED` | no — a genuine stale artifact is not tampering; latching would let anyone deny service |
+| Same sequence, other digest; next sequence not linking; same `stateVersion` naming another transition; another issuer | `CONFLICT_DETECTED` | **yes** (append-only, persisted; no API clears it — recovery is an explicitly provisioned new verifier store) |
+| Next sequence, linked | accepted (`NEXT`) | — |
+| Older or non-adjacent sequence of the **same** state | accepted (`OLDER_SAME_STATE`, `GAP_SAME_STATE`) — online and stapled share one chain, so honest gaps are normal | — |
+| Newer state across a gap | online: accepted and recorded (`GAP_ACCEPTED_ONLINE`); offline: `CONTINUITY_UNPROVEN`, **not** recorded, until an online check re-anchors | — |
+
+The trusted clock is latched forward; > 5 s behind is `CLOCK_ROLLBACK`. Every verifier-store key is
+guarded against `INSERT OR REPLACE`, and the store refuses to open unless every table and trigger has
+exactly its schema's SQL. Without a store the verifier reports `continuity: NOT_TRACKED`.
 
 ## 7. Online and offline protocols
 
@@ -158,6 +166,25 @@ future RN-CONFORM-03X adapter (which needs CC-D-06).
 
 Results: see the PR (CI is the only execution environment).
 
+## 13. Independent review (AI reviewer, static only — not an accredited audit)
+
+A separate reviewer read the full diff without executing anything, against the 16 questions of the
+mission brief. It confirmed questions 1, 3, 4, 7, 9–12 and 16 held; its findings and dispositions:
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| CI-1–4 | — | Corrupted import path; an out-of-scope `store`; a key-material marker literal in a `conformance-*` test; the listener's directory named in a module comment | **Fixed** (the first two had already failed CI and were fixed in `b30efc21`) |
+| P1-A | P1 | Online and stapled share one chain, so the platform's still-current stapled assertion presented after any online check looked like a rollback, and a latch made it permanent | **Fixed**: continuity judged on committed state (§6); same-state older/gap sequences accepted. Test `review P1-A …` |
+| P1-B | P1 | The signer journaled before the registry's append could fail (clock stepped back; nonce raced by a second issuer), burning the sequence and wedging the credential | **Fixed**: nonce and clock re-checked under the lock before signing (`CLOCK_BEHIND`, `NONCE_REUSED`). Tests `review P1-B …` (two) |
+| P1-C | P1 | The signer journal kept no state high-water mark: a restored database could get its superseded ACTIVE head signed under a fresh sequence | **Fixed**: the journal records `(stateVersion, transitionDigest)`; the signer and a journal trigger refuse anything older or forked (`STATE_ROLLBACK`). Test `review P1-C …` |
+| P2-A | P2 | A gap refused once, then recorded, so presenting the same artifact twice passed | **Fixed**: an unproven gap is not recorded. Test in `… re-anchors the mark` |
+| P2-B | P2 | Stale-but-genuine replays latched permanently (denial of service) | **Fixed**: rollback refuses without latching; only equivocation/forks latch. Test `review P2-B …` |
+| P2-C | P2 | `INSERT OR REPLACE` bypassed the verifier store's triggers; open-time check counted names only | **Fixed**: duplicate guards on every key; open compares full schema SQL. Test `review P2-C …` |
+| P2-D | P2 | Stapled/transitions GETs disclose public subject fields for any id; 404 existence oracle | **Accepted for the synthetic MVP**, documented (§12); CC-D-13 decides |
+| P2-E | P2 | Status trigger did not cross-check JSON times/issuer; the stapled cache served JSON selected by columns | **Fixed in the cache** (artifact times, sequence, issuer and nonce must equal the row's); raw-writer junk-row DoS documented (§12) |
+| P3 | P3 | `decodeURIComponent` → 503; oversized-body handler could write twice; schema version not bumped; verifier mark lacked transition digest; transitions unsigned; anchor race; WAL-only INV-07 scan; storage growth | First four **fixed** (400; abort guard; `rn.conformance.store/2`; transition digest now in the mark); the rest documented |
+
+
 ## 12. Limitations and deferred work
 
 * Synthetic issuer, keys and requester secret; the signer runs in-process behind a port. A separate
@@ -165,8 +192,22 @@ Results: see the PR (CI is the only execution environment).
 * The signer reads the same database (a read-only view in production); compromise of the database
   host is a compromise of both views. Its journal is in a separate file.
 * A signer journal entry made just before a failed registry append "burns" that sequence: issuance for
-  that credential then fails closed (`SEQUENCE_DIVERGED`) until an operator-run recovery. No automatic
+  that credential then fails closed (`SEQUENCE_DIVERGED`) until an operator-run recovery. Everything the
+  append could refuse (nonce reuse, a clock behind the last assertion, the head) is checked under the
+  lock **before** the signer is asked, so only an I/O failure or crash can burn a sequence. No automatic
   recovery exists, by design (it would require trusting the registry's chain).
+* `GET …/status` and `…/transitions` answer for any credential id (the stapled assertion is meant for
+  public presentation; ids are 128-bit random). They disclose the subject's public identity, scope and
+  public transition fields to anyone holding the id, and a 404 reveals non-existence (review P2-D,
+  accepted for the synthetic MVP; CC-D-13 legal review must decide before production). The online POST
+  never reveals another organization's credential.
+* A raw database writer can append a structurally valid but unsigned row at the head of a credential's
+  status chain; it cannot forge a signature, but it wedges issuance for that credential (`SEQUENCE_DIVERGED`)
+  — denial of service, detected, not prevented.
+* The public transitions endpoint returns digests, not signed records, so a verifier can check linkage but
+  not the registry signature; full signed history needs an authenticated channel (deferred).
+* The signer's tolerance of ± 5 s around its clock can make an assertion's effective life up to 5 s longer
+  than its stated `validUntil − issuedAt` relative to true time.
 * After a registry restore the registry can still serve its old, unexpired stapled assertion; only
   verifiers with a high-water mark detect it, and stateless verifiers accept it within ≤ 15 min.
 * Offline verification is bounded-staleness, not revocation.

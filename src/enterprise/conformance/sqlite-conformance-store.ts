@@ -66,7 +66,8 @@ import { canonicalizeConformance } from './canonical.js';
  * and signature, so such tampering is detected — not prevented.
  */
 
-export const CONFORMANCE_STORE_SCHEMA_VERSION = 'rn.conformance.store/1';
+/** `/2`: RN-CONFORM-03 status assertions and anchor intents. A `/1` file is refused (synthetic stores are never migrated). */
+export const CONFORMANCE_STORE_SCHEMA_VERSION = 'rn.conformance.store/2';
 
 const TWO_HUMANS = (action: string, consumedFor: string, binding: string, subject: string) => `(
   (SELECT COUNT(DISTINCT d.principal_id) FROM cc_consumed_decisions d WHERE d.consumed_for = ${consumedFor} AND d.action = '${action}' AND d.action_binding_digest IS ${binding} AND d.subject_ref = ${subject}) >= 2

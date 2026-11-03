@@ -68,6 +68,7 @@ export async function startLocalStatusServer(options: {
     let size = 0;
     let aborted = false;
     req.on('data', (chunk: Buffer) => {
+      if (aborted) return;
       size += chunk.length;
       if (size > MAX_STATUS_REQUEST_BYTES) {
         aborted = true;

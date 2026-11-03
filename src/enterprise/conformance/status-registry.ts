@@ -65,7 +65,7 @@ export interface OnlineStatusRequest {
   readonly operation: string;
 }
 
-export type StatusUnavailableReason = 'MALFORMED_REQUEST' | 'SIGNER_UNAVAILABLE' | 'SIGNER_REFUSED' | 'REGISTRY_UNAVAILABLE' | 'HISTORY_INVALID' | 'RETRY_EXHAUSTED' | 'STORE_BUSY';
+export type StatusUnavailableReason = 'MALFORMED_REQUEST' | 'SIGNER_UNAVAILABLE' | 'SIGNER_REFUSED' | 'REGISTRY_UNAVAILABLE' | 'HISTORY_INVALID' | 'RETRY_EXHAUSTED' | 'STORE_BUSY' | 'CLOCK_BEHIND';
 
 export type StatusIssueOutcome =
   | { readonly kind: 'assertion'; readonly text: string; readonly assertion: StatusAssertion }
@@ -165,13 +165,17 @@ export function createStatusRegistry(deps: {
       const snapshot = project(credentialId, at);
       if (!snapshot.ok) return snapshot.reason === 'HISTORY_INVALID' ? unavailable('HISTORY_INVALID', snapshot.detail) : unavailable('REGISTRY_UNAVAILABLE', snapshot.detail);
       deps.hooks?.afterPrepare?.(attempt);
-      let outcome: StatusIssueOutcome | 'retry';
+      let outcome: StatusIssueOutcome | 'retry' | 'nonce-reused';
       try {
-        outcome = p.store.withStatusIssuance((insert): StatusIssueOutcome | 'retry' => {
+        outcome = p.store.withStatusIssuance((insert): StatusIssueOutcome | 'retry' | 'nonce-reused' => {
           const current = project(credentialId, at);
           if (!current.ok) return current.reason === 'HISTORY_INVALID' ? unavailable('HISTORY_INVALID', current.detail) : unavailable('REGISTRY_UNAVAILABLE', current.detail);
           if (current.digest !== snapshot.digest) return 'retry';
           const last = p.store.latestStatusAssertion(credentialId);
+          // Everything the append could still refuse is checked here, under the lock and before the signer is asked:
+          // a signature is never spent (and its sequence burned in the signer's journal) on an append that cannot happen.
+          if (nonce !== null && p.store.isStatusNonceUsed(nonce)) return 'nonce-reused';
+          if (last !== undefined && toMs(at) < last.issuedAtMs) return unavailable('CLOCK_BEHIND', 'the issuer clock is behind the last issued assertion');
           const credentialEnd = toMs(current.projection.credentialValidUntil);
           // A fresh assertion never outlives the credential it describes (an already expired credential gets the normal lifetime and states its expiry).
           const end = credentialEnd > toMs(at) ? Math.min(toMs(at) + lifetimeMs, credentialEnd) : toMs(at) + lifetimeMs;
@@ -214,7 +218,8 @@ export function createStatusRegistry(deps: {
         if (error instanceof ConformanceStoreError && error.code === 'CONFLICT' && nonce !== null && p.store.isStatusNonceUsed(nonce)) return refusal(credentialId, nonce, 'NONCE_REUSED');
         return unavailable('REGISTRY_UNAVAILABLE', error instanceof ConformanceStoreError ? error.code : 'error');
       }
-      if (outcome !== 'retry') return outcome;
+      if (outcome === 'nonce-reused' && nonce !== null) return refusal(credentialId, nonce, 'NONCE_REUSED');
+      if (outcome !== 'retry' && outcome !== 'nonce-reused') return outcome;
     }
     return unavailable('RETRY_EXHAUSTED');
   };
@@ -249,7 +254,11 @@ export function createStatusRegistry(deps: {
           // Reused only while it still states exactly the current projection (a new investigation or lapsed evidence forces a new one).
           const parsed = parseStatusArtifact(cached.assertionJson);
           const current = project(credentialId, now);
-          if (parsed.ok && parsed.kind === 'assertion' && current.ok && conformanceDigest(projectionOf(parsed.payload)) === current.digest) {
+          // The row's columns (used to select it) must agree with the artifact served (review P2-E).
+          const consistent =
+            parsed.ok && parsed.kind === 'assertion' && parsed.artifact.issuer === issuer && toMs(parsed.artifact.issuedAt) === cached.issuedAtMs && toMs(parsed.artifact.validUntil) === cached.validUntilMs &&
+            parsed.artifact.sequence === cached.sequence && parsed.artifact.requestNonce === null && toMs(parsed.artifact.validUntil) > toMs(now);
+          if (consistent && parsed.ok && parsed.kind === 'assertion' && current.ok && conformanceDigest(projectionOf(parsed.payload)) === current.digest) {
             return Object.freeze({ kind: 'assertion', text: cached.assertionJson, assertion: parsed.artifact });
           }
         }

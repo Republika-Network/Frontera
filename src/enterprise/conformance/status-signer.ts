@@ -42,8 +42,10 @@ import type { StatusProjection, StatusProjectionResult } from './status-projecti
  *    `stateVersion` or an ACTIVE claim for a suspended head is never signed;
  * 6. enforces the per-credential sequence against its **own journal**, held
  *    outside the registry database's restore domain: only `last + 1`, linked
- *    to the last digest it signed. A restored (rolled-back) registry therefore
- *    gets no signature for an already used sequence;
+ *    to the last digest it signed, and never a committed state older than (or
+ *    forked from) the highest one it already vouched for. A restored
+ *    (rolled-back) registry therefore gets no signature for an already used
+ *    sequence nor for its superseded head;
  * 7. signs the exact canonical bytes in the status domain with its currently
  *    usable key (rotation: newest valid, unrevoked key) and returns the
  *    signature with the pinned key id.
@@ -124,6 +126,7 @@ export type StatusSignerRefusal =
   | 'CLOCK'
   | 'NOT_CURRENT'
   | 'SEQUENCE_DIVERGED'
+  | 'STATE_ROLLBACK'
   | 'NO_USABLE_KEY'
   | 'UNAVAILABLE';
 
@@ -150,7 +153,9 @@ const PLACEHOLDER_SIGNATURE = Object.freeze({ algorithm: 'ed25519-v1', keyId: `s
 /** The signer's own append-only journal of what it signed, per credential (outside the registry's database). */
 interface SignerJournal {
   last(credentialId: string): { sequence: number; digest: string } | undefined;
-  append(credentialId: string, sequence: number, digest: string, atMs: number): void;
+  /** The highest committed state this signer ever vouched for, per credential (review P1-C). */
+  highestState(credentialId: string): { stateVersion: number; transitionDigest: string } | undefined;
+  append(credentialId: string, sequence: number, digest: string, stateVersion: number, transitionDigest: string, atMs: number): void;
   close(): void;
 }
 
@@ -159,11 +164,18 @@ CREATE TABLE sj_signed (
   credential_id TEXT NOT NULL,
   sequence INTEGER NOT NULL CHECK (sequence >= 1),
   assertion_digest TEXT NOT NULL UNIQUE,
+  state_version INTEGER NOT NULL,
+  transition_digest TEXT NOT NULL,
   signed_at_ms INTEGER NOT NULL,
   PRIMARY KEY (credential_id, sequence)
 );
 CREATE TRIGGER sj_signed_contiguous BEFORE INSERT ON sj_signed BEGIN
   SELECT RAISE(ABORT, 'sj:sequence') WHERE NEW.sequence <> COALESCE((SELECT MAX(s.sequence) FROM sj_signed s WHERE s.credential_id = NEW.credential_id), 0) + 1;
+  SELECT RAISE(ABORT, 'sj:state rollback') WHERE NEW.state_version < COALESCE((SELECT MAX(s.state_version) FROM sj_signed s WHERE s.credential_id = NEW.credential_id), 0)
+    OR EXISTS (SELECT 1 FROM sj_signed s WHERE s.credential_id = NEW.credential_id AND s.state_version = NEW.state_version AND s.transition_digest <> NEW.transition_digest);
+END;
+CREATE TRIGGER sj_signed_no_duplicate BEFORE INSERT ON sj_signed BEGIN
+  SELECT RAISE(ABORT, 'sj:duplicate') WHERE EXISTS (SELECT 1 FROM sj_signed s WHERE (s.credential_id = NEW.credential_id AND s.sequence = NEW.sequence) OR s.assertion_digest = NEW.assertion_digest);
 END;
 CREATE TRIGGER sj_signed_no_update BEFORE UPDATE ON sj_signed BEGIN SELECT RAISE(ABORT, 'sj:immutable'); END;
 CREATE TRIGGER sj_signed_no_delete BEFORE DELETE ON sj_signed BEGIN SELECT RAISE(ABORT, 'sj:immutable'); END;
@@ -182,14 +194,19 @@ function openSignerJournal(path: string): SignerJournal {
     throw new Error('The status signer journal is not intact.');
   }
   const last = db.prepare('SELECT sequence, assertion_digest FROM sj_signed WHERE credential_id = ? ORDER BY sequence DESC LIMIT 1');
-  const insert = db.prepare('INSERT INTO sj_signed (credential_id, sequence, assertion_digest, signed_at_ms) VALUES (?, ?, ?, ?)');
+  const highest = db.prepare('SELECT state_version, transition_digest FROM sj_signed WHERE credential_id = ? ORDER BY state_version DESC, sequence DESC LIMIT 1');
+  const insert = db.prepare('INSERT INTO sj_signed (credential_id, sequence, assertion_digest, state_version, transition_digest, signed_at_ms) VALUES (?, ?, ?, ?, ?, ?)');
   return Object.freeze({
     last(credentialId: string) {
       const row = last.get(credentialId) as { sequence: number; assertion_digest: string } | undefined;
       return row === undefined ? undefined : { sequence: Number(row.sequence), digest: String(row.assertion_digest) };
     },
-    append(credentialId: string, sequence: number, digest: string, atMs: number) {
-      insert.run(credentialId, sequence, digest, atMs);
+    highestState(credentialId: string) {
+      const row = highest.get(credentialId) as { state_version: number; transition_digest: string } | undefined;
+      return row === undefined ? undefined : { stateVersion: Number(row.state_version), transitionDigest: String(row.transition_digest) };
+    },
+    append(credentialId: string, sequence: number, digest: string, stateVersion: number, transitionDigest: string, atMs: number) {
+      insert.run(credentialId, sequence, digest, stateVersion, transitionDigest, atMs);
     },
     close: () => db.close(),
   });
@@ -272,10 +289,16 @@ export function createSyntheticStatusSigner(deps: {
         // 6 — sequence continuity against the signer's own journal.
         const last = journal.last(assertion.credentialId);
         if (assertion.sequence !== (last?.sequence ?? 0) + 1 || assertion.previousAssertionDigest !== (last?.digest ?? null)) return refuse('SEQUENCE_DIVERGED');
+        // 6b — never vouch for an older committed state than one already signed, nor for a second history at the same
+        // state version: a restored registry database gets no fresh signature for its superseded head, whatever sequence it uses.
+        const vouched = journal.highestState(assertion.credentialId);
+        if (vouched !== undefined && (assertion.stateVersion < vouched.stateVersion || (assertion.stateVersion === vouched.stateVersion && assertion.historyRef.latestTransitionDigest !== vouched.transitionDigest))) {
+          return refuse('STATE_ROLLBACK');
+        }
         // 7 — sign, then journal the signed artifact's digest before releasing the signature.
         const signature = signConformancePayload('status', assertion, key.privateKey);
         const signed = { ...assertion, signature };
-        journal.append(assertion.credentialId, assertion.sequence, statusArtifactDigest(signed), nowMs);
+        journal.append(assertion.credentialId, assertion.sequence, statusArtifactDigest(signed), assertion.stateVersion, assertion.historyRef.latestTransitionDigest, nowMs);
         return { ok: true, signature };
       } catch {
         return refuse('UNAVAILABLE');

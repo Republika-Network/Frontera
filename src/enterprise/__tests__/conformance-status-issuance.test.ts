@@ -7,9 +7,12 @@ import Database from 'better-sqlite3';
 
 import { CredentialLifecycleError, createCredentialLifecycle } from '../conformance/lifecycle.js';
 import { openConformanceStore } from '../conformance/sqlite-conformance-store.js';
+import { toMs, toTimestamp } from '../conformance/contracts.js';
 import { parseStatusArtifact, statusArtifactDigest } from '../conformance/status-contracts.js';
+import { projectCredentialStatus } from '../conformance/status-projection.js';
+import { statusRequestMac } from '../conformance/status-signer.js';
 import { ORG_A, activeCredential, cleanupAll, issue, observe, runBaseline, submit } from './conformance-support.js';
-import { assertionText, buildStatusCircuit, freshNonce, type StatusCircuit } from './conformance-status-support.js';
+import { ISSUER, assertionText, buildStatusCircuit, freshNonce, requesterSecret, type StatusCircuit } from './conformance-status-support.js';
 
 /**
  * RN-CONFORM-03 / WP-03, WP-04, WP-06, WP-09, WP-10 — issuance from committed
@@ -248,10 +251,78 @@ describe('RN-CONFORM-03 sequence, chain and restore protection (WP-06)', () => {
     assert.equal(s.c.store.latestStatusAssertion(credentialId)?.sequence, 1, 'the restored registry is behind');
     // A new sequence is never signed twice: the signer's own journal is ahead of the restored registry.
     assert.deepEqual(s.registry.issueOnline(s.onlineRequest(credentialId)), { kind: 'unavailable', reason: 'SIGNER_REFUSED', detail: 'SEQUENCE_DIVERGED' });
-    // The restored registry can still hand out its old, unexpired stapled assertion — and a verifier that saw sequence 3 rejects it.
+    // The restored registry can still hand out its old, unexpired stapled assertion. It states the same committed state the
+    // verifier already saw, so it is accepted as an older view of that state — not a rollback (review P1-A).
     const stale = s.registry.stapled(credentialId);
     assert.equal(stale.kind === 'assertion' && stale.assertion.sequence, 1);
-    assert.equal(s.verify(stale.kind === 'assertion' ? stale.text : '', credentialId, { kind: 'stapled' }, { store: verifier }).result, 'ROLLBACK_DETECTED');
+    const seen = s.verify(stale.kind === 'assertion' ? stale.text : '', credentialId, { kind: 'stapled' }, { store: verifier });
+    assert.deepEqual([seen.result, seen.continuity], ['CONFORMANT', 'OLDER_SAME_STATE']);
+    s.cleanup();
+  });
+});
+
+describe('RN-CONFORM-03 independent review regressions (signer state high-water mark, no burned sequences)', () => {
+  it('review P1-C: after a restore to before a suspension, the signer refuses to vouch for the superseded ACTIVE head under any sequence', () => {
+    const s = buildStatusCircuit();
+    const credentialId = activeCredential(s.c);
+    assertionText(s.registry.stapled(credentialId));
+    s.c.store.close();
+    const backup = join(s.c.dir, 'before-suspension.sqlite');
+    copyFileSync(s.c.path, backup);
+    s.c.reopen();
+    corroborateBypass(s);
+    s.c.services().lifecycle.evaluate(ORG_A, credentialId);
+    const suspended = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)));
+    assert.equal(stateOf(suspended).state, 'SUSPENDED');
+    s.c.store.close();
+    copyFileSync(backup, s.c.path);
+    s.c.reopen();
+    assert.equal(s.c.store.getHead(ORG_A, credentialId)?.state, 'ACTIVE', 'the restored database shows the superseded head');
+    // Even a requester that knows the signer's last digest and asks for exactly the next sequence gets nothing for the old state.
+    const projection = projectCredentialStatus(s.projection, credentialId, s.c.clock.now());
+    assert.ok(projection.ok);
+    const at = s.c.clock.now();
+    const payload = {
+      schema: 'rn.conformance.status/1', purpose: 'rn.conformance.status.assertion', issuer: ISSUER, ...projection.projection, anchors: [],
+      sequence: stateOf(suspended).sequence + 1, previousAssertionDigest: statusArtifactDigest(stateOf(suspended)), requestNonce: null,
+      issuedAt: at, validUntil: toTimestamp(toMs(at) + 60_000), designation: 'SYNTHETIC-NON-PRODUCTION',
+    };
+    const request = { operation: 'signStatusAssertion' as const, requesterId: 'status-registry', payload: payload as never };
+    assert.deepEqual(s.signer.sign({ ...request, mac: statusRequestMac(requesterSecret(), request) }), { ok: false, refusal: 'STATE_ROLLBACK' });
+    assert.equal(s.registry.issueOnline(s.onlineRequest(credentialId)).kind, 'unavailable');
+    s.cleanup();
+  });
+
+  it('review P1-B: an issuer clock stepped back is refused before signing, so no sequence is burned; issuance resumes when the clock catches up', () => {
+    const s = buildStatusCircuit();
+    const credentialId = activeCredential(s.c);
+    s.c.clock.advance(60);
+    assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)));
+    const now = s.c.clock.ms();
+    s.c.clock.set(toTimestamp(now - 10_000));
+    assert.deepEqual(s.registry.issueOnline(s.onlineRequest(credentialId)), { kind: 'unavailable', reason: 'CLOCK_BEHIND', detail: 'the issuer clock is behind the last issued assertion' });
+    s.c.clock.set(toTimestamp(now + 1_000));
+    assert.equal(stateOf(assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)))).sequence, 2, 'the refused attempt consumed no sequence');
+    s.cleanup();
+  });
+
+  it('review P1-B: a nonce used by a concurrent issuer meanwhile is detected under the lock, before signing; no sequence is burned', () => {
+    const s = buildStatusCircuit();
+    const credentialId = activeCredential(s.c);
+    const nonce = freshNonce();
+    let fired = false;
+    const racing = s.registryWith({
+      hooks: {
+        afterPrepare: () => {
+          if (fired) return;
+          fired = true;
+          assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, nonce)));
+        },
+      },
+    });
+    const out = racing.issueOnline(s.onlineRequest(credentialId, nonce));
+    assert.equal(out.kind === 'refusal' && out.refusal.result, 'NONCE_REUSED');
+    assert.equal(stateOf(assertionText(s.registry.issueOnline(s.onlineRequest(credentialId)))).sequence, 2, 'issuance continues');
     s.cleanup();
   });
 });

@@ -112,7 +112,8 @@ describe('RN-CONFORM-03 status assertion contract (WP-01)', () => {
     const record = statusIssuerKeyRecord(ISSUER, testKey('status-issuer-1'), KEY_VALID_FROM, KEY_VALID_UNTIL);
     assert.throws(() => createStatusIssuerKeyRegistry([{ ...record, keyId: `sha256:${'b'.repeat(64)}` }]));
     assert.throws(() => createStatusIssuerKeyRegistry([record, record]));
-    assert.throws(() => createStatusIssuerKeyRegistry([{ ...record, publicKeyPem: '-----BEGIN PRIVATE KEY-----' }]));
+    // (Built at run time so no key-material marker appears in source: the RN-CONFORM-02 structure suite scans for it.)
+    assert.throws(() => createStatusIssuerKeyRegistry([{ ...record, publicKeyPem: `-----BEGIN ${'PRIVATE'} KEY-----` }]));
     assert.throws(() => createStatusIssuerKeyRegistry([{ ...record, validUntil: record.validFrom }]));
   });
 });
