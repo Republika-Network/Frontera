@@ -76,6 +76,38 @@ const TWO_HUMANS = (action: string, consumedFor: string, binding: string, subjec
 const PREV = (column: string) => `(SELECT p.${column} FROM cc_transitions p WHERE p.credential_id = NEW.credential_id AND p.state_version = NEW.state_version - 1)`;
 const HEAD = (column: string) => `(SELECT h.${column} FROM cc_heads h WHERE h.credential_id = NEW.credential_id)`;
 
+const IDENTITY_KEYS: Readonly<Record<string, readonly (readonly string[])[]>> = Object.freeze({
+  cc_meta: [['id']],
+  cc_profiles: [['profile_id', 'profile_version']],
+  cc_platforms: [['platform_id']],
+  cc_integrations: [['integration_id', 'integration_version'], ['integration_digest']],
+  cc_operators: [['operator_id']],
+  cc_consumed_decisions: [['decision_id']],
+  cc_validators: [['validator_id'], ['key_id']],
+  cc_validator_events: [['validator_id', 'seq']],
+  cc_challenges: [['challenge_id'], ['idempotency_key'], ['nonce']],
+  cc_evidence_packages: [['evidence_digest']],
+  cc_observations: [['event_id'], ['challenge_id', 'validator_id']],
+  cc_rejections: [['rejection_seq']],
+  cc_credentials: [['credential_id'], ['integration_digest', 'profile_id', 'profile_version']],
+  cc_evaluations: [['evaluation_id'], ['evaluation_digest']],
+  cc_transitions: [['credential_id', 'state_version'], ['transition_id'], ['transition_digest']],
+  cc_heads: [['credential_id']],
+});
+
+/**
+ * `INSERT OR REPLACE` deletes the conflicting row without firing DELETE triggers (unless the
+ * connection enables `recursive_triggers`), `INSERT OR IGNORE` silently skips, and an upsert turns
+ * an insert into an update. A BEFORE INSERT trigger runs before any of those conflict resolutions, so
+ * every identity key of every table is checked here and a duplicate always aborts.
+ */
+const DUPLICATE_GUARDS = Object.entries(IDENTITY_KEYS)
+  .map(([table, uniques]) => {
+    const clauses = uniques.map((cols) => `(${cols.map((c) => `t.${c} = NEW.${c}`).join(' AND ')})`).join(' OR ');
+    return `CREATE TRIGGER ${table}_no_duplicate BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:duplicate ${table}') WHERE EXISTS (SELECT 1 FROM ${table} t WHERE ${clauses}); END;`;
+  })
+  .join('\n');
+
 const SCHEMA = `
 CREATE TABLE cc_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -267,6 +299,9 @@ CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN SELECT RAISE(A
   .join('\n')}
 CREATE TRIGGER cc_heads_no_delete BEFORE DELETE ON cc_heads BEGIN SELECT RAISE(ABORT, 'cc:immutable cc_heads'); END;
 
+-- Identity keys: no conflict clause on any connection can replace, skip or upsert an existing row.
+${DUPLICATE_GUARDS}
+
 -- Tenancy and identity of registrations.
 CREATE TRIGGER cc_integrations_bound BEFORE INSERT ON cc_integrations BEGIN
   SELECT RAISE(ABORT, 'cc:cross-tenant platform') WHERE NOT EXISTS (SELECT 1 FROM cc_platforms p WHERE p.platform_id = NEW.platform_id AND p.organization_id = NEW.organization_id);
@@ -305,9 +340,15 @@ CREATE TRIGGER cc_evaluations_guard BEFORE INSERT ON cc_evaluations BEGIN
   SELECT RAISE(ABORT, 'cc:protective transition not applicable') WHERE NEW.pt_transition_id IS NOT NULL AND (NEW.requires_suspension <> 1 OR ${HEAD('state')} <> 'ACTIVE');
   SELECT RAISE(ABORT, 'cc:eligibility with failure') WHERE NEW.eligible_for_active = 1 AND (NEW.critical_failure = 1 OR NEW.requires_suspension = 1);
 END;
-CREATE TRIGGER cc_evaluations_protective_transition AFTER INSERT ON cc_evaluations WHEN NEW.pt_transition_id IS NOT NULL BEGIN
+-- One AFTER trigger, so the order is fixed: insert the protective transition (if any), then check the postconditions.
+-- RAISE(ABORT) here is not affected by an outer OR IGNORE / OR REPLACE.
+CREATE TRIGGER cc_evaluations_protective_transition AFTER INSERT ON cc_evaluations BEGIN
   INSERT INTO cc_transitions (credential_id, state_version, transition_id, from_state, to_state, transition_code, reason_code, rule_id, evaluation_id, previous_transition_digest, transition_digest, action_binding_digest, effective_at_ms, record_json, signature_json)
-  VALUES (NEW.credential_id, NEW.credential_state_version + 1, NEW.pt_transition_id, 'ACTIVE', 'SUSPENDED', 'T4', NEW.pt_reason_code, NEW.pt_rule_id, NEW.evaluation_id, NEW.pt_previous_digest, NEW.pt_transition_digest, NULL, NEW.pt_effective_at_ms, NEW.pt_record_json, NEW.pt_signature_json);
+    SELECT NEW.credential_id, NEW.credential_state_version + 1, NEW.pt_transition_id, 'ACTIVE', 'SUSPENDED', 'T4', NEW.pt_reason_code, NEW.pt_rule_id, NEW.evaluation_id, NEW.pt_previous_digest, NEW.pt_transition_digest, NULL, NEW.pt_effective_at_ms, NEW.pt_record_json, NEW.pt_signature_json
+    WHERE NEW.pt_transition_id IS NOT NULL;
+  SELECT RAISE(ABORT, 'cc:protective transition not committed') WHERE NEW.pt_transition_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cc_transitions t WHERE t.credential_id = NEW.credential_id
+    AND t.transition_id = NEW.pt_transition_id AND t.evaluation_id = NEW.evaluation_id AND t.to_state = 'SUSPENDED' AND t.state_version = NEW.credential_state_version + 1);
+  SELECT RAISE(ABORT, 'cc:critical failure without suspension') WHERE (NEW.critical_failure = 1 OR NEW.requires_suspension = 1) AND ${HEAD('state')} = 'ACTIVE';
 END;
 
 -- Transitions: append-only, contiguous, hash-linked, and only along the lifecycle's edges.
@@ -342,7 +383,8 @@ CREATE TRIGGER cc_transitions_guard BEFORE INSERT ON cc_transitions BEGIN
   SELECT RAISE(ABORT, 'cc:activation against standing failure') WHERE NEW.to_state = 'ACTIVE' AND EXISTS (SELECT 1 FROM cc_evaluations f, cc_evaluations e WHERE e.evaluation_id = NEW.evaluation_id AND f.credential_id = NEW.credential_id AND f.critical_failure = 1 AND f.evaluation_id <> e.evaluation_id AND f.evaluated_at_ms >= e.evaluated_at_ms);
   SELECT RAISE(ABORT, 'cc:activation after credential term') WHERE NEW.to_state = 'ACTIVE' AND NEW.effective_at_ms >= (SELECT c.valid_until_ms FROM cc_credentials c WHERE c.credential_id = NEW.credential_id);
   SELECT RAISE(ABORT, 'cc:issuance requires two humans') WHERE NEW.transition_code = 'T2' AND NOT ${TWO_HUMANS('credential.issue', 'NEW.transition_id', 'NEW.action_binding_digest', 'NEW.credential_id')};
-  SELECT RAISE(ABORT, 'cc:reinstatement requires two humans') WHERE NEW.transition_code = 'T5' AND ${PREV('reason_code')} IN ('CRITICAL_VIOLATION_CONFIRMED', 'CONFLICTING_EVIDENCE') AND NOT ${TWO_HUMANS('credential.reinstate', 'NEW.transition_id', 'NEW.action_binding_digest', 'NEW.credential_id')};
+  SELECT RAISE(ABORT, 'cc:reinstatement requires two humans') WHERE NEW.transition_code = 'T5' AND (${PREV('reason_code')} IN ('CRITICAL_VIOLATION_CONFIRMED', 'CONFLICTING_EVIDENCE')
+      OR EXISTS (SELECT 1 FROM cc_evaluations f WHERE f.credential_id = NEW.credential_id AND f.critical_failure = 1 AND f.evaluated_at_ms >= ${PREV('effective_at_ms')})) AND NOT ${TWO_HUMANS('credential.reinstate', 'NEW.transition_id', 'NEW.action_binding_digest', 'NEW.credential_id')};
   SELECT RAISE(ABORT, 'cc:revocation requires two humans or the suspension timeout') WHERE NEW.to_state = 'REVOKED' AND NOT (
        (NEW.reason_code = 'SUSPENSION_TIMEOUT' AND NEW.from_state = 'SUSPENDED' AND NEW.action_binding_digest IS NULL
          AND NEW.effective_at_ms >= ${PREV('effective_at_ms')} + (SELECT c.suspension_revocation_ms FROM cc_credentials c WHERE c.credential_id = NEW.credential_id))
@@ -356,6 +398,7 @@ CREATE TRIGGER cc_transitions_advance_head AFTER INSERT ON cc_transitions BEGIN
     SELECT NEW.credential_id, NEW.to_state, NEW.state_version, NEW.transition_digest, NEW.reason_code, NEW.effective_at_ms WHERE NEW.state_version = 1;
   UPDATE cc_heads SET state = NEW.to_state, state_version = NEW.state_version, head_transition_digest = NEW.transition_digest, reason_code = NEW.reason_code, effective_at_ms = NEW.effective_at_ms
     WHERE credential_id = NEW.credential_id AND NEW.state_version > 1;
+  SELECT RAISE(ABORT, 'cc:head not advanced') WHERE NOT EXISTS (SELECT 1 FROM cc_heads h WHERE h.credential_id = NEW.credential_id AND h.state_version = NEW.state_version AND h.head_transition_digest = NEW.transition_digest AND h.state = NEW.to_state);
 END;
 
 -- The head is a projection of the latest committed transition and nothing else.
@@ -394,6 +437,7 @@ function mapError(error: unknown): ConformanceStoreError {
   const code = typeof error === 'object' && error !== null ? String((error as { code?: unknown }).code ?? '') : '';
   if (code.startsWith('SQLITE_BUSY') || code.startsWith('SQLITE_LOCKED')) return new ConformanceStoreError('BUSY', 'database is busy');
   if (message.startsWith('cc:stale head') || message.startsWith('cc:state version gap')) return new ConformanceStoreError('CAS_CONFLICT', message);
+  if (message.startsWith('cc:duplicate')) return new ConformanceStoreError('CONFLICT', message);
   if (message.startsWith('cc:')) return new ConformanceStoreError('INVARIANT_REFUSED', message);
   if (code === 'SQLITE_CONSTRAINT_PRIMARYKEY' || code === 'SQLITE_CONSTRAINT_UNIQUE') return new ConformanceStoreError('CONFLICT', message);
   return new ConformanceStoreError('INVARIANT_REFUSED', message);
@@ -492,8 +536,12 @@ export interface ConformanceStore {
   listEvaluations(organizationId: string, credentialId: string): readonly { record: EvaluationRecord; evaluationDigest: string; recordJson: string }[];
   /** Commits one evaluation (and, when it suspends, its protective transition) in one IMMEDIATE transaction. `hook` runs inside the transaction after the insert (test fault injection). */
   commitEvaluation(commit: EvaluationCommit, hook?: () => void): void;
-  /** Commits an activation/reinstatement/revocation/expiry: optional eligible evaluation, consumed decisions, then the transition, in one IMMEDIATE transaction. */
-  commitTransition(input: { readonly evaluation: EvaluationCommit | null; readonly decisions: readonly ConsumedDecision[]; readonly transition: SignedTransition }, hook?: () => void): void;
+  /**
+   * Commits an activation/reinstatement/revocation/expiry: optional eligible evaluation, consumed decisions, then the transition, in one IMMEDIATE transaction.
+   * `precheck` runs first inside that transaction, after the write lock is held, so a decision re-established there cannot be invalidated by another writer before commit.
+   */
+  commitTransition(input: { readonly evaluation: EvaluationCommit | null; readonly decisions: readonly ConsumedDecision[]; readonly transition: SignedTransition }, hook?: () => void, precheck?: () => void): void;
+  getEvidencePackage(organizationId: string, digest: string): { readonly challengeId: string; readonly validatorId: string } | undefined;
   close(): void;
 }
 
@@ -502,8 +550,11 @@ interface OpenOptions {
   readonly busyTimeoutMs?: number;
 }
 
+/** Name and SQL text of every table, index and trigger: a same-name trigger with a different body is a different schema. */
 function expectedTriggers(db: Database.Database): string[] {
-  return (db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name").all() as { name: string }[]).map((row) => row.name);
+  return (db.prepare("SELECT type, name, sql FROM sqlite_master WHERE type IN ('table', 'index', 'trigger') ORDER BY type, name").all() as { type: string; name: string; sql: string | null }[]).map(
+    (row) => `${row.type}:${row.name}:${row.sql ?? ''}`,
+  );
 }
 
 let canonicalTriggerSet: string[] | undefined;
@@ -545,7 +596,7 @@ export function openConformanceStore(path: string, options: OpenOptions = {}): C
       }
       if (db.pragma('quick_check', { simple: true }) !== 'ok') throw new ConformanceStoreError('CORRUPT', 'integrity check failed');
       // Exactly this schema's triggers: a missing one would let history move backwards, an extra one could rewrite it.
-      if (JSON.stringify(expectedTriggers(db)) !== JSON.stringify(schemaTriggers())) throw new ConformanceStoreError('CORRUPT', 'trigger set differs from the schema');
+      if (JSON.stringify(expectedTriggers(db)) !== JSON.stringify(schemaTriggers())) throw new ConformanceStoreError('CORRUPT', 'tables or triggers differ from the schema');
       const meta = db.prepare('SELECT schema_version, synthetic FROM cc_meta WHERE id = 1').get() as { schema_version: string; synthetic: number } | undefined;
       if (meta?.schema_version !== CONFORMANCE_STORE_SCHEMA_VERSION || meta.synthetic !== 1) throw new ConformanceStoreError('CORRUPT', 'unexpected schema identity');
     }
@@ -761,6 +812,12 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
         [digest, organizationId, packageJson, storedAt],
         (row) => row['organization_id'] === organizationId,
       ),
+    getEvidencePackage: (organizationId: string, digest: string) => {
+      const row = db.prepare('SELECT package_json FROM cc_evidence_packages WHERE evidence_digest = ? AND organization_id = ?').get(digest, organizationId) as { package_json: string } | undefined;
+      if (row === undefined) return undefined;
+      const pkg = JSON.parse(row.package_json) as { challengeId?: unknown; validatorId?: unknown };
+      return typeof pkg.challengeId === 'string' && typeof pkg.validatorId === 'string' ? { challengeId: pkg.challengeId, validatorId: pkg.validatorId } : undefined;
+    },
     hasEvidencePackage: (organizationId: string, digest: string) => db.prepare('SELECT 1 FROM cc_evidence_packages WHERE evidence_digest = ? AND organization_id = ?').get(digest, organizationId) !== undefined,
     insertObservation: (row: StoredObservationRow) =>
       run(() => {
@@ -854,9 +911,10 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
           hook?.();
         }).immediate(),
       ),
-    commitTransition: (input, hook?: () => void) =>
+    commitTransition: (input, hook?: () => void, precheck?: () => void) =>
       run(() =>
         db.transaction(() => {
+          precheck?.();
           if (input.evaluation !== null) writeEvaluation(input.evaluation);
           consume(input.decisions, input.transition.record.transitionId, input.transition.record.effectiveAt);
           writeTransition(input.transition);

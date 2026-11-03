@@ -210,6 +210,7 @@ export interface Circuit {
   readonly coordinatorKey: KeyObject;
   readonly registryKey: KeyObject;
   readonly registryPublicKeyPem: string;
+  readonly coordinatorPublicKeyPem: string;
   readonly humans: { readonly alice: SyntheticHuman; readonly bob: SyntheticHuman; readonly carol: SyntheticHuman; readonly netAlice: SyntheticHuman; readonly netBob: SyntheticHuman; readonly mallory: SyntheticHuman };
   readonly validators: { readonly A: SyntheticValidator; readonly B: SyntheticValidator; readonly C: SyntheticValidator; readonly A2: SyntheticValidator };
   readonly platform: SyntheticPlatform;
@@ -275,7 +276,7 @@ export function buildCircuit(options: { readonly enroll?: boolean; readonly seed
     registry: createConformanceRegistry({ store, profiles, clock, humans: humansDirectory }),
     coordinator: createChallengeCoordinator({ store, profiles, clock, random, coordinatorKey }),
     evidence: createEvidenceService({ store, profiles, clock, coordinatorPublicKeyPem: publicKeyPemOf(coordinatorKey) }),
-    lifecycle: createCredentialLifecycle({ store, profiles, clock, random, registryKey, humans: humansDirectory }),
+    lifecycle: createCredentialLifecycle({ store, profiles, clock, random, registryKey, humans: humansDirectory, coordinatorPublicKeyPem: publicKeyPemOf(coordinatorKey) }),
   });
 
   const { registry } = services();
@@ -309,6 +310,7 @@ export function buildCircuit(options: { readonly enroll?: boolean; readonly seed
     coordinatorKey,
     registryKey,
     registryPublicKeyPem: publicKeyPemOf(registryKey),
+    coordinatorPublicKeyPem: publicKeyPemOf(coordinatorKey),
     humans,
     validators,
     platform,
@@ -469,7 +471,7 @@ export function expectation(c: Circuit, credentialId: string, operation = 'docum
 }
 
 export function verdict(c: Circuit, credentialId: string, operation?: string) {
-  return verifyCurrentConformance({ store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem, humans: c.humansDirectory }, expectation(c, credentialId, operation), c.clock.now());
+  return verifyCurrentConformance({ store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem, coordinatorPublicKeyPem: c.coordinatorPublicKeyPem, humans: c.humansDirectory }, expectation(c, credentialId, operation), c.clock.now());
 }
 
 export { newIdentifier };

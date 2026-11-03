@@ -3,6 +3,7 @@ import { HUMAN_DECISION_FORMAT, SYNTHETIC_DESIGNATION, toMs, type CredentialStat
 import { evaluateConformance } from './engine.js';
 import { verifyTwoPersonAuthority, type SyntheticHumanDirectory } from './human-authority.js';
 import { HUMAN_REINSTATEMENT_REASONS, loadEngineInput } from './lifecycle.js';
+import type { EvaluationRecord } from './contracts.js';
 import type { ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceStore } from './sqlite-conformance-store.js';
 import { verifyConformanceSignature } from './signing.js';
@@ -56,9 +57,14 @@ export type HistoryVerification =
   | { readonly valid: true; readonly stateVersion: number; readonly state: CredentialState; readonly headTransitionDigest: string; readonly transitions: readonly TransitionRecord[] }
   | { readonly valid: false; readonly failure: HistoryFailure; readonly atStateVersion: number | null };
 
-function humanRequired(record: TransitionRecord, previous: TransitionRecord | undefined): 'credential.issue' | 'credential.reinstate' | 'credential.revoke' | null {
+function humanRequired(record: TransitionRecord, previous: TransitionRecord | undefined, evaluations: readonly EvaluationRecord[]): 'credential.issue' | 'credential.reinstate' | 'credential.revoke' | null {
   if (record.transitionCode === 'T2') return 'credential.issue';
-  if (record.transitionCode === 'T5' && previous !== undefined && (HUMAN_REINSTATEMENT_REASONS as readonly string[]).includes(previous.reasonCode)) return 'credential.reinstate';
+  if (record.transitionCode === 'T5' && previous !== undefined) {
+    const since = toMs(previous.effectiveAt);
+    const until = toMs(record.effectiveAt);
+    const failedWhileSuspended = evaluations.some((e) => e.criticalFailureConfirmed && toMs(e.evaluatedAt) >= since && toMs(e.evaluatedAt) <= until);
+    if ((HUMAN_REINSTATEMENT_REASONS as readonly string[]).includes(previous.reasonCode) || failedWhileSuspended) return 'credential.reinstate';
+  }
   if (record.to === 'REVOKED' && record.reasonCode !== 'SUSPENSION_TIMEOUT') return 'credential.revoke';
   return null;
 }
@@ -121,7 +127,7 @@ export function verifyCredentialHistory(
       } else if (record.to === 'ACTIVE' || record.to === 'SUSPENDED') {
         return fail('EVALUATION_MISSING', sv);
       }
-      const action = humanRequired(record, previous);
+      const action = humanRequired(record, previous, [...evaluations.values()].map((e) => e.record));
       if (action !== null) {
         const refs = record.humanDecisions;
         if (
@@ -179,6 +185,7 @@ export type ConformanceVerdictReason =
   | 'EVIDENCE_NOT_FRESH'
   | 'PROTECTIVE_ACTION_PENDING'
   | 'UNDER_INVESTIGATION'
+  | 'EVIDENCE_TAMPERED'
   | 'ROLLBACK_DETECTED'
   | 'VERIFIER_ERROR';
 
@@ -216,7 +223,15 @@ export function createHighWaterMark(): HighWaterMark {
 
 /** The authoritative in-process question: is this exact subject currently conformant for this operation? Fails closed; never throws. */
 export function verifyCurrentConformance(
-  deps: { readonly store: ConformanceStore; readonly profiles: ConformanceProfileRegistry; readonly registryPublicKeyPem: string; readonly humans?: SyntheticHumanDirectory; readonly highWaterMark?: HighWaterMark },
+  deps: {
+    readonly store: ConformanceStore;
+    readonly profiles: ConformanceProfileRegistry;
+    readonly registryPublicKeyPem: string;
+    /** Every stored observation is re-authenticated against the coordinator's signed challenges. */
+    readonly coordinatorPublicKeyPem: string;
+    readonly humans?: SyntheticHumanDirectory;
+    readonly highWaterMark?: HighWaterMark;
+  },
   expect: ConformanceExpectation,
   now: string,
 ): ConformanceVerdict {
@@ -255,8 +270,10 @@ export function verifyCurrentConformance(
     if (toMs(now) >= toMs(credential.validUntil)) return verdict('CREDENTIAL_EXPIRED', at);
     if (credential.declaredExclusions.includes(expect.operation)) return verdict('OPERATION_EXCLUDED', at);
     if (!credential.coveredOperations.includes(expect.operation)) return verdict('OPERATION_NOT_IN_SCOPE', at);
-    const loaded = loadEngineInput(deps.store, deps.profiles, expect.organizationId, expect.credentialId, now);
+    const loaded = loadEngineInput(deps.store, deps.profiles, expect.organizationId, expect.credentialId, now, deps.coordinatorPublicKeyPem);
     if (loaded === undefined) return verdict('VERIFIER_ERROR', at);
+    // A stored observation that does not re-authenticate means the evidence store was written outside the acceptance boundary.
+    if (loaded.unauthenticated.length > 0) return verdict('EVIDENCE_TAMPERED', { ...at, detail: loaded.unauthenticated.join(',') });
     const engine = evaluateConformance(loaded.input);
     const critical = engine.requirementResults.filter((r) => r.severity === 'critical');
     const freshUntil = critical.map((r) => r.freshUntil).filter((v): v is string => v !== null).sort()[0] ?? null;

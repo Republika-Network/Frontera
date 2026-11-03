@@ -224,7 +224,9 @@ export function createEvidenceService(deps: {
       }
 
       // 10 — evidence package in custody for this organization.
-      if (!store.hasEvidencePackage(observation.organizationId, observation.evidenceDigest)) return reject('EVIDENCE_MISSING');
+      // The package must be this validator's, for this challenge: another validator's package cannot be cited.
+      const pkg = store.getEvidencePackage(observation.organizationId, observation.evidenceDigest);
+      if (pkg === undefined || pkg.challengeId !== observation.challengeId || pkg.validatorId !== observation.validatorId) return reject('EVIDENCE_MISSING');
 
       const integration = store.getIntegrationByDigest(challenge.organizationId, challenge.integrationDigest);
       if (integration === undefined) return reject('SUBJECT_BINDING_MISMATCH');
@@ -258,6 +260,63 @@ export function createEvidenceService(deps: {
       return { accepted: true, observation: toAccepted(row) };
     },
   });
+}
+
+export type StoredObservationDefect =
+  | 'SUBMISSION_UNREADABLE'
+  | 'DIGEST_MISMATCH'
+  | 'UNKNOWN_VALIDATOR'
+  | 'SIGNATURE_INVALID'
+  | 'COLUMN_MISMATCH'
+  | 'CHALLENGE_INVALID'
+  | 'CLASSIFICATION_MISMATCH'
+  | 'EVIDENCE_PACKAGE_MISMATCH';
+
+/**
+ * Re-authenticates a **stored** observation row from its signed submission, so a row written or
+ * rewritten outside the acceptance boundary (a raw SQL writer) never reaches evaluation: the
+ * validator's signature under its enrolled key, the stored digest, every column against the signed
+ * payload, the operator, the coordinator's challenge signature, nonce and assignment, the engine's own
+ * classification, and the evidence package's attribution. Returns `null` when the row is authentic.
+ */
+export function authenticateStoredObservation(store: ConformanceStore, row: StoredObservationRow, coordinatorPublicKeyPem: string): StoredObservationDefect | null {
+  let submission: { observation: ObservationPayload; validatorSignature: unknown };
+  try {
+    const parsed = snapshotPlainJson(JSON.parse(row.submissionJson));
+    const outer = readClosed(parsed, ['observation', 'validatorSignature']);
+    if (!outer.ok) return 'SUBMISSION_UNREADABLE';
+    const observation = readObservation(outer.record['observation']);
+    if (typeof observation === 'string') return 'SUBMISSION_UNREADABLE';
+    submission = { observation, validatorSignature: outer.record['validatorSignature'] };
+    if (canonicalizeConformance(submission) !== row.submissionJson || conformanceDigest(submission) !== row.observationDigest) return 'DIGEST_MISMATCH';
+  } catch {
+    return 'SUBMISSION_UNREADABLE';
+  }
+  const o = submission.observation;
+  const validator = store.getValidator(o.validatorId);
+  if (validator === undefined) return 'UNKNOWN_VALIDATOR';
+  if (o.validatorKeyId !== validator.record.keyId || !verifyConformanceSignature('observation', o, submission.validatorSignature, validator.record.publicKeyPem).ok) return 'SIGNATURE_INVALID';
+  const columnsMatch =
+    row.eventId === o.eventId && row.challengeId === o.challengeId && row.validatorId === o.validatorId && row.operatorId === validator.record.operatorId &&
+    row.organizationId === o.organizationId && row.integrationDigest === o.integrationDigest && row.profileId === o.profileId && row.profileVersion === o.profileVersion &&
+    row.controlId === o.controlId && row.evidenceDigest === o.evidenceDigest && row.observedAt === o.observedAt;
+  if (!columnsMatch) return 'COLUMN_MISMATCH';
+  const signedChallenge = store.getChallenge(o.challengeId);
+  if (signedChallenge === undefined || !verifyChallenge(signedChallenge, coordinatorPublicKeyPem)) return 'CHALLENGE_INVALID';
+  const ch = signedChallenge.challenge;
+  if (
+    ch.nonce !== o.challengeNonce || !ch.assignedValidatorIds.includes(o.validatorId) || ch.organizationId !== o.organizationId || ch.integrationDigest !== o.integrationDigest ||
+    ch.controlId !== o.controlId || ch.profileId !== o.profileId || ch.profileVersion !== o.profileVersion || ch.expectedOutcome !== o.expectedOutcome
+  ) {
+    return 'CHALLENGE_INVALID';
+  }
+  const integration = store.getIntegrationByDigest(ch.organizationId, ch.integrationDigest);
+  if (integration === undefined) return 'CHALLENGE_INVALID';
+  const cls = classifyOutcome(ch.expectedOutcome, o.observedOutcome, o.observedDeploymentDigest, integration.record.deploymentDigest);
+  if (cls !== row.outcomeClass || (cls === o.outcomeClass) !== row.claimMatches) return 'CLASSIFICATION_MISMATCH';
+  const pkg = store.getEvidencePackage(o.organizationId, o.evidenceDigest);
+  if (pkg === undefined || pkg.challengeId !== o.challengeId || pkg.validatorId !== o.validatorId) return 'EVIDENCE_PACKAGE_MISMATCH';
+  return null;
 }
 
 export function toAccepted(row: StoredObservationRow): AcceptedObservation {

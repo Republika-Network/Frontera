@@ -134,6 +134,21 @@ restructured so the atomic record is **one row**:
    `AFTER INSERT ON cc_transitions` advances `cc_heads`.
 4. `cc_heads` accepts only writes equal to the latest transition; every other table is UPDATE/DELETE-
    refused.
+5. Every table has a `BEFORE INSERT` duplicate guard on each of its identity keys, because
+   `INSERT OR REPLACE` deletes the conflicting row without firing DELETE triggers, `INSERT OR IGNORE`
+   silently skips (including the nested transition insert), and an upsert becomes an update. The
+   single `AFTER INSERT` trigger on `cc_evaluations` re-checks its postconditions — the protective
+   transition exists and the head is not ACTIVE next to a failure — and the head advance re-checks
+   that the head equals the new transition. `RAISE(ABORT)` is not affected by a conflict clause.
+6. The open-time check compares the name **and SQL text** of every table, index and trigger with the
+   schema, so a same-name trigger with a weakened body is refused.
+
+Stored **observations** are re-authenticated before every evaluation and every verification
+(`authenticateStoredObservation`: signature under the enrolled key, stored digest, every column
+against the signed payload, operator, coordinator challenge signature, nonce, assignment, the engine's
+classification, evidence-package attribution). The lifecycle never evaluates a row that fails; the
+verifier reports `EVIDENCE_TAMPERED`. Activation and automatic reinstatement re-establish eligibility
+inside the write transaction (`commitTransition` precheck).
 
 Any `RAISE` aborts the whole statement, so the evaluation, transition and head change commit together
 or not at all. The store refuses to open a file whose trigger set is not exactly its schema's.
@@ -159,8 +174,10 @@ prevented.
   04, 10, 11 *not covered*. Both carry `normative: false`, `commercialActivation: false`.
 * **Lifecycle:** T1 registration; T2 issuance (eligible + two humans); T3 candidate expiry (30 d);
   T4 protective suspension (automatic, atomic); T5 reinstatement (after a violation: remediation
-  declaration + full revalidation + two **new** humans; after `EVIDENCE_STALE`/
-  `CORROBORATION_UNAVAILABLE`: automatic once revalidated); T6 revocation from SUSPENDED (two humans,
+  declaration + full revalidation + two new single-use decisions from two distinct humans — the same
+  people who approved issuance may approve again; after `EVIDENCE_STALE`/
+  `CORROBORATION_UNAVAILABLE`: automatic once revalidated — unless a critical failure was confirmed
+  at any time during the suspension, which forces the two-person path); T6 revocation from SUSPENDED (two humans,
   or automatically after 30 d suspended — the only automatic revocation); T7 revocation from ACTIVE
   (two humans); T8 expiry (90 d). REVOKED and EXPIRED are terminal. A prepared action binds its
   evaluation and is refused if tampered, older than 15 min, or if the head moved; eligibility is re-
@@ -172,8 +189,7 @@ prevented.
 
 ## 8. Tests
 
-All in `src/enterprise/__tests__/`, run as compiled `dist/…/*.test.js` with `node --test`. Counts and
-results are in the PR description and §11.
+All in `src/enterprise/__tests__/`, run as compiled `dist/…/*.test.js` with `node --test`. 79 tests in 8 suites, all passing (Windows Node v22.22.0, `node --test`, two suites per command).
 
 | Suite | Covers |
 |---|---|
@@ -183,6 +199,7 @@ results are in the PR description and §11.
 | `conformance-sqlite-integrity` | The seven §8 demonstrations against real SQLite through a raw connection with foreign keys off; immutability of every table; CAS/gap; tamper and re-chain detection; restart replay; tenant scoping |
 | `conformance-engine-lifecycle` | Classification; quorum per operator; window; investigations and timeouts; disputes and three-operator resolution; freshness and grace; full-profile non-activation; human gates; reinstatement rules; revocation, timeout, expiry, terminal states; version isolation |
 | `conformance-end-to-end` | Stages A–N in one run: `CANDIDATE → ACTIVE → SUSPENDED → ACTIVE` (T1, T2, T4, T5; stateVersion 1–4) |
+| `conformance-review-regressions` | One test per independent-review finding (§13): conflict clauses, REPLACE/upsert, injected and rewritten evidence rows, laundered reinstatement, same-name trigger replacement, borrowed evidence packages |
 | `conformance-structure` | No network/HTTP/XRPL/token code; imported by nothing outside its module and tests; no Assurance imports; no committed private keys; rn.sv digest and NO-GO unchanged |
 
 ## 9. Deviations from the RN-CONFORM-01 contracts
@@ -229,6 +246,7 @@ results are in the PR description and §11.
 
 ## 12. Threat-model deltas (THREAT_MODEL.md)
 
+
 | Threat | Change from RN-CONFORM-01 |
 |---|---|
 | T01/T02/T03 validator compromise, malice, collusion | Operator-level k = 2, single-report investigation, three-operator dispute rule **implemented and tested** (synthetic) |
@@ -237,3 +255,25 @@ results are in the PR description and §11.
 | T09 stale ACTIVE | In-process verifier fails closed on stale evidence, pending action or open investigation; offline assertions still RN-CONFORM-03 |
 | T10/T22 registry compromise / rollback | Hash-chained signed transitions, trigger-enforced append-only store, open-time trigger-set check, local high-water mark; whole-file replacement still only *detected* |
 | T19 cross-tenant | Organization in every key and read; trigger-checked platform/integration/credential tenancy |
+
+## 13. Independent review (AI reviewer; not an accredited audit)
+
+A separate reviewer agent examined the diff against the mission §13 checklist and demonstrated each
+confirmed finding with a proof-of-concept against the built code. All were fixed and each has a
+regression test; the original proofs of concept were re-run and are now refused.
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| P0-1 | P0 | `INSERT OR IGNORE` of a critical evaluation whose `pt_transition_id` collided made the nested transition insert silently ignored: a critical failure committed with the head ACTIVE | Duplicate guards on every identity key; one ordered AFTER trigger with postcondition `RAISE(ABORT)`s; head-advance postcondition |
+| P1-1 | P1 | `INSERT OR REPLACE` bypassed immutability (no DELETE trigger fires): head rewound to ACTIVE v2; observations rewritten | `BEFORE INSERT` duplicate guards on all tables including `cc_heads` |
+| P1-2 | P1 | Verifier and engine used `cc_observations` columns without re-authenticating them | `authenticateStoredObservation` before every evaluation and verification; `EVIDENCE_TAMPERED` verdict |
+| P1-3 | P1 | A violation confirmed while suspended for `CORROBORATION_UNAVAILABLE` could be auto-reinstated without humans | Two-person path whenever a critical failure was confirmed during the suspension — in the lifecycle, the T5 trigger and the history verifier |
+| P2-1 | P2 | Open-time check compared trigger names only | Compares name and SQL of all tables, indexes and triggers |
+| P2-2 | P2 | Activation eligibility re-checked outside the write transaction | `commitTransition` precheck runs under the IMMEDIATE lock |
+| P2-3 | P2 | Integrity tests did not exercise conflict clauses or same-name trigger replacement | `conformance-review-regressions` |
+| P3-1 | P3 | An observation could cite another validator's evidence package | Package `challengeId`/`validatorId` must equal the observation's |
+| P3-2 | P3 | Docs said "two new humans"; code requires two new decisions | Docs corrected; same principals may approve again (decisions are single-use) |
+
+Remaining risks: see §10. In particular the database cannot verify signatures, so a writer with raw
+access can still insert *structurally* valid rows; such tampering is detected by the verifier
+(transition, decision and observation signatures are all re-verified), not prevented.

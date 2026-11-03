@@ -26,7 +26,7 @@ describe('RN-CONFORM-02 synthetic continuous conformance circuit — end to end'
     const { registry, lifecycle } = c.services();
     const hwm = createHighWaterMark();
     const check = (credentialId: string, operation?: string) =>
-      verifyCurrentConformance({ store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem, humans: c.humansDirectory, highWaterMark: hwm }, expectation(c, credentialId, operation), c.clock.now());
+      verifyCurrentConformance({ store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem, coordinatorPublicKeyPem: c.coordinatorPublicKeyPem, humans: c.humansDirectory, highWaterMark: hwm }, expectation(c, credentialId, operation), c.clock.now());
 
     // Stage A — registration: deterministic integration digest.
     const stored = c.store.getIntegrationByDigest(ORG_A, c.integration.integrationDigest);
@@ -76,7 +76,7 @@ describe('RN-CONFORM-02 synthetic continuous conformance circuit — end to end'
     assert.deepEqual([g.conformant, g.reason, g.state, g.stateVersion, g.designation], [true, 'CONFORMANT', 'ACTIVE', 2, 'SYNTHETIC-NON-PRODUCTION']);
     assert.equal(check(credential.credentialId, 'document.delete').reason, 'OPERATION_NOT_IN_SCOPE');
     assert.equal(check(credential.credentialId, 'document.share').reason, 'OPERATION_EXCLUDED');
-    const base = { store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem };
+    const base = { store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem, coordinatorPublicKeyPem: c.coordinatorPublicKeyPem };
     assert.equal(verifyCurrentConformance(base, { ...expectation(c, credential.credentialId), integrationDigest: `sha256:${'0'.repeat(64)}` }, c.clock.now()).reason, 'SUBJECT_MISMATCH');
     assert.equal(verifyCurrentConformance(base, { ...expectation(c, credential.credentialId), profileVersion: '0.2.0' }, c.clock.now()).reason, 'PROFILE_MISMATCH');
     assert.equal(verifyCurrentConformance(base, { ...expectation(c, credential.credentialId), credentialId: 'crd_missing' }, c.clock.now()).reason, 'CREDENTIAL_NOT_FOUND');
@@ -150,7 +150,7 @@ describe('RN-CONFORM-02 synthetic continuous conformance circuit — end to end'
 
     // Persistence across restart, and verifier-side rollback detection.
     c.reopen();
-    const afterRestart = { store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem };
+    const afterRestart = { store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem, coordinatorPublicKeyPem: c.coordinatorPublicKeyPem };
     assert.deepEqual(verdict(c, credential.credentialId).reason, 'CONFORMANT');
     assert.equal(hwm.observe(credential.credentialId, 3, suspendedHead.headTransitionDigest), 'ROLLBACK');
 

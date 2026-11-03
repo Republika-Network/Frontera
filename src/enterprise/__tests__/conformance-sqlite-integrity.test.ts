@@ -130,7 +130,7 @@ describe('RN-CONFORM-02 SQLite atomicity gate (§8)', () => {
     assert.equal(passTemplate.proposal.kind, 'NONE');
     corroboratedViolation(c);
     const second = openConformanceStore(c.path, { busyTimeoutMs: 0 });
-    const lifecycleB = createCredentialLifecycle({ store: second, profiles: c.profiles, clock: c.clock, random: c.random, registryKey: c.registryKey, humans: c.humansDirectory });
+    const lifecycleB = createCredentialLifecycle({ store: second, profiles: c.profiles, clock: c.clock, random: c.random, registryKey: c.registryKey, humans: c.humansDirectory, coordinatorPublicKeyPem: c.coordinatorPublicKeyPem });
     let duringWrite: { busy: boolean; committedState: string | undefined; verdictReason: string } = { busy: false, committedState: undefined, verdictReason: '' };
 
     const { protectiveTransition } = c.services().lifecycle.evaluate(ORG_A, credentialId, {
@@ -144,7 +144,7 @@ describe('RN-CONFORM-02 SQLite atomicity gate (§8)', () => {
         duringWrite = {
           ...duringWrite,
           committedState: second.getHead(ORG_A, credentialId)?.state,
-          verdictReason: verifyCurrentConformance({ store: second, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem }, expectation(c, credentialId), c.clock.now()).reason,
+          verdictReason: verifyCurrentConformance({ store: second, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem, coordinatorPublicKeyPem: c.coordinatorPublicKeyPem }, expectation(c, credentialId), c.clock.now()).reason,
         };
       },
     });
@@ -309,7 +309,7 @@ describe('RN-CONFORM-02 history integrity (WP-08, WP-10, §9)', () => {
     assert.equal(c.store.getHead('org-synthetic-beta', credentialId), undefined);
     assert.deepEqual(c.store.listTransitions('org-synthetic-beta', credentialId), []);
     assert.deepEqual(c.store.listEvaluations('org-synthetic-beta', credentialId), []);
-    assert.equal(verifyCurrentConformance({ store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem }, { ...expectation(c, credentialId), organizationId: 'org-synthetic-beta' }, c.clock.now()).reason, 'CREDENTIAL_NOT_FOUND');
+    assert.equal(verifyCurrentConformance({ store: c.store, profiles: c.profiles, registryPublicKeyPem: c.registryPublicKeyPem, coordinatorPublicKeyPem: c.coordinatorPublicKeyPem }, { ...expectation(c, credentialId), organizationId: 'org-synthetic-beta' }, c.clock.now()).reason, 'CREDENTIAL_NOT_FOUND');
     c.cleanup();
   });
 });

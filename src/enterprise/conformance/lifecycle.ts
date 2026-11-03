@@ -20,7 +20,7 @@ import {
   type TransitionRecord,
 } from './contracts.js';
 import { evaluateConformance, type EngineInput, type EngineOutput } from './engine.js';
-import { toAccepted } from './evidence.js';
+import { authenticateStoredObservation, toAccepted } from './evidence.js';
 import { verifyTwoPersonAuthority, type HumanAuthorityDenial, type SyntheticHumanDirectory } from './human-authority.js';
 import type { ConformanceProfileDefinition, ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceClock } from './registry.js';
@@ -37,7 +37,7 @@ import { signConformancePayload } from './signing.js';
  * | T2 | CANDIDATE → ACTIVE | `prepare('issue')` + two humans + `commit` |
  * | T3 | CANDIDATE → EXPIRED | `applyTimeRules` (candidate term) |
  * | T4 | ACTIVE → SUSPENDED | `evaluate` — automatic, atomic with the evaluation, no human |
- * | T5 | SUSPENDED → ACTIVE | after `CRITICAL_VIOLATION_CONFIRMED`/`CONFLICTING_EVIDENCE`: `prepare('reinstate')` with a remediation declaration + full revalidation + two **new** humans; after `EVIDENCE_STALE`/`CORROBORATION_UNAVAILABLE`: `reinstateAutomatically` once revalidated |
+ * | T5 | SUSPENDED → ACTIVE | after `CRITICAL_VIOLATION_CONFIRMED`/`CONFLICTING_EVIDENCE`, or a critical failure confirmed while suspended: `prepare('reinstate')` with a remediation declaration + full revalidation + two new decisions from two distinct humans (they may be the people who approved issuance; the decisions themselves are single-use); after `EVIDENCE_STALE`/`CORROBORATION_UNAVAILABLE`: `reinstateAutomatically` once revalidated |
  * | T6 | SUSPENDED → REVOKED | `prepare('revoke')` + two humans, or `applyTimeRules` after the suspension timeout (the only automatic revocation) |
  * | T7 | ACTIVE → REVOKED | `prepare('revoke')` + two humans |
  * | T8 | ACTIVE/SUSPENDED → EXPIRED | `applyTimeRules` (credential term) |
@@ -91,7 +91,19 @@ export interface LoadedCredential {
 }
 
 /** Everything the engine needs, read from committed storage only. */
-export function loadEngineInput(store: ConformanceStore, profiles: ConformanceProfileRegistry, organizationId: string, credentialId: string, now: string): { loaded: LoadedCredential; input: EngineInput } | undefined {
+/**
+ * Everything the engine needs, read from committed storage only. Every observation row is
+ * re-authenticated from its signed submission (`authenticateStoredObservation`); rows that fail are
+ * never evaluated and are counted in `unauthenticated`, which the verifier treats as tampering.
+ */
+export function loadEngineInput(
+  store: ConformanceStore,
+  profiles: ConformanceProfileRegistry,
+  organizationId: string,
+  credentialId: string,
+  now: string,
+  coordinatorPublicKeyPem: string,
+): { loaded: LoadedCredential; input: EngineInput; unauthenticated: readonly string[] } | undefined {
   const credential = store.getCredential(organizationId, credentialId);
   const head = store.getHead(organizationId, credentialId);
   if (credential === undefined || head === undefined) return undefined;
@@ -99,7 +111,9 @@ export function loadEngineInput(store: ConformanceStore, profiles: ConformancePr
   const profile = profiles.resolve(credential.profileId, credential.profileVersion, credential.profileDigest);
   if (integration === undefined || !profile.ok) return undefined;
   const nowMs = toMs(now);
-  const rows = store.listObservations(organizationId, credential.integrationDigest);
+  const all = store.listObservations(organizationId, credential.integrationDigest);
+  const unauthenticated = all.filter((row) => authenticateStoredObservation(store, row, coordinatorPublicKeyPem) !== null).map((row) => row.eventId);
+  const rows = all.filter((row) => !unauthenticated.includes(row.eventId));
   const excluded = new Set<string>();
   for (const validatorId of new Set(rows.map((r) => r.validatorId))) {
     const v = store.getValidator(validatorId);
@@ -116,7 +130,19 @@ export function loadEngineInput(store: ConformanceStore, profiles: ConformancePr
       credentialState: head.state,
       revalidationSince: head.state === 'SUSPENDED' ? head.effectiveAt : null,
     },
+    unauthenticated,
   };
+}
+
+/**
+ * Whether lifting the current suspension needs the two-person path: the suspension's own reason is a
+ * violation or dispute, **or** a critical failure was confirmed while suspended (a
+ * suspension that began as stale or unavailable evidence does not launder a later confirmed violation).
+ */
+export function reinstatementNeedsHumans(store: ConformanceStore, organizationId: string, credentialId: string, head: CredentialHead): boolean {
+  if ((HUMAN_REINSTATEMENT_REASONS as readonly string[]).includes(head.reasonCode)) return true;
+  const since = toMs(head.effectiveAt);
+  return store.listEvaluations(organizationId, credentialId).some((e) => e.record.criticalFailureConfirmed && toMs(e.record.evaluatedAt) >= since);
 }
 
 export function signTransition(record: TransitionRecord, registryKey: KeyObject): SignedTransition {
@@ -183,11 +209,13 @@ export function createCredentialLifecycle(deps: {
   readonly random: RandomSource;
   readonly registryKey: KeyObject;
   readonly humans: SyntheticHumanDirectory;
+  /** Stored observations are re-authenticated against the coordinator's challenges before every evaluation. */
+  readonly coordinatorPublicKeyPem: string;
 }): CredentialLifecycle {
-  const { store, profiles, clock, random, registryKey, humans } = deps;
+  const { store, profiles, clock, random, registryKey, humans, coordinatorPublicKeyPem } = deps;
 
   const load = (organizationId: string, credentialId: string, now: string) => {
-    const result = loadEngineInput(store, profiles, organizationId, credentialId, now);
+    const result = loadEngineInput(store, profiles, organizationId, credentialId, now, coordinatorPublicKeyPem);
     if (result === undefined) throw new CredentialLifecycleError('UNKNOWN_CREDENTIAL');
     return result;
   };
@@ -261,6 +289,13 @@ export function createCredentialLifecycle(deps: {
       registryKey,
     );
 
+  /** Runs inside the write transaction: the head has not moved and, for an activation, the evidence still makes it eligible. */
+  const recheck = (organizationId: string, credentialId: string, expectedStateVersion: number, toActive: boolean) => {
+    const current = load(organizationId, credentialId, clock.now());
+    if (current.loaded.head.stateVersion !== expectedStateVersion) throw new CredentialLifecycleError('CAS_CONFLICT', 'the credential moved before commit');
+    if (toActive && evaluateConformance(current.input).proposal.kind !== 'ELIGIBLE_FOR_ACTIVE') throw new CredentialLifecycleError('NO_LONGER_ELIGIBLE');
+  };
+
   const headOf = (organizationId: string, credentialId: string): CredentialHead => {
     const head = store.getHead(organizationId, credentialId);
     if (head === undefined) throw new CredentialLifecycleError('UNKNOWN_CREDENTIAL');
@@ -332,7 +367,7 @@ export function createCredentialLifecycle(deps: {
     },
 
     assess(organizationId: string, credentialId: string) {
-      const result = loadEngineInput(store, profiles, organizationId, credentialId, clock.now());
+      const result = loadEngineInput(store, profiles, organizationId, credentialId, clock.now(), coordinatorPublicKeyPem);
       return result === undefined ? undefined : { loaded: result.loaded, engine: evaluateConformance(result.input) };
     },
 
@@ -383,7 +418,7 @@ export function createCredentialLifecycle(deps: {
         if (kind === 'issue' && head.state !== 'CANDIDATE') throw new CredentialLifecycleError('WRONG_STATE', head.state);
         if (kind === 'reinstate') {
           if (head.state !== 'SUSPENDED') throw new CredentialLifecycleError('WRONG_STATE', head.state);
-          if (!(HUMAN_REINSTATEMENT_REASONS as readonly string[]).includes(head.reasonCode)) throw new CredentialLifecycleError('HUMAN_PATH_NOT_APPLICABLE', head.reasonCode);
+          if (!reinstatementNeedsHumans(store, input.organizationId, input.credentialId, head)) throw new CredentialLifecycleError('HUMAN_PATH_NOT_APPLICABLE', head.reasonCode);
           const r = input.remediation;
           if (r === undefined || typeof r.statement !== 'string' || r.statement.length === 0 || r.statement.length > 512 || !isIdentifier(r.declaredBy) || !isTimestamp(r.declaredAt) || toMs(r.declaredAt) < toMs(head.effectiveAt) || toMs(r.declaredAt) > toMs(now)) {
             throw new CredentialLifecycleError('REMEDIATION_REQUIRED');
@@ -466,7 +501,7 @@ export function createCredentialLifecycle(deps: {
         remediationDigest: b.remediationDigest,
         effectiveAt: now,
       });
-      storeCall(() => store.commitTransition({ evaluation: prepared.evaluation, decisions: consumed, transition: signed }));
+      storeCall(() => store.commitTransition({ evaluation: prepared.evaluation, decisions: consumed, transition: signed }, undefined, () => recheck(b.organizationId, b.credentialId, b.stateVersion - 1, b.toState === 'ACTIVE')));
       return headOf(b.organizationId, b.credentialId);
     },
 
@@ -474,7 +509,9 @@ export function createCredentialLifecycle(deps: {
       const now = clock.now();
       const { loaded, input } = load(organizationId, credentialId, now);
       if (loaded.head.state !== 'SUSPENDED') throw new CredentialLifecycleError('WRONG_STATE', loaded.head.state);
-      if (!(AUTO_REINSTATABLE_REASONS as readonly string[]).includes(loaded.head.reasonCode)) throw new CredentialLifecycleError('AUTOMATIC_PATH_NOT_APPLICABLE', loaded.head.reasonCode);
+      if (!(AUTO_REINSTATABLE_REASONS as readonly string[]).includes(loaded.head.reasonCode) || reinstatementNeedsHumans(store, organizationId, credentialId, loaded.head)) {
+        throw new CredentialLifecycleError('AUTOMATIC_PATH_NOT_APPLICABLE', loaded.head.reasonCode);
+      }
       const engine = evaluateConformance(input);
       if (engine.proposal.kind !== 'ELIGIBLE_FOR_ACTIVE') throw new CredentialLifecycleError('NOT_ELIGIBLE');
       const built = buildEvaluation(loaded, input, engine);
@@ -492,7 +529,12 @@ export function createCredentialLifecycle(deps: {
         remediationDigest: null,
         effectiveAt: now,
       });
-      storeCall(() => store.commitTransition({ evaluation: { record: built.record, evaluationDigest: built.digest, protectiveTransition: null }, decisions: [], transition: signed }));
+      storeCall(() =>
+        store.commitTransition({ evaluation: { record: built.record, evaluationDigest: built.digest, protectiveTransition: null }, decisions: [], transition: signed }, undefined, () => {
+          recheck(organizationId, credentialId, loaded.head.stateVersion, true);
+          if (reinstatementNeedsHumans(store, organizationId, credentialId, loaded.head)) throw new CredentialLifecycleError('AUTOMATIC_PATH_NOT_APPLICABLE');
+        }),
+      );
       return headOf(organizationId, credentialId);
     },
 
