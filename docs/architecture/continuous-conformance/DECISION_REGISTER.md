@@ -23,6 +23,18 @@ Assessment decisions (`D-01…`) in `docs/commercial/founding-assessment/governa
 | <a id="cc-d-15"></a>CC-D-15 | Commercial terms | Pricing, onboarding / KYC, appeal SLA, liability, naming (must not say "certified") | Contract template before any non-synthetic credential | Founder + Legal | RN-CONFORM-06 |
 | <a id="cc-d-16"></a>CC-D-16 | EVM adapter timing | Now; after XRPL; never | After RN-CONFORM-03X | Architecture | None |
 
+## Decisions approved for RN-CONFORM-02 (synthetic scope only)
+
+The founder approved, for the RN-CONFORM-02 synthetic circuit only:
+
+* **CC-D-01:** `aoc-canonical-json/1` with the plain-JSON restriction.
+* **CC-D-03:** k = 2 distinct operators, 30 min window, ≥ 3 operators to resolve disputes.
+* **CC-D-04:** two distinct human approvals for issuance, reinstatement after a confirmed critical
+  violation, explicit revocation and validator enrollment.
+
+How each is implemented: [RN_CONFORM_02_IMPLEMENTATION.md](RN_CONFORM_02_IMPLEMENTATION.md). The table
+above is the RN-CONFORM-01 record and is left as written; every other decision remains open.
+
 ## Constraints confirmed unchanged by RN-CONFORM-01
 
 * `$SOBE`, tokens, staking, slashing, validator rewards: out of scope; absent from all dependencies.

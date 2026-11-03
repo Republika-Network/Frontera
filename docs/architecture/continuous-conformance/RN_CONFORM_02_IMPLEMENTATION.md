@@ -1,0 +1,239 @@
+# RN-CONFORM-02 — Synthetic Continuous Conformance Circuit: Implementation Record
+
+> **Status: IMPLEMENTED — synthetic, in-process, non-production.**
+> No HTTP route, no Enterprise Host composition, no public export, no network, no XRPL, no Fileverse,
+> no real keys, no real customers, no real credentials. Every record carries `synthetic: true`, and the
+> store refuses anything else. The "two operators" are two synthetic labels; nothing here shows that
+> independent validator operators exist. `rn.sv@0.1.0` and its golden digest are unchanged; the
+> Founding Assessment commercial decision remains **NO-GO**. `$SOBE`, tokens, staking, slashing and
+> rewards are absent. No external certification is claimed.
+
+## 1. Baseline
+
+| Item | Value |
+|---|---|
+| Repository | `Republika-Network/Frontera` |
+| Base | `origin/main` `f36d9dd5` (RN-CONFORM-01, PR #261, merged) |
+| Branch / worktree | `feat/rn-conform-02-synthetic-circuit` at `C:\Users\Usuario\Republika-worktrees\CONFORM-02\frontera` (fresh; no other worktree touched) |
+| Runtime | Windows Node v22.22.0 for the native SQLite module (`better-sqlite3` ^12.11.1); Linux Node v22.23.1 for pure-JS scripts |
+| Protocol | `@aoc/protocol` `0.2.0-rc.3` (vendored tarball, `protocol-consumer.lock.json`) |
+
+## 2. Modules (`src/enterprise/conformance/`)
+
+| File | Responsibility (WP) |
+|---|---|
+| `canonical.ts` | Restricted `aoc-canonical-json/1` adapter, digests, single-read snapshots (WP-02, CC-D-01) |
+| `signing.ts` | Conformance signing domains, key-id derivation, Ed25519 sign/verify over the CORE-02 envelope (WP-06, §9) |
+| `contracts.ts` | Closed record types, state/outcome vocabularies, challenge catalogue, structural validators (WP-01) |
+| `profile.ts` | The two pinned profile definitions and the content-addressed profile registry (WP-03) |
+| `human-authority.ts` | Synthetic human directory and the two-person authority check (CC-D-04) |
+| `registry.ts` | Platforms, integration versions, synthetic operators, validator enrollment, key revocation, quarantine (WP-03, WP-04) |
+| `coordinator.ts` | Signed challenge issuance, idempotent re-dispatch, CSPRNG nonces (WP-05) |
+| `evidence.ts` | The evidence acceptance boundary and the rejection taxonomy; redacted evidence custody (WP-06, WP-07) |
+| `engine.ts` | The pure, deterministic evaluator: classification, corroboration, disputes, investigations, freshness (WP-09, CC-D-03) |
+| `sqlite-conformance-store.ts` | The dedicated SQLite store and its integrity triggers (WP-08) |
+| `lifecycle.ts` | The credential state machine T1–T8 (WP-10) |
+| `verifier.ts` | History verification and the fail-closed in-process status check; a local high-water mark (WP-11) |
+
+Test harness and suites: `src/enterprise/__tests__/conformance-*.ts` (§8 below). Differential probe:
+`scripts/protocol/check-conformance-canonicalization.mjs`.
+
+## 3. Trust boundaries
+
+| Boundary | What crosses it | Control |
+|---|---|---|
+| Validator → evidence boundary | A bounded JSON **string** (≤ 16 KiB) | Parsed once into a frozen plain-JSON snapshot; closed schema; signature under the **enrolled** key only; challenge, nonce, subject, profile, time, replay and custody checks (`evidence.ts`) |
+| Coordinator → validator | A signed challenge | `frontera:conformance-challenge:v1` signature; re-verified on every acceptance |
+| Humans → lifecycle/registry | Two signed decisions | `frontera:conformance-human-decision:v1`; exact action, subject, organization and action-binding digest; distinct principals and keys; permission per role; consumed in the same transaction as the record they authorize |
+| Lifecycle → store | Evaluations, transitions, consumed decisions | SQLite triggers (§6) enforce the invariants on every connection |
+| Store → verifier | Committed rows only | Every digest, signature, chain link, edge and human approval recomputed; nothing trusted from columns or the head |
+
+## 4. Canonicalization (CC-D-01)
+
+**Decision implemented:** `aoc-canonical-json/1` with a plain-JSON restriction.
+
+Frontera's gates forbid importing any Protocol subpath from `src/`, `packages/` or `tests/`
+(`check-protocol-consumption.mjs`, `check-node16-imports.mjs`). The adapter therefore restates the
+profile for a narrowed domain, as the FV receiver already does, and
+`scripts/protocol/check-conformance-canonicalization.mjs` (the exempt protocol-tooling location)
+compares its bytes with the **installed** Protocol `canonicalizeJSON` and Frontera `canonicalSerialize`.
+No Protocol source, historical Assurance serialization or historical digest was changed.
+
+**Accepted domain:** `null`, booleans, well-formed UTF-16 strings, safe integers (not `-0`), dense
+plain arrays, plain objects (prototype `Object.prototype` or `null`) with own enumerable string-keyed
+data properties; depth ≤ 32, ≤ 4 096 nodes, strings ≤ 8 192 code units. Everything else throws with a
+closed reason; nothing is normalized. RFC 8785 compatibility is **not** claimed.
+
+**Differential result (14 accepted vectors, 22 refused):** all accepted vectors are byte-identical in
+all three implementations, including key-insertion order, nesting, empty containers, BMP and astral
+Unicode, UTF-16 code-unit key order, and control-character escapes. Recorded divergences on refused
+inputs:
+
+| Input | Protocol `canonicalizeJSON` | Frontera `canonicalSerialize` | Adapter |
+|---|---|---|---|
+| `{a: undefined, b: 1}` | throws | `{"b":1}` | `UNDEFINED_VALUE` |
+| `[1, undefined]` | throws | `[1,null]` | `UNDEFINED_VALUE` |
+| `{at: new Date(…)}` | `{"at":{}}` | `{"at":"2026-…Z"}` | `DATE_VALUE` |
+| `{m: new Map(…)}` | `{"m":{}}` | throws | `NON_PLAIN_OBJECT` |
+| class instance | own enumerable fields | throws | `NON_PLAIN_OBJECT` |
+| `Uint8Array` / `Buffer` | `{"0":1,"1":2}` | throws | `BINARY_VALUE` |
+| `-0` | `0` (collides with `0`) | `0` | `NEGATIVE_ZERO` |
+| sparse `[1,,3]` | `[1,,3]` (**not valid JSON**) | `[1,,3]` (**not valid JSON**) | `SPARSE_OR_DECORATED_ARRAY` |
+| lone surrogate | `"\ud800"` (escaped) | `"\ud800"` | `MALFORMED_UNICODE` |
+| getter property | value read | value read | `ACCESSOR_PROPERTY` |
+| symbol key | dropped | dropped | `SYMBOL_KEY` |
+| `0.1`, `7.9e-10`, `1e21` | `0.1`, `7.9e-10`, `1e+21` | same | refused (integers only) |
+| cycle | `RangeError` (stack overflow) | throws | `CYCLE` |
+
+The sparse-array result is a latent defect in **both** existing implementations (follow-up F-1).
+
+## 5. Identity, signatures, operators and humans
+
+* **Domains** (`CONFORMANCE_SIGNING_DOMAINS`): `frontera:conformance-{challenge,observation,transition,human-decision}:v1\n`.
+  `AUTHORITY_SIGNING_DOMAINS` was **not** extended: its exhaustive dispatcher belongs to Host
+  authority artifacts. A test pins that no conformance domain is a prefix of, or prefixed by, any
+  CORE-02 domain. (`status` and `anchor` domains belong to RN-CONFORM-03/03X.)
+* **Envelope and verification:** the CORE-02 `AuthoritySignature` (`ed25519-v1`,
+  `aoc.authority-artifact.v1`) and `createAuthoritySignatureRegistry` are reused unchanged.
+* **Key ids:** `sha256:<hex(SPKI DER)>`, the fingerprint already used by `executor-receipt` and
+  `reference-executor`. A key id is always recomputed from the trusted key; a submitted key or key id
+  never establishes trust (a `publicKeyPem` field in an observation is `UNKNOWN_FIELD`).
+* **Synthetic operators:** each carries `synthetic: true` and the fixed statement "Synthetic test
+  operator. Not a legal entity, not independent of Republika, and not evidence that an independent
+  validator operator exists." Corroboration counts **operators**, never validators or submissions.
+* **Human authority (CC-D-04):** enrollment, issuance, reinstatement after
+  `CRITICAL_VIOLATION_CONFIRMED`/`CONFLICTING_EVIDENCE`, and non-timeout revocation each need one
+  `attest` and one `approve` decision from two different principals with two different keys, for the
+  exact action, subject, organization and action-binding digest, unexpired (≤ 15 min lifetime),
+  unrevoked, permitted, and never consumed before. All checks run before anything is consumed;
+  consumption is a `PRIMARY KEY` row written in the same transaction as the authorized record, so a
+  replay fails even under a race. Protective suspension needs no human.
+* **Why not `createHumanDecisionBootstrapAuthorizer` directly:** its port is AUTH-03's bootstrap
+  decision format and WebAuthn passkey service. The adapter keeps its semantics over synthetic Ed25519
+  approval keys. **Limitation:** no passkey, no user-verification flag, no AUTH-03 identity chain.
+
+## 6. SQLite design (WP-08, §8)
+
+Dedicated file, tables prefixed `cc_`; no Assurance table is read or written. WAL, `synchronous=FULL`,
+`foreign_keys=ON` on the store's connection, every write in `BEGIN IMMEDIATE`.
+
+**The invariant** — a confirmed critical-failure evaluation cannot be committed while the credential
+head is ACTIVE — is enforced by triggers only, because SQLite has no deferred triggers and foreign keys
+are a per-connection setting (better-sqlite3 enables them; another client need not). The write path is
+restructured so the atomic record is **one row**:
+
+1. `cc_evaluations` carries the pre-signed protective transition in `pt_*` columns.
+2. `BEFORE INSERT ON cc_evaluations` refuses: an evaluation not computed on the current head
+   (`credential_state_version` ≠ head → `cc:stale head`, the CAS); a column/JSON mismatch; a critical
+   failure (or any required suspension) against an ACTIVE head without `pt_*`; a critical failure whose
+   protective reason is not `CRITICAL_VIOLATION_CONFIRMED`; a protective transition for a non-ACTIVE head.
+3. `AFTER INSERT ON cc_evaluations` inserts the transition; `BEFORE INSERT ON cc_transitions` checks
+   genesis, contiguity, chain, allowed edges, eligibility of activations (an eligible evaluation on the
+   immediately preceding head, none failing after it), two consumed human decisions for T2, T5-after-
+   violation, T6/T7, the suspension timeout for automatic revocation, and terms for expiry;
+   `AFTER INSERT ON cc_transitions` advances `cc_heads`.
+4. `cc_heads` accepts only writes equal to the latest transition; every other table is UPDATE/DELETE-
+   refused.
+
+Any `RAISE` aborts the whole statement, so the evaluation, transition and head change commit together
+or not at all. The store refuses to open a file whose trigger set is not exactly its schema's.
+Triggers stop unintended application-level mutation; they do **not** stop an administrator who drops
+them or replaces the file — that is detected by the history verifier and the open-time check, not
+prevented.
+
+## 7. Engine, lifecycle and verifier
+
+* **Engine (CC-D-03):** classification is computed from the challenge's expected outcome (the
+  validator's `outcomeClass` is recorded and compared, never used). k = 2 distinct operators within
+  30 min confirms or verifies; a single report → investigation (`UNDER_INVESTIGATION`), deadline 30 min,
+  then SR-4 suspension (`CORROBORATION_UNAVAILABLE`), never revocation; a contemporaneous or later
+  conformant observation from another operator → `CONFLICTING` (never a pass), resolved only by
+  conformance from ≥ 2 operators other than the reporter (≥ 3 operators in all) or confirmed by a
+  second violating operator; unresolved past the deadline → SR-4 `CONFLICTING_EVIDENCE`. A confirmed
+  violation stands until a full success window lies after it. Freshness per requirement with a 6 h
+  grace, then SR-2 `EVIDENCE_STALE`. While SUSPENDED, pre-suspension evidence does not count.
+* **Profiles:** `rn.conformance.integration@0.1.0` (the RN-CONFORM-01 draft, pinned
+  `sha256:c3fa6377…3e43`) **cannot** activate here — CR-03/CR-04 have no challenge, CR-11 needs human
+  review, CR-12 has no defined SDK (CC-D-10). The circuit runs `rn.conformance.synthetic-circuit@0.1.0`
+  (pinned `sha256:89ff278a…b432`), which covers CR-01, 02, 05, 06, 07, 08, 09, 12 and declares CR-03,
+  04, 10, 11 *not covered*. Both carry `normative: false`, `commercialActivation: false`.
+* **Lifecycle:** T1 registration; T2 issuance (eligible + two humans); T3 candidate expiry (30 d);
+  T4 protective suspension (automatic, atomic); T5 reinstatement (after a violation: remediation
+  declaration + full revalidation + two **new** humans; after `EVIDENCE_STALE`/
+  `CORROBORATION_UNAVAILABLE`: automatic once revalidated); T6 revocation from SUSPENDED (two humans,
+  or automatically after 30 d suspended — the only automatic revocation); T7 revocation from ACTIVE
+  (two humans); T8 expiry (90 d). REVOKED and EXPIRED are terminal. A prepared action binds its
+  evaluation and is refused if tampered, older than 15 min, or if the head moved; eligibility is re-
+  established at commit.
+* **Verifier:** existence in the caller's organization, full history verification, exact subject and
+  profile digest, committed state ACTIVE, term, operation covered and not excluded, critical evidence
+  fresh *now*, no pending protective action, no open investigation, and an optional local high-water
+  mark (rollback/conflict). Never throws; every doubt is a refusal.
+
+## 8. Tests
+
+All in `src/enterprise/__tests__/`, run as compiled `dist/…/*.test.js` with `node --test`. Counts and
+results are in the PR description and §11.
+
+| Suite | Covers |
+|---|---|
+| `conformance-canonicalization` | Golden bytes/digests, 24 refusal reasons, single-read snapshots, the differential probe, domain separation, key ids, signature negatives |
+| `conformance-identity-registry` | Profile pins and coverage, integration registry refusals, profile/SDK downgrade, synthetic operators, enrollment with every approval failure mode, key substitution/reuse, direct-DB enrollment, adapter edge cases |
+| `conformance-evidence` | Challenge signing, binding, idempotency, eligibility, CSPRNG nonces; acceptance; **every** rejection reason; conflict retention and quarantine; redaction |
+| `conformance-sqlite-integrity` | The seven §8 demonstrations against real SQLite through a raw connection with foreign keys off; immutability of every table; CAS/gap; tamper and re-chain detection; restart replay; tenant scoping |
+| `conformance-engine-lifecycle` | Classification; quorum per operator; window; investigations and timeouts; disputes and three-operator resolution; freshness and grace; full-profile non-activation; human gates; reinstatement rules; revocation, timeout, expiry, terminal states; version isolation |
+| `conformance-end-to-end` | Stages A–N in one run: `CANDIDATE → ACTIVE → SUSPENDED → ACTIVE` (T1, T2, T4, T5; stateVersion 1–4) |
+| `conformance-structure` | No network/HTTP/XRPL/token code; imported by nothing outside its module and tests; no Assurance imports; no committed private keys; rn.sv digest and NO-GO unchanged |
+
+## 9. Deviations from the RN-CONFORM-01 contracts
+
+| Contract | Deviation | Reason |
+|---|---|---|
+| Identifiers `<kind>_<ULID>` | `<kind>_<32 hex>` from 16 random bytes | No new dependency |
+| `IntegrationVersion.integrationDigest` inside the record | Digest computed over the record and stored beside it | No self-referential digest |
+| `testEndpoints` with URL/authorization | `{endpointId, environment:'synthetic', fixtureRef}` only | No endpoint authorization exists (CC-D-12) |
+| Observation `expectedOutcome` enum | Adds `deployment_digest_match`; observed outcome adds `digest_reported` | G08 is a digest comparison, not a denial |
+| Rejection `DUPLICATE` (identical resubmission = no-op) | Identical resubmission is `REPLAYED` (rejected, retained) | Mission: "replayed event rejected" |
+| Validator states `enrolled/active/quarantined/revoked` | Enrolled + append-only `KEY_REVOKED`/`QUARANTINED` events; release from quarantine not implemented | RN-CONFORM-05 |
+| `CredentialTransitionV1` | Adds `organizationId`, `transitionCode`, `integrationDigest`, `profileId`, `evaluationDigest`, `actionBindingDigest`, `remediationDigest`, `synthetic` | Exact binding and auditability |
+| `CONFLICTING_EVIDENCE` reinstatement | Requires remediation + two humans (not automatic) | Profile §6 lists only stale/unavailable/retired as automatic |
+| Freshness requirement CR-09 under a dispute | Judges freshness only; disputes are reported by their own requirement | A bug found by the tests: an open investigation was being turned into SR-2 |
+
+## 10. Known limitations and non-production constraints
+
+* Synthetic federation only: operator ids are labels; one process signs for all validators.
+* Human approvals are synthetic Ed25519 keys, not AUTH-03 passkeys; the store trusts that consumed
+  decision rows were verified (the history verifier re-verifies their signatures when given the
+  directory).
+* The transition signing key and coordinator key are in-process test keys (custody: CC-D-07).
+* No scheduler, heartbeat, assignment randomness or validator health (RN-CONFORM-05).
+* The in-process verifier is not a status assertion: no signed status, nonce protocol, stapling, key
+  distribution, endpoint or anchoring (RN-CONFORM-03/03X).
+* The engine scans all observations for one integration digest per evaluation; fine for synthetic
+  volumes, not tuned for production.
+* Triggers do not protect against an administrator replacing the database file (§6).
+* T07 of the threat model (fixture ≠ production) is untouched: everything here is a fixture.
+
+## 11. Deferred work and follow-ups
+
+* **RN-CONFORM-03:** signed `rn.conformance.status/1` assertions (`status` domain), online nonce mode,
+  stapled offline assertions, external key distribution, verifier-side high-water mark persistence,
+  simulated anchor record; status key custody (CC-D-07), privacy (CC-D-13).
+* **RN-CONFORM-03X:** XRPL Testnet anchor class in xrpl-sovereign-access after CC-D-06.
+* **RN-CONFORM-04:** synthetic Fileverse reference PEP and G03/G04 challenges; CC-D-10, CC-D-12.
+* **RN-CONFORM-05:** standalone validators, real operator independence (CC-D-02), scheduling,
+  heartbeats, quarantine release, key rotation.
+* **F-1:** both existing canonicalizers emit invalid JSON for sparse arrays (`[1,,3]`) — a Protocol
+  issue and a Frontera governance-store issue; report upstream; no digest changed here.
+* **F-2:** CC-D-14 registry defects (`deprecate()` frozen check, `aoc.saf` deep-freeze) remain open.
+
+## 12. Threat-model deltas (THREAT_MODEL.md)
+
+| Threat | Change from RN-CONFORM-01 |
+|---|---|
+| T01/T02/T03 validator compromise, malice, collusion | Operator-level k = 2, single-report investigation, three-operator dispute rule **implemented and tested** (synthetic) |
+| T04/T05 forged / replayed evidence | Signature under enrolled key, nonce echo, `eventId`/`(challenge, validator)` uniqueness **implemented and tested** |
+| T08/T21 unauthorized suspension / insider override | Two-person synthetic authority with durable consumption; DB refuses activation without an eligible evaluation or against a later failure **implemented** |
+| T09 stale ACTIVE | In-process verifier fails closed on stale evidence, pending action or open investigation; offline assertions still RN-CONFORM-03 |
+| T10/T22 registry compromise / rollback | Hash-chained signed transitions, trigger-enforced append-only store, open-time trigger-set check, local high-water mark; whole-file replacement still only *detected* |
+| T19 cross-tenant | Organization in every key and read; trigger-checked platform/integration/credential tenancy |

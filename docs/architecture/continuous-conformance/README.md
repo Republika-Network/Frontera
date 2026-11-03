@@ -7,6 +7,11 @@
 > `rn.sv@0.1.0` is unchanged and remains restricted. The Founding Assessment commercial decision
 > remains **NO-GO** ([ASSURE_COMMERCIAL_GO_NO_GO.md](../../commercial/founding-assessment/ASSURE_COMMERCIAL_GO_NO_GO.md)).
 > No external certification is claimed or implied.
+>
+> **Implementation delta (RN-CONFORM-02):** a *synthetic, in-process* circuit now implements D1–D5 and
+> a minimal D6 verifier in `src/enterprise/conformance/` — no route, no Host composition, no network,
+> no XRPL, no real credential. The statements above about the network, validators and credentials
+> remain true. See [RN_CONFORM_02_IMPLEMENTATION.md](RN_CONFORM_02_IMPLEMENTATION.md).
 
 **Mission:** RN-CONFORM-01 — cross-repository audit and integration blueprint.
 **Audit baseline:** Frontera `64b3ec7c` (origin/main, contains ASSURE-GOV-02 #257), Soberania_Protocol
@@ -86,6 +91,7 @@ assessment lifecycle. See [REUSE_MATRIX.md](REUSE_MATRIX.md).
 | 13 | [REUSE_MATRIX.md](REUSE_MATRIX.md) | Reuse / adapt / build decisions |
 | 14 | [MVP_IMPLEMENTATION_PLAN.md](MVP_IMPLEMENTATION_PLAN.md) | RN-CONFORM-02…06 missions |
 | 15 | [DECISION_REGISTER.md](DECISION_REGISTER.md) | Open founder / architecture decisions |
+| 16 | [RN_CONFORM_02_IMPLEMENTATION.md](RN_CONFORM_02_IMPLEMENTATION.md) | RN-CONFORM-02 implementation record (synthetic circuit) |
 
 ## Recommended next mission
 
