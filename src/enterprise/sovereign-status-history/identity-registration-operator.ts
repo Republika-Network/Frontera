@@ -10,6 +10,7 @@ import {
   FvOperatorRefusedError,
   appendFvOperator,
   fvOperatorAdministratorOptions,
+  fvOperatorPlanUnfinished,
   fvOperatorCandidateOptions,
   verifyFvOperatorCandidate,
   verifyFvOperatorEvidence,
@@ -101,6 +102,7 @@ export const FV_OPERATOR_ENROLLMENT_REFUSALS = Object.freeze([
   'STALE_HEAD',
   'WINDOW_CLOSED',
   'ENROLLMENT_CONFLICT',
+  'ENROLLMENT_PENDING',
   'EVIDENCE_INVALID',
 ] as const);
 export type FvOperatorEnrollmentRefusal = (typeof FV_OPERATOR_ENROLLMENT_REFUSALS)[number];
@@ -137,6 +139,8 @@ function fromVerification(reason: FvOperatorRefusal): FvOperatorEnrollmentOutcom
       return refused('CANDIDATE_PROOF_INVALID', reason);
     case 'CONFLICT':
       return refused('ENROLLMENT_CONFLICT');
+    case 'PLAN_INCOMPLETE':
+      return refused('ENROLLMENT_PENDING');
     default:
       return refused('EVIDENCE_INVALID', reason);
   }
@@ -320,6 +324,8 @@ export async function enrollFvOperator(
       return refused('STORE_UNAVAILABLE');
     }
     if (fvRolesOf(history).get(administratorOperatorId) !== 'fv-administrator') return refused('NOT_ADMINISTRATOR');
+    // Codex P2 (PR #267): another enrolment's plan is unfinished; it is resumed first, never stranded.
+    if (fvOperatorPlanUnfinished(history)) return refused('ENROLLMENT_PENDING');
     if (history.some((row) => row.kind === 'principal_created' && row.operatorId === operatorId)) return refused('CANDIDATE_EXISTS');
 
     // 1. The candidate proves possession.

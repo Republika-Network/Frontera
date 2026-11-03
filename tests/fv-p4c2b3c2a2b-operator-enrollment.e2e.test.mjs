@@ -354,6 +354,27 @@ describe('FV-P4C-2B3C-2A2B — crash consistency: SIGKILL at every durable step,
     });
   }
 
+  for (const killAt of ['credential_used', 'principal_created', 'enrolment_authorized']) {
+    it(`Codex P2: killed at ${killAt}, a new enrolment is refused until the unfinished plan is resumed; it is never stranded`, async () => {
+      const { witness, w } = await world();
+      const killed = await runOperatorChild(w, witness, { killAt, operatorId: 'fv-operator-a' });
+      assert.equal(killed.killed, true);
+      bump(w);
+      // The ceremony, before any human is asked.
+      assert.deepEqual(await enroll(w, witness, operatorRequest(w, { operatorId: 'fv-operator-b' }).request), { outcome: 'refused', reason: 'ENROLLMENT_PENDING' });
+      // AUTH-03 itself, for evidence made at the partial head.
+      await withStore(w, witness, async (store) => {
+        const evidence = await evidenceFor(w, witness, store, { operatorId: 'fv-operator-b' });
+        assert.deepEqual(await verifyFvOperatorEvidence(store.history(), store, evidence, contextOf(w, witness)), { verified: false, reason: 'PLAN_INCOMPLETE' });
+      });
+      bump(w);
+      // The unfinished plan resumes (its rows are still the history's suffix), then the next enrolment proceeds.
+      assert.equal((await resume(w, witness, killed.requestId)).outcome, 'enrolled');
+      assert.equal((await enroll(w, witness, operatorRequest(w, { operatorId: 'fv-operator-b' }).request)).outcome, 'enrolled');
+      assert.deepEqual([...(await withStore(w, witness, (store) => verifyFvOperatorRoles(store.history(), w.world.org, RP)))].sort(), ['fv-operator-a', 'fv-operator-b']);
+    });
+  }
+
   it('the window closed after a crash: with no row written, refused (authorize again); with the first row written, completed', async () => {
     const { witness, w } = await world();
     const late = { clock: () => Date.now() + 10 * 60_000 };

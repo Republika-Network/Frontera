@@ -101,6 +101,8 @@ export type FvOperatorRefusal =
   | 'CANDIDATE_MISMATCH'
   | 'WINDOW_CLOSED'
   | 'CHALLENGE_CONSUMED'
+  /** Codex P2 (PR #267): the history ends in another enrolment's unfinished plan; that one is resumed first. */
+  | 'PLAN_INCOMPLETE'
   | 'CONFLICT';
 
 export type FvOperatorVerification =
@@ -127,6 +129,28 @@ export function fvOperatorAuthorizationCommitment(authorization: FvOperatorAutho
 export function fvOperatorCandidateChallenge(requestId: string, nonce: string): string {
   if (!REQUEST_ID.test(requestId) || !BASE64URL.test(nonce)) throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'An FV operator challenge needs its request id and nonce.');
   return createHash('sha256').update(`${CANDIDATE_CHALLENGE_DOMAIN}\n${requestId}\n${nonce}`, 'utf8').digest('base64url');
+}
+
+/**
+ * Codex P2 (PR #267) — whether a verified history ends in an unfinished FV operator plan: its last operator-ceremony
+ * `credential_used` row is not followed by that plan's three other rows. Plans are appended contiguously, one
+ * ceremony at a time, so an unfinished one is always the history's suffix. A new enrolment over it would strand it
+ * (its rows would no longer be the suffix a resume needs, and its principal would block a new authorization), so a new
+ * enrolment is refused until it is resumed.
+ */
+export function fvOperatorPlanUnfinished(history: readonly StoredHumanIdentityRow[]): boolean {
+  let start = -1;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const row = history[index]!;
+    if (row.kind === 'credential_used' && row.recordedBy === FV_OPERATOR_RECORDER) {
+      start = index;
+      break;
+    }
+  }
+  if (start < 0) return false;
+  const rest = history.slice(start + 1, start + 4);
+  const operatorId = rest[0]?.operatorId;
+  return !(rest.length === 3 && rest.every((row, i) => row.kind === ROW_KINDS[i + 1] && row.recordedBy === FV_OPERATOR_RECORDER && row.operatorId === operatorId));
 }
 
 /** The chain digest at `sequence` of a verified history (the head the store had after its first `sequence` rows). */
@@ -238,6 +262,7 @@ export async function verifyFvOperatorEvidence(
   const { sequence } = authorization.priorHead;
   if (chainDigestAt(history, store.storeId, store.organizationId, sequence) !== authorization.priorHead.chainDigest) return no('STALE_HEAD');
   const prior = history.slice(0, sequence);
+  if (fvOperatorPlanUnfinished(prior)) return no('PLAN_INCOMPLETE');
   let state: ReturnType<typeof humanIdentityStateOf>;
   try {
     state = humanIdentityStateOf(prior, store.organizationId);
