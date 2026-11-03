@@ -2,7 +2,7 @@
 // CORE-07 reference witness, real AUTH-03 stores, the real G-02A verifier and ledger, test-only issuance.
 // Not a test file itself; nothing here is reachable from the Host.
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -95,9 +95,9 @@ export function resumeRequest(binding, issue = {}) {
  * SIGKILLed itself at `killAt` (a registrar step, or `enroll-sent`: the witness applied the genesis and the
  * answer never reached the registrar).
  */
-export function runChild(world, witness, { operation, request, killAt, hold } = {}) {
+export function runChild(world, witness, { operation, request, killAt, hold, pauseAt, signal } = {}) {
   const config = join(world.dir, `child-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
-  writeFileSync(config, JSON.stringify({ trustedIssuers: trustedRegistrationIssuers(), authorityKey: AUTHORITY_KEY_A, org: world.org, paths: world.paths, witness: { endpoint: witness.endpoint, witnessId: witness.witnessId, publicKeyPem: witness.publicKeyPem }, operation, request, killAt, hold }), { mode: 0o600 });
+  writeFileSync(config, JSON.stringify({ trustedIssuers: trustedRegistrationIssuers(), authorityKey: AUTHORITY_KEY_A, org: world.org, paths: world.paths, witness: { endpoint: witness.endpoint, witnessId: witness.witnessId, publicKeyPem: witness.publicKeyPem }, operation, request, killAt, hold, pauseAt, signal }), { mode: 0o600 });
   return new Promise((done, fail) => {
     const child = spawn(process.execPath, [CHILD, config], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NODE_TEST_CONTEXT: '' } });
     let out = '';
@@ -116,6 +116,21 @@ export function runChild(world, witness, { operation, request, killAt, hold } = 
       }
     });
   });
+}
+
+/**
+ * HF01: a ceremony in its own process, paused at `pauseAt` (holding its locks) until `release()`. Resolves once
+ * it is paused; `done` is its outcome (as `runChild`).
+ */
+export async function pausedChild(world, witness, { operation = 'register', request, pauseAt }) {
+  const signal = join(world.dir, `pause-${Math.random().toString(16).slice(2)}`);
+  const done = runChild(world, witness, { operation, request, pauseAt, signal });
+  const deadline = Date.now() + 20_000;
+  while (!existsSync(`${signal}.paused`)) {
+    if (Date.now() > deadline) throw new Error(`the ceremony never reached ${pauseAt}`);
+    await new Promise((settle) => setTimeout(settle, 10));
+  }
+  return { done, release: () => writeFileSync(`${signal}.release`, '') };
 }
 
 /**

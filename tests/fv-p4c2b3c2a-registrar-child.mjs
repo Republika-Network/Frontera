@@ -1,7 +1,7 @@
 // FV-P4C-2B3C-2A1 — one registration ceremony call in its own process (test support, not a test file).
 // SIGKILLs itself at the requested durable step, or right after the witness applied the genesis and before
 // its answer reaches the registrar (`enroll-sent`): a real process death, not an exception.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 import { createHttpAuthorityStateWitnessTransport } from '../dist/src/enterprise/authority-state-freshness/index.js';
 import { WITNESS_TOKEN } from '../dist/src/enterprise/__tests__/core07-freshness-fixture.js';
@@ -33,6 +33,13 @@ const options = {
   clock: () => Date.now(),
   observer: (step) => {
     if (step === config.killAt) die();
+    // HF01: pauses (blocking, holding every lock it holds) at `pauseAt` until the test releases it.
+    if (step === config.pauseAt) {
+      writeFileSync(`${config.signal}.paused`, step);
+      const cell = new Int32Array(new SharedArrayBuffer(4));
+      const deadline = Date.now() + 30_000;
+      while (!existsSync(`${config.signal}.release`) && Date.now() < deadline) Atomics.wait(cell, 0, 0, 10);
+    }
   },
 };
 const outcome = config.operation === 'resume' ? await resumeFvIdentityRegistration(options, config.request) : await registerFvIdentity(options, config.request);

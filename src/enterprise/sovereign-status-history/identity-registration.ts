@@ -440,6 +440,15 @@ async function advance(ceremony: Ceremony): Promise<FvIdentityRegistrationOutcom
       } catch (error) {
         if (heldByAnotherProcess(storePath)) return pending('STORE_HELD');
         const code = freshnessCode(error);
+        if (code === 'AUTHORITY_FRESHNESS_BINDING_MISMATCH') {
+          // HF01 (Codex P2 on PR #262): this one code also names a receipt the pinned witness signed about
+          // *another* slot (organization, state kind or namespace), answered to this slot's request: authentic,
+          // but not about this registration. It is evidence only once this registration's own slot, read again
+          // and verified as bound to exactly that slot, disagrees. Unreadable, or still holding this genesis: pending.
+          const confirmed = await readWitness();
+          if (confirmed === undefined || atGenesis(confirmed)) return pending('WITNESS_UNAVAILABLE');
+          return quarantine(disagreement(confirmed));
+        }
         if (code !== undefined) {
           if (!WITNESS_EVIDENCE_CODES.has(code)) return pending('WITNESS_UNAVAILABLE');
           return quarantine(code === 'AUTHORITY_FRESHNESS_ROLLBACK_DETECTED' || code === 'AUTHORITY_FRESHNESS_PENDING_RECOVERY' ? 'WITNESS_ADVANCED_UNEXPECTEDLY' : 'STORE_NOT_GENESIS');
@@ -636,22 +645,104 @@ function settleLedger(ledger: ExecutionCapabilityConsumptionLedger, capabilityId
   }
 }
 
-/** Capabilities this ledger consumed that no record or event names: their ceremony stopped before recording anything, so nothing was contacted. */
-function settleOrphans(ledger: ExecutionCapabilityConsumptionLedger, record: FvRegistrationRecordFile): void {
+/** The event a ceremony records, under the record's exclusive lock, before it asks the ledger to consume a capability. */
+const CLAIM_INTENT_EVENT = 'capability-claim-intent';
+/** The event a ceremony records when the ledger refused that claim: the capability is not this record's. */
+const CLAIM_REFUSED_EVENT = 'capability-claim-refused';
+
+/**
+ * Records, before the claim, that this record is about to consume `capability` (its ownership evidence). A
+ * capability the ledger already holds is never this record's to claim: it is refused before any intent is
+ * written (`'consumed'`), so an intent names only a capability that was unconsumed when it was written.
+ */
+function recordClaimIntent(config: Configuration, record: FvRegistrationRecordFile, ledger: ExecutionCapabilityConsumptionLedger, operation: 'register' | 'resume', capability: { readonly capabilityId: string; readonly executionId: string; readonly actionBinding: { readonly digest: string } }): 'recorded' | 'consumed' | 'unavailable' {
   try {
-    const named = new Set<string>();
+    if (ledger.read(capability.capabilityId).state !== 'absent') return 'consumed';
+  } catch {
+    return 'unavailable';
+  }
+  try {
+    record.appendEvent(iso(config), CLAIM_INTENT_EVENT, JSON.stringify({ capabilityId: capability.capabilityId, executionId: capability.executionId, actionBindingDigest: capability.actionBinding.digest, organizationId: config.organizationId, operation }));
+    return 'recorded';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+/** The claim-intent step, as the ceremony's outcome when it does not proceed. */
+function claimIntentRefusal(state: 'recorded' | 'consumed' | 'unavailable'): FvIdentityRegistrationOutcome | undefined {
+  if (state === 'consumed') return refused('CAPABILITY_NOT_CLAIMED', 'CAPABILITY_CONSUMED');
+  if (state === 'unavailable') return refused('RECORD_UNAVAILABLE');
+  return undefined;
+}
+
+function recordClaimRefused(config: Configuration, record: FvRegistrationRecordFile, capabilityId: string): void {
+  try {
+    record.appendEvent(iso(config), CLAIM_REFUSED_EVENT, JSON.stringify({ capabilityId }));
+  } catch {
+    // Lost (or a crash before it): see the residual window in `settleOrphans`.
+  }
+}
+
+/**
+ * HF01 (Codex P2 on PR #262): settles only the claims this record **proves** it made and then never recorded
+ * using. A ledger can be shared (by audience) with other organizations' and other deployments' registrations,
+ * whose in-flight claims this record does not name: those are never touched.
+ *
+ * A claim is this record's orphan only when all of these hold:
+ * - this record logged its claim intent for exactly that capability (same id, execution id, binding digest and
+ *   organization), under its exclusive lock, before the claim;
+ * - the ledger did not refuse that claim (no refusal event);
+ * - no intent, registration row or resume event of this record names it;
+ * - the ledger still shows it `claimed`, for this organization, execution and binding.
+ *
+ * Holding the record's lock proves no ceremony of this record is in flight. Claims of other organizations,
+ * of other deployments (another binding, so another capability) and of records written before HF01 (no
+ * intent event) are left unchanged. A `claimed` claim is already spent: the ledger never reopens it, and its
+ * state decides nothing in this ceremony.
+ *
+ * Residual window (the ledger and the record are separate files, so intent and claim are not atomic): an
+ * intent is written only for a capability the ledger did not hold at that moment. If another record that
+ * verifies the *same* capability — the same deployment, store path, witness and key, under another record
+ * path, a misconfiguration — claims it between that check and this record's claim, and this ceremony then
+ * dies before recording the refusal, this record may later settle the other's claim `failed`. Bookkeeping
+ * only; nothing is reopened, consumed twice or created.
+ */
+function settleOrphans(ledger: ExecutionCapabilityConsumptionLedger, record: FvRegistrationRecordFile, organizationId: string): void {
+  try {
+    const intents = new Map<string, { readonly executionId: unknown; readonly actionBindingDigest: unknown; readonly organizationId: unknown }>();
+    const accounted = new Set<string>();
     const current = record.read();
-    if (current !== undefined) named.add(current.capabilityId);
+    if (current !== undefined) accounted.add(current.capabilityId);
     for (const event of record.events()) {
+      let detail: { capabilityId?: unknown; executionId?: unknown; actionBindingDigest?: unknown; organizationId?: unknown };
       try {
-        const detail = JSON.parse(event.detail) as { capabilityId?: unknown };
-        if (typeof detail.capabilityId === 'string') named.add(detail.capabilityId);
+        detail = JSON.parse(event.detail) as typeof detail;
       } catch {
-        // An event without a capability names none.
+        continue;
       }
+      if (typeof detail.capabilityId !== 'string') continue;
+      if (event.kind === CLAIM_INTENT_EVENT) intents.set(detail.capabilityId, { executionId: detail.executionId, actionBindingDigest: detail.actionBindingDigest, organizationId: detail.organizationId });
+      else accounted.add(detail.capabilityId);
     }
-    for (const unresolved of ledger.listUnresolved().records) {
-      if (unresolved.state === 'claimed' && !named.has(unresolved.capabilityId)) ledger.recordOutcome(unresolved.capabilityId, 'failed');
+    const unresolvedClaims: ReturnType<ExecutionCapabilityConsumptionLedger['listUnresolved']>['records'][number][] = [];
+    for (let page = ledger.listUnresolved(); ; page = ledger.listUnresolved({ after: page.next! })) {
+      unresolvedClaims.push(...page.records);
+      if (page.next === undefined || unresolvedClaims.length > 100_000) break;
+    }
+    for (const unresolved of unresolvedClaims) {
+      const intent = intents.get(unresolved.capabilityId);
+      if (
+        unresolved.state === 'claimed' &&
+        intent !== undefined &&
+        !accounted.has(unresolved.capabilityId) &&
+        intent.organizationId === organizationId &&
+        unresolved.organizationId === organizationId &&
+        unresolved.executionId === intent.executionId &&
+        unresolved.actionBindingDigest === intent.actionBindingDigest
+      ) {
+        ledger.recordOutcome(unresolved.capabilityId, 'failed');
+      }
     }
   } catch {
     // Advisory.
@@ -742,14 +833,19 @@ export async function registerFvIdentity(options: FvIdentityRegistrarOptions, re
     const ledger = await openLedger(config, !existsSync(config.ledgerPath));
     if (ledger === undefined) return refused('LEDGER_UNAVAILABLE');
     try {
-      settleOrphans(ledger, record);
+      settleOrphans(ledger, record, config.organizationId);
+      const intentRefusal = claimIntentRefusal(recordClaimIntent(config, record, ledger, 'register', verification.capability));
+      if (intentRefusal !== undefined) return intentRefusal;
       let claim: ReturnType<ExecutionCapabilityConsumptionLedger['claim']>;
       try {
         claim = ledger.claim(verification);
       } catch {
         return refused('LEDGER_UNAVAILABLE');
       }
-      if (claim.outcome !== 'claimed') return refused('CAPABILITY_NOT_CLAIMED', claim.reason);
+      if (claim.outcome !== 'claimed') {
+        recordClaimRefused(config, record, verification.capability.capabilityId);
+        return refused('CAPABILITY_NOT_CLAIMED', claim.reason);
+      }
       observe(config, 'capability-claimed');
       const capability = verification.capability;
       try {
@@ -832,13 +928,19 @@ export async function resumeFvIdentityRegistration(options: FvIdentityRegistrarO
     const ledger = await openLedger(config, false);
     if (ledger === undefined) return refused('LEDGER_UNAVAILABLE');
     try {
+      settleOrphans(ledger, record, config.organizationId);
+      const intentRefusal = claimIntentRefusal(recordClaimIntent(config, record, ledger, 'resume', verification.capability));
+      if (intentRefusal !== undefined) return intentRefusal;
       let claim: ReturnType<ExecutionCapabilityConsumptionLedger['claim']>;
       try {
         claim = ledger.claim(verification);
       } catch {
         return refused('LEDGER_UNAVAILABLE');
       }
-      if (claim.outcome !== 'claimed') return refused('CAPABILITY_NOT_CLAIMED', claim.reason);
+      if (claim.outcome !== 'claimed') {
+        recordClaimRefused(config, record, verification.capability.capabilityId);
+        return refused('CAPABILITY_NOT_CLAIMED', claim.reason);
+      }
       observe(config, 'capability-claimed');
       const capabilityId = verification.capability.capabilityId;
       try {
@@ -849,6 +951,9 @@ export async function resumeFvIdentityRegistration(options: FvIdentityRegistrarO
       }
       const outcome = await advance({ config, record, anchor: witness.anchor, boundary: witness.boundary });
       settleLedger(ledger, capabilityId, outcome);
+      // HF01: the register capability this record's row holds (verified above) is this record's own claim; its
+      // ceremony stopped before settling it. The ledger only moves it forward.
+      settleLedger(ledger, current.capabilityId, outcome);
       return outcome;
     } finally {
       ledger.close();

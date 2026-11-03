@@ -4,6 +4,22 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Fixed — FV-P4C-2B3C-2A1-HF01 witness evidence classification and ledger claim isolation (internal, not operational)
+- **Witness evidence.** An authentic witness receipt about *another* organization, state kind or namespace (`AUTHORITY_FRESHNESS_BINDING_MISMATCH` from the witness client) permanently quarantined a healthy registration during store creation or readback.
+  - The registrar now confirms with a verified read of its own slot before quarantining. If the confirming read is unreadable, or the slot still holds the genesis, the registration stays `pending`.
+  - A slot that genuinely binds another store, or has advanced, is still quarantined.
+  - Resume, the readback and the executor gate are unchanged.
+- **Ledger claims.** The orphan cleanup marked `failed` every `claimed` entry its record didn't name, including other organizations' and other deployments' in-flight claims on a shared ledger. This was bookkeeping only: single use and the one-genesis rule were unaffected.
+  - Each claim is now preceded by a `capability-claim-intent` event in the record, and a refusal is recorded.
+  - Only claims a record proves it made, and never used, are settled.
+  - A completed resume also settles its record's register claim.
+- **Scope.** `identity-registration.ts` only. CORE-07, G-02A and every other consumer are unchanged.
+- **Tests:** `tests/fv-p4c2b3c2a1-hf01-witness-ledger-isolation.e2e.test.mjs` (15). On the merged code, 13 of the 15 fail. The test support gained a paused child.
+- **Mutants:** 10 of 11 targeted single mutants are killed. The eleventh is one of two redundant refusal layers; each survives alone, and removing both is killed.
+- **Independent review** (an AI agent, not a human): no Medium or higher finding. A Low (an overstated fail-closed claim when a refusal is lost) was corrected in the code comment and the docs, and the window was narrowed by a pre-claim ledger check. Two Info items were applied: every page of unresolved claims is now read, and the local-site row in the doc was corrected.
+- **Docs:** `docs/integration/FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md` §14.
+- **Production activation: NO-GO.**
+
 ### Added — FV-P4C-2B3C-2A1 FV bootstrap identity registration (internal, not composed, not operational)
 - **What.** The only production path that creates an FV bootstrap identity store, exactly once per organization (`sovereign-status-history/identity-registration.ts`, `identity-registration-record.ts`; `docs/integration/FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md`). An offline ceremony, invoked explicitly; nothing in the Host, scripts, deployment, the dedicated executor or its supervisor invokes it.
 - **Authority, reused.** A G-02A execution capability (new action `frontera.fv-bootstrap-identity.register`, binding format `frontera.fv-identity-registration-binding.v1`), verified by G-02A's standalone verifier against pinned issuers and a binding the registrar recomputes (organization, FV domain, deployment, witness id and key digest, preselected store id, path, store policy, signing key), and consumed in G-02A's durable ledger before anything else. No Host token, operator credential or flag is accepted. No production issuer exists; issuance is test-only.
