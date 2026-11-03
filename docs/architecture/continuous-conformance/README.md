@@ -92,6 +92,7 @@ assessment lifecycle. See [REUSE_MATRIX.md](REUSE_MATRIX.md).
 | 14 | [MVP_IMPLEMENTATION_PLAN.md](MVP_IMPLEMENTATION_PLAN.md) | RN-CONFORM-02…06 missions |
 | 15 | [DECISION_REGISTER.md](DECISION_REGISTER.md) | Open founder / architecture decisions |
 | 16 | [RN_CONFORM_02_IMPLEMENTATION.md](RN_CONFORM_02_IMPLEMENTATION.md) | RN-CONFORM-02 implementation record (synthetic circuit) |
+| 17 | [RN_CONFORM_03_IMPLEMENTATION.md](RN_CONFORM_03_IMPLEMENTATION.md) | RN-CONFORM-03 implementation record (signed status, local verification) |
 
 ## Recommended next mission
 
