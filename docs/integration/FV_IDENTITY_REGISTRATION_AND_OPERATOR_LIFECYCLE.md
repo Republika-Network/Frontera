@@ -830,8 +830,19 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
 - **WebAuthn assurance.** It is the same as §15.4: attestation `none` for the candidate, and no authenticator provenance. The tests use software authenticators, so this is **not** a production assurance claim. The administrator's assertion requires user verification.
 - **The candidate's identity** (operator id, display name) is whatever the administrator approves. Binding it to a real person is the out-of-band ceremony's job.
 - **The ceremony's deployment, state kind and witness** come from its trusted configuration, checked against the registration record. AUTH-03 trusts the caller for that scope, the same trust level as the pinned issuers.
-- **Mid-plan crash.** Until the enrolment is resumed, the FV store accepts no AUTH-02 authentication or decision
-  (fail closed). A signing-key holder's consistent forged plan start blocks the store the same way until B3C-2A3.
+- **Mid-plan crash (fail closed; review of the latest delta, L1 and L2).** Until the enrolment is resumed, the FV
+  store accepts no AUTH-02 write: no authentication, decision, settlement or counter-anomaly record.
+  - **The lockout lasts as long as the resume fails.** The resume re-verifies the recorded evidence under the
+    ceremony's configuration. So a changed relying-party origin, a deployment or witness-key rotation (scope
+    mismatch), or a lost or corrupted registration-record intent keeps the store locked. Restoring the original
+    configuration or record lets it resume (reproduced).
+  - **Operational rule:** resume an interrupted enrolment before changing any of that configuration.
+  - **No other way out:** there is no recovery other than the resume until B3C-2A3's governance recovery. The same
+    holds for a signing-key holder's consistent forged plan start.
+  - **A counter anomaly (a possible cloned authenticator) seen mid-plan is refused but not recorded,** because its
+    row is a write too. It still fails closed.
+  - **Unaffected:** a CORE-05 outcome is best-effort and read back from the CORE-05 log. A refused bootstrap
+    settlement stays `unresolved` and is retried. No decision can be authorized mid-plan.
 - **Signing-key holder (a trust root).** The store's signing key, the deployment's authority key (CORE-02), signs
   every row, so its holder can append any row (§12).
   - **What review M1's fix gives:** a bare `fv-operator` row gets no role, and a structurally consistent forged pair
@@ -923,6 +934,9 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
   unfinished operator plan. Plans are contiguous, so an unfinished one is always the suffix. The check is in AUTH-03
   and, earlier, in the ceremony. Tested at each partial-plan boundary: the stranded plan then resumes, and the next
   enrolment proceeds.
+- **Review of the latest delta (`30314b04`)** (a fresh read-only AI agent, not human). It closed F1 by reproduction,
+  at each partial point, and found no bypass among the 12 service writes and no change for Host stores. It raised two
+  Lows, L1 and L2, both fail closed and documented under the mid-plan crash limit above.
 - **Review of the two fix commits** (a fresh read-only AI agent, not human). The verifier fix holds. It reproduced:
   - **F1, Medium:** an AUTH-02 write after a mid-plan crash (authentication is allowed on FV stores) stranded the plan.
     With the P2 fix, that then blocked every future enrolment. **Fixed:** AUTH-02 refuses every write to an FV store
