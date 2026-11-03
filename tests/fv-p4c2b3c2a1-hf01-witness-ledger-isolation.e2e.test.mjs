@@ -7,7 +7,7 @@
 // Synthetic organizations, test-only keys and owned temporary directories only.
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { chmodSync, rmSync } from 'node:fs';
 
 import { createHttpAuthorityStateWitnessTransport } from '../dist/src/enterprise/authority-state-freshness/index.js';
 import { openExecutionCapabilityConsumptionLedger } from '../dist/src/enterprise/execution-capability/reference/consumption-ledger.js';
@@ -90,7 +90,7 @@ describe('HF01 finding 1 — an authentic receipt about another slot is not evid
         const b = world(ORG_B);
         assert.equal((await register(b, witness, issue(b, witness).request)).outcome, 'registered');
         const a = world(ORG_A);
-        const { binding, request } = issue(a, witness);
+        const { binding, request, capability } = issue(a, witness);
         const route = { org: ORG_A, on: false, hits: 0, answer: (req, o, http) => http.call({ ...req, binding: rewrite(req.binding) }, o) };
         const outcome = await register(a, witness, request, routedOptions(a, witness, route, at));
         assert.ok(route.hits > 0, 'the misrouted answer was actually served');
@@ -105,8 +105,11 @@ describe('HF01 finding 1 — an authentic receipt about another slot is not evid
         route.on = true;
         const still = await resume(a, witness, resumeOf(a, binding).request, routedOptions(a, witness, route, undefined));
         assert.equal(still.outcome, 'pending', JSON.stringify(still));
+        const registerClaim = capability.capabilityId;
+        assert.equal(await ledgerState(a.paths.ledger, registerClaim), 'outcome-unknown', 'pending (the register said so); a pending resume settles nothing final');
         // Routed correctly again: a fresh resume capability completes it; the witness re-confirms the same genesis.
         assert.equal((await resume(a, witness, resumeOf(a, binding).request)).outcome, 'registered');
+        assert.equal(await ledgerState(a.paths.ledger, registerClaim), 'completed', 'the completing resume settles it');
         assert.deepEqual((await fvSlots(witness)).filter(([org]) => org === ORG_A), [[ORG_A, binding.storeId, 0]]);
       });
     }
@@ -216,6 +219,19 @@ describe('HF01 finding 2 — a shared consumption ledger: each registration sett
     assert.equal((await resume(a, witness, completion.request)).outcome, 'registered');
     assert.equal(await ledgerState(a.paths.ledger, ia.capability.capabilityId), 'completed', 'the register claim the record holds is settled by its own resume');
     assert.equal(await ledgerState(a.paths.ledger, completion.capability.capabilityId), 'completed');
+  });
+
+  it('a resume refused partway (an unsafe store file) leaves the register claim unsettled; the completing resume settles it', async () => {
+    const { witness, a } = await sharedLedger();
+    const ia = issue(a, witness);
+    assert.equal((await runChild(a, witness, { operation: 'register', request: ia.request, killAt: 'store-created' })).killed, true);
+    chmodSync(a.paths.store, 0o666);
+    const refusedResume = await resume(a, witness, resumeOf(a, ia.binding).request);
+    assert.equal(refusedResume.reason, 'PATH_REFUSED', JSON.stringify(refusedResume));
+    assert.equal(await ledgerState(a.paths.ledger, ia.capability.capabilityId), 'claimed', 'a refusal is not this registration’s final outcome');
+    chmodSync(a.paths.store, 0o600);
+    assert.equal((await resume(a, witness, resumeOf(a, ia.binding).request)).outcome, 'registered');
+    assert.equal(await ledgerState(a.paths.ledger, ia.capability.capabilityId), 'completed');
   });
 
   it('both crashed after consuming but before any intent; both retry at once: each settles only its own orphan, and both register', async () => {

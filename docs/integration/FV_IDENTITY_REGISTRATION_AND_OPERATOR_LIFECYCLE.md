@@ -414,7 +414,8 @@ decision reads a claim's state. The witness still enforces one genesis.
 - Before each claim, register and resume first check the ledger. A capability it already holds is refused
   (`CAPABILITY_CONSUMED`) with no intent written. Otherwise they append a `capability-claim-intent` event to
   their own record, under its exclusive lock, naming the capability id, execution id, binding digest and
-  organization. A claim the ledger then refuses appends `capability-claim-refused`.
+  organization. A claim the ledger then refuses, or that throws (unknown outcome), appends
+  `capability-claim-refused`, which fails closed: at worst one of this record's own orphans is left `claimed`.
 - A claim is this record's orphan, and is marked `failed`, only when all of these hold:
   - the record logged that intent;
   - the record has no refusal for it;
@@ -429,8 +430,9 @@ decision reads a claim's state. The witness still enforces one genesis.
 - Every page of unresolved claims is examined, so other registrations' entries never push this record's
   orphans out of view.
 - Settling now also runs before a resume's claim.
-- A completed resume also settles the register claim its record's row holds. Before, a crash left that claim
-  `claimed`.
+- A resume that ends `registered` or `quarantined` also settles the register claim its record's row holds.
+  Before, a crash left that claim `claimed`. A refused or pending resume leaves it unsettled, because a later
+  resume may still complete it.
 
 **Allowed transitions (all by the owning record):**
 - `claimed` → `failed`: an orphan, proven as above;
@@ -444,14 +446,15 @@ for a capability the ledger didn't hold at that moment. Mis-settling a claim the
 - another record that verifies the *same* capability, which is the same deployment, store path, witness and
   signing key under another record path (a misconfiguration);
 - that record claiming it between this record's check and this record's claim;
-- this ceremony dying before it records the refusal.
+- this record failing to record the refusal: it dies first, or the append itself fails. A claim that throws
+  is recorded as refused too.
 
 Only then may this record later settle the other record's claim `failed`. That is bookkeeping only: nothing
 is reopened, consumed twice or created, and no ceremony decision reads the state.
 
 ### 14.3 Evidence
 
-- **Tests:** `tests/fv-p4c2b3c2a1-hf01-witness-ledger-isolation.e2e.test.mjs` (15 tests), using real witnesses,
+- **Tests:** `tests/fv-p4c2b3c2a1-hf01-witness-ledger-isolation.e2e.test.mjs` (16 tests), using real witnesses,
   stores, verifier and ledger, and real child processes paused or killed at durable steps. They cover:
   - each misrouting, from both steps, including a persistent misrouting during resume;
   - another key and a replayed answer;
@@ -460,14 +463,16 @@ is reopened, consumed twice or created, and no ceremony decision reads the state
   - each organization in flight while the other registers, in both orders;
   - the same organization's other deployment;
   - a crash after the intent;
+  - a resume refused partway (an unsafe store file), which leaves the register claim unsettled until the
+    completing resume;
   - both organizations orphaned, then retrying concurrently in separate processes;
   - a refused claim;
   - a cross-organization capability.
 
-  On the merged code, 13 of the 15 fail. The two that pass (another key or a replayed answer; a cross-organization
+  On the merged code, 14 of the 16 fail. The two that pass (another key or a replayed answer; a cross-organization
   capability) pin behavior that was already correct.
 - **Targeted mutants:** run on the final code, on the compiled code in a separate copy, with every file restored
-  and hash-checked. Ten of eleven single mutants are killed, and the remaining one is killed in combination
+  and hash-checked. Eleven of twelve single mutants are killed, and the remaining one is killed in combination
   (below). Killed:
   - removing the confirmation;
   - treating a confirmed conflict as pending;
@@ -476,11 +481,14 @@ is reopened, consumed twice or created, and no ceremony decision reads the state
   - the pre-fix cleanup rule;
   - assuming ownership while keeping the organization check;
   - not settling the register claim on resume;
+  - settling it on every resume outcome, including a refusal (H12);
   - no orphan settlement;
   - quarantining when the confirming read is unreadable.
 - **Redundant layers:** not recording a refused claim (H07) and removing the pre-claim ledger check (H11) each
   survive alone, because each covers the other for a consumed capability. Removing both is killed by the
   refused-claim test.
+- **Not exercised:** a refusal is also recorded when the claim *throws*. No test forces the ledger to throw
+  mid-claim. That path only ever fails closed.
 - **Equivalent mutants:** dropping the execution-id, binding-digest or organization cross-checks from the
   ownership rule doesn't change behavior. A capability id is unique in the ledger, and the intent is recorded
   from the same verified capability, so those checks are defence in depth.

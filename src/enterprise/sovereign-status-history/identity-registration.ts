@@ -704,9 +704,10 @@ function recordClaimRefused(config: Configuration, record: FvRegistrationRecordF
  * Residual window (the ledger and the record are separate files, so intent and claim are not atomic): an
  * intent is written only for a capability the ledger did not hold at that moment. If another record that
  * verifies the *same* capability — the same deployment, store path, witness and key, under another record
- * path, a misconfiguration — claims it between that check and this record's claim, and this ceremony then
- * dies before recording the refusal, this record may later settle the other's claim `failed`. Bookkeeping
- * only; nothing is reopened, consumed twice or created.
+ * path, a misconfiguration — claims it between that check and this record's claim, and this record then
+ * fails to record the refusal (it dies first, or the append itself fails), this record may later settle the
+ * other's claim `failed`. A claim that throws is recorded as refused too. Bookkeeping only; nothing is
+ * reopened, consumed twice or created.
  */
 function settleOrphans(ledger: ExecutionCapabilityConsumptionLedger, record: FvRegistrationRecordFile, organizationId: string): void {
   try {
@@ -840,6 +841,8 @@ export async function registerFvIdentity(options: FvIdentityRegistrarOptions, re
       try {
         claim = ledger.claim(verification);
       } catch {
+        // Unknown whether it was claimed: never proven this record's (fails closed: at worst its own orphan stays claimed).
+        recordClaimRefused(config, record, verification.capability.capabilityId);
         return refused('LEDGER_UNAVAILABLE');
       }
       if (claim.outcome !== 'claimed') {
@@ -935,6 +938,7 @@ export async function resumeFvIdentityRegistration(options: FvIdentityRegistrarO
       try {
         claim = ledger.claim(verification);
       } catch {
+        recordClaimRefused(config, record, verification.capability.capabilityId);
         return refused('LEDGER_UNAVAILABLE');
       }
       if (claim.outcome !== 'claimed') {
@@ -952,8 +956,9 @@ export async function resumeFvIdentityRegistration(options: FvIdentityRegistrarO
       const outcome = await advance({ config, record, anchor: witness.anchor, boundary: witness.boundary });
       settleLedger(ledger, capabilityId, outcome);
       // HF01: the register capability this record's row holds (verified above) is this record's own claim; its
-      // ceremony stopped before settling it. The ledger only moves it forward.
-      settleLedger(ledger, current.capabilityId, outcome);
+      // ceremony stopped before settling it. Settled only by a final outcome (a refusal or a pending resume may
+      // be followed by one that completes), and the ledger only moves it forward.
+      if (outcome.outcome === 'registered' || outcome.outcome === 'quarantined') settleLedger(ledger, current.capabilityId, outcome);
       return outcome;
     } finally {
       ledger.close();

@@ -12,11 +12,12 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 - **Ledger claims.** The orphan cleanup marked `failed` every `claimed` entry its record didn't name, including other organizations' and other deployments' in-flight claims on a shared ledger. This was bookkeeping only: single use and the one-genesis rule were unaffected.
   - Each claim is now preceded by a `capability-claim-intent` event in the record, and a refusal is recorded.
   - Only claims a record proves it made, and never used, are settled.
-  - A completed resume also settles its record's register claim.
+  - A resume that ends `registered` or `quarantined` also settles its record's register claim.
 - **Scope.** `identity-registration.ts` only. CORE-07, G-02A and every other consumer are unchanged.
-- **Tests:** `tests/fv-p4c2b3c2a1-hf01-witness-ledger-isolation.e2e.test.mjs` (15). On the merged code, 13 of the 15 fail. The test support gained a paused child.
-- **Mutants:** 10 of 11 targeted single mutants are killed. The eleventh is one of two redundant refusal layers; each survives alone, and removing both is killed.
-- **Independent review** (an AI agent, not a human): no Medium or higher finding. A Low (an overstated fail-closed claim when a refusal is lost) was corrected in the code comment and the docs, and the window was narrowed by a pre-claim ledger check. Two Info items were applied: every page of unresolved claims is now read, and the local-site row in the doc was corrected.
+- **Tests:** `tests/fv-p4c2b3c2a1-hf01-witness-ledger-isolation.e2e.test.mjs` (16). On the merged code, 14 of the 16 fail. The test support gained a paused child.
+- **Mutants:** 11 of 12 targeted single mutants are killed. The eleventh is one of two redundant refusal layers; each survives alone, and removing both is killed.
+- **Independent reviews** (AI agents, not humans): no Medium or higher finding in either the implementation review or the publication review. The publication review raised two Info items, both fixed: a resume settles its register claim only on a final outcome, and a claim that throws is recorded as refused.
+- **Implementation review:** no Medium or higher finding. A Low (an overstated fail-closed claim when a refusal is lost) was corrected in the code comment and the docs, and the window was narrowed by a pre-claim ledger check. Two Info items were applied: every page of unresolved claims is now read, and the local-site row in the doc was corrected.
 - **Docs:** `docs/integration/FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md` §14.
 - **Production activation: NO-GO.**
 
