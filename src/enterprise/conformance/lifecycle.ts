@@ -131,9 +131,15 @@ export function loadEngineInput(
   if (integration === undefined || !profile.ok) return undefined;
   const nowMs = toMs(now);
   const cap = Math.max(1, Math.floor(options.maxObservations ?? MAX_EVALUATION_OBSERVATIONS));
-  const read = store.listRecentObservations(organizationId, credential.integrationDigest, nowMs - evaluationHorizonMs(profile.definition), cap + 1);
-  const evidenceTruncated = read.length > cap;
-  const all = evidenceTruncated ? read.slice(0, cap) : read;
+  const horizonStart = nowMs - evaluationHorizonMs(profile.definition);
+  const recent = store.listRecentObservations(organizationId, credential.integrationDigest, horizonStart, cap + 1);
+  // Review P2-D: violations are read back to the start of the current period (last activation, or registration for a
+  // candidate), so an unresolved dispute never ages out of view; only conformant evidence is bounded by the horizon.
+  const activatedAt = lastActivationMs(store, organizationId, credentialId);
+  const periodStart = Math.min(horizonStart, activatedAt ?? toMs(credential.createdAt));
+  const olderViolations = periodStart < horizonStart ? store.listViolationObservations(organizationId, credential.integrationDigest, periodStart, cap + 1).filter((row) => row.observedAtMs < horizonStart) : [];
+  const evidenceTruncated = recent.length > cap || olderViolations.length > cap || recent.length + olderViolations.length > cap;
+  const all = [...recent, ...olderViolations].slice(0, cap);
   const unauthenticated = all.filter((row) => authenticateStoredObservation(store, profiles, row, coordinatorPublicKeyPem) !== null).map((row) => row.eventId);
   const rejected = new Set(unauthenticated);
   const rows = all.filter((row) => !rejected.has(row.eventId));
@@ -154,6 +160,14 @@ export function loadEngineInput(
       credentialState: head.state,
       revalidationSince: head.state === 'SUSPENDED' ? head.effectiveAt : null,
       evidenceTruncated,
+      // Review P1-A: durable confirmed critical violations since the last activation stand while ACTIVE.
+      recordedConfirmedViolations:
+        head.state === 'ACTIVE' && activatedAt !== null
+          ? store
+              .listRecordedViolations(organizationId, credential.integrationDigest, credential.profileId, credential.profileVersion, activatedAt)
+              .filter((v) => v.confirmed)
+              .map((v) => ({ eventId: v.eventId, controlId: v.controlId, operation: v.operation, observedAt: toTimestamp(v.observedAtMs) }))
+          : [],
     },
     unauthenticated,
   };

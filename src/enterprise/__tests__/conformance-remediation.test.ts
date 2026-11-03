@@ -233,29 +233,75 @@ describe('Codex finding 1 — confirmed critical violation while SUSPENDED force
     c.cleanup();
   });
 
-  it('the requirement covers a violation confirmed during the active period that was never evaluated, and expires with the next human-approved activation', () => {
+  it('review P1-A: a violation confirmed while ACTIVE and healed before any evaluation still suspends (SR-1) and needs two humans; the store refuses a clean evaluation', () => {
     const c = buildCircuit();
     const credentialId = activeCredential(c);
     const { lifecycle } = c.services();
-    // A transient bypass, corroborated while ACTIVE, then healed before anyone evaluates.
+    const clean = lifecycle.evaluate(ORG_A, credentialId).evaluation;
+    assert.deepEqual(clean.proposal, { kind: 'NONE', reasonCode: 'CONFORMANT' });
+    // A transient bypass, corroborated while ACTIVE, healed and fully revalidated before anyone evaluates.
     corroborateBypass(c);
     c.platform.bypass = 'none';
     c.clock.advance(60);
     runBaseline(c, [c.validators.A, c.validators.B]);
-    // Later the evidence lapses and the credential is suspended for staleness only.
-    c.clock.advance(DAY + 6 * 3600 + 120);
-    assert.equal(lifecycle.evaluate(ORG_A, credentialId).protectiveTransition?.record.reasonCode, 'EVIDENCE_STALE');
+    c.clock.advance(1);
+    // The fail-closed verifier already refuses; a "clean" evaluation of the ACTIVE head is refused by the store on any path.
+    assert.equal(verdict(c, credentialId).reason, 'PROTECTIVE_ACTION_PENDING');
+    const forged = { ...clean, evaluationId: 'evl_clean_after_violation', evaluatedAt: c.clock.now() };
+    assert.throws(() => c.store.commitEvaluation({ record: forged, evaluationDigest: conformanceDigest(forged), protectiveTransition: null }), storeRefused(/recorded violation without suspension/));
+    // The lifecycle suspends under SR-1 with the durable record as evidence.
+    const { evaluation, protectiveTransition } = lifecycle.evaluate(ORG_A, credentialId);
+    const cr01 = evaluation.requirementResults.find((r) => r.requirementId === 'CR-01')!;
+    assert.deepEqual([cr01.category, cr01.reasonCodes.includes('RECORDED_CONFIRMED_VIOLATION:document.open')], ['VERIFIED_FAILURE', true]);
+    assert.equal(protectiveTransition?.record.reasonCode, 'CRITICAL_VIOLATION_CONFIRMED');
+    assert.throws(() => lifecycle.reinstateAutomatically(ORG_A, credentialId), refused('AUTOMATIC_PATH_NOT_APPLICABLE'));
+    c.clock.advance(60);
     runBaseline(c, [c.validators.A, c.validators.B]);
     c.clock.advance(1);
-    assert.throws(() => lifecycle.reinstateAutomatically(ORG_A, credentialId), refused('AUTOMATIC_PATH_NOT_APPLICABLE'));
     const prepared = lifecycle.prepare('reinstate', { organizationId: ORG_A, credentialId, remediation: remediation(c) });
     assert.equal(lifecycle.commit(prepared, approvals(c, prepared)).state, 'ACTIVE');
-    // After that human-approved activation, an unrelated stale suspension recovers automatically again.
+    // After the human-approved activation the old record no longer stands, and a stale suspension recovers automatically again.
+    assert.equal(verdict(c, credentialId).reason, 'CONFORMANT');
     c.clock.advance(DAY + 6 * 3600 + 120);
     assert.equal(lifecycle.evaluate(ORG_A, credentialId).protectiveTransition?.record.reasonCode, 'EVIDENCE_STALE');
     runBaseline(c, [c.validators.A, c.validators.B]);
     assert.equal(lifecycle.reinstateAutomatically(ORG_A, credentialId).reasonCode, 'REVALIDATED_AUTOMATIC');
     assert.ok(verifyCredentialHistory(c.store, ORG_A, credentialId, { registryPublicKeyPem: c.registryPublicKeyPem, humans: c.humansDirectory }).valid);
+    c.cleanup();
+  });
+
+  it('review P2-B: a raw writer cannot plant a violation record ahead of the honest observation to suppress it', () => {
+    const c = buildCircuit();
+    activeCredential(c);
+    const db = raw(c);
+    assert.throws(
+      () =>
+        db.prepare('INSERT INTO cc_confirmed_violations (event_id, organization_id, integration_digest, profile_id, profile_version, control_id, operation, critical, operator_count, min_operators, observed_at_ms, confirmed_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 2, ?, ?)').run(
+          'evt-validator-b-predicted', ORG_A, c.integration.integrationDigest, PROFILE.profileId, PROFILE.profileVersion, 'CR-01', 'document.open', c.clock.ms(), c.clock.ms(),
+        ),
+      /cc:violation record without its observation/,
+    );
+    db.close();
+    corroborateBypass(c);
+    assert.equal(c.store.listRecordedViolations(ORG_A, c.integration.integrationDigest, PROFILE.profileId, PROFILE.profileVersion, 0).filter((v) => v.confirmed).length, 1);
+    c.cleanup();
+  });
+
+  it('review P2-C: a violation accepted in the same millisecond as, but after, an automatic reinstatement does not invalidate the history; it suspends the new period', () => {
+    const c = buildCircuit();
+    const credentialId = activeCredential(c);
+    const { lifecycle } = c.services();
+    c.clock.advance(DAY + 6 * 3600 + 60);
+    lifecycle.evaluate(ORG_A, credentialId);
+    runBaseline(c, [c.validators.A, c.validators.B]);
+    assert.equal(lifecycle.reinstateAutomatically(ORG_A, credentialId).state, 'ACTIVE');
+    // Same instant (frozen clock): a corroborated bypass is accepted after the T5 committed.
+    c.platform.bypass = 'unauthorized-operation';
+    const challenge = issue(c, 'G01', [c.validators.A, c.validators.B]);
+    assert.ok(submit(c, observe(c, c.validators.A, challenge)).accepted);
+    assert.ok(submit(c, observe(c, c.validators.B, challenge)).accepted);
+    assert.ok(verifyCredentialHistory(c.store, ORG_A, credentialId, { registryPublicKeyPem: c.registryPublicKeyPem, humans: c.humansDirectory }).valid);
+    assert.equal(lifecycle.evaluate(ORG_A, credentialId).protectiveTransition?.record.reasonCode, 'CRITICAL_VIOLATION_CONFIRMED');
     c.cleanup();
   });
 
@@ -330,6 +376,40 @@ describe('Codex finding 2 — bounded evaluation: growing history never blocks a
     const out = c.services().lifecycle.evaluate(ORG_A, credentialId);
     assert.equal(out.evaluation.requirementResults.find((r) => r.requirementId === 'CR-01')?.category, 'INSUFFICIENT_EVIDENCE');
     assert.equal(out.protectiveTransition?.record.reasonCode, 'EVIDENCE_STALE');
+    c.cleanup();
+  });
+
+  it('review P2-D: an unresolved dispute raised in the current period does not age out of the bounded read', () => {
+    const c = buildCircuit();
+    const credentialId = activeCredential(c);
+    const { lifecycle } = c.services();
+    c.clock.advance(DAY + 6 * 3600 + 60);
+    assert.equal(lifecycle.evaluate(ORG_A, credentialId).protectiveTransition?.record.reasonCode, 'EVIDENCE_STALE');
+    // Operator A alone reports a bypass; only operator B is available besides A, so the dispute cannot be resolved (needs two others).
+    assert.ok(submit(c, observe(c, c.validators.A, issue(c, 'G01', [c.validators.A]), { outcome: 'allowed' })).accepted);
+    c.clock.advance(evaluationHorizonMs(PROFILE) / 1000 + 3600);
+    runBaseline(c, [c.validators.A, c.validators.B]);
+    const cr01 = lifecycle.assess(ORG_A, credentialId)!.engine.requirementResults.find((r) => r.requirementId === 'CR-01')!;
+    assert.ok(cr01.category === 'CONFLICTING' || cr01.category === 'UNCONFIRMED_VIOLATION', cr01.category);
+    assert.throws(() => lifecycle.reinstateAutomatically(ORG_A, credentialId), refused('NOT_ELIGIBLE'));
+    c.cleanup();
+  });
+
+  it('review P2-E: a dispute on one operation is not masked by an earlier-expiring single report on another', () => {
+    const c = buildCircuit();
+    const credentialId = activeCredential(c);
+    const { lifecycle } = c.services();
+    c.clock.advance(3600);
+    // document.export: C alone reports a bypass (a single, uncontradicted report).
+    assert.ok(submit(c, observe(c, c.validators.C, issue(c, 'G01', [c.validators.C], { operation: 'document.export' }), { outcome: 'allowed' })).accepted);
+    c.clock.advance(5 * 60);
+    // document.open: C reports a bypass that B, contemporaneously, contradicts (a dispute).
+    const open = issue(c, 'G01', [c.validators.B, c.validators.C], { operation: 'document.open' });
+    assert.ok(submit(c, observe(c, c.validators.C, open, { outcome: 'allowed' })).accepted);
+    assert.ok(submit(c, observe(c, c.validators.B, open)).accepted);
+    c.clock.advance(40 * 60);
+    const { protectiveTransition } = lifecycle.evaluate(ORG_A, credentialId);
+    assert.equal(protectiveTransition?.record.reasonCode, 'CONFLICTING_EVIDENCE');
     c.cleanup();
   });
 

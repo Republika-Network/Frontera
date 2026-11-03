@@ -321,8 +321,11 @@ export type StoredObservationDefect =
  * row's recorded acceptance time, then checks the stored digest, every column against the signed
  * payload and the engine's own classification. Returns `null` when the row is authentic.
  *
- * A row's recorded acceptance time is not signed; it only ever narrows what passes: whatever it says,
- * the signed observation must lie inside the signed challenge's window and the enrolled key's validity.
+ * Limitation (review P3-F): a row's recorded acceptance time is not signed. Whatever it says, the signed
+ * observation must have been observed and submitted inside the signed challenge's window and the
+ * enrolled key's validity; but a raw writer holding a genuinely signed submission that the boundary
+ * refused only because it *arrived* late (after the deadline or the key's end) can choose an acceptance
+ * time that makes it pass. Closing that needs a signed acceptance receipt (RN-CONFORM-03 key custody).
  */
 export function authenticateStoredObservation(
   store: ConformanceStore,

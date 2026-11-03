@@ -70,10 +70,12 @@ function humanRequired(
   if (record.transitionCode === 'T5' && previous !== undefined) {
     const since = toMs(previous.effectiveAt);
     const until = toMs(record.effectiveAt);
-    const failedWhileSuspended = evaluations.some((e) => e.criticalFailureConfirmed && toMs(e.evaluatedAt) >= since && toMs(e.evaluatedAt) <= until);
+    // Strictly before the reinstatement (review P2-C): something recorded in the same millisecond but after it belongs to the next period.
+    // The store's guard, which runs before the row exists, is never weaker than this.
+    const failedWhileSuspended = evaluations.some((e) => e.criticalFailureConfirmed && toMs(e.evaluatedAt) >= since && toMs(e.evaluatedAt) < until);
     // Finding 1: a confirmed critical violation accepted since the last activation, recorded durably whether or not it was ever evaluated.
     const activatedAt = lastActivation === undefined ? Number.NEGATIVE_INFINITY : toMs(lastActivation.effectiveAt);
-    const confirmedSinceActivation = violations.some((v) => v.confirmed && v.confirmedAtMs >= activatedAt && v.confirmedAtMs <= until);
+    const confirmedSinceActivation = violations.some((v) => v.confirmed && v.confirmedAtMs >= activatedAt && v.confirmedAtMs < until);
     if ((HUMAN_REINSTATEMENT_REASONS as readonly string[]).includes(previous.reasonCode) || failedWhileSuspended || confirmedSinceActivation) return 'credential.reinstate';
   }
   if (record.to === 'REVOKED' && record.reasonCode !== 'SUSPENSION_TIMEOUT') return 'credential.revoke';

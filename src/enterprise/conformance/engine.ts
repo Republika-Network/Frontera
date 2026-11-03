@@ -93,6 +93,14 @@ export interface EngineInput {
    * suspends under SR-1.
    */
   readonly evidenceTruncated?: boolean;
+  /**
+   * Confirmed critical violations recorded durably at acceptance (`cc_confirmed_violations`) since the
+   * credential last became ACTIVE. For an ACTIVE credential each one is a standing VERIFIED_FAILURE of its
+   * requirement even if later successes would clear it in the window rules: a confirmed critical bypass
+   * always suspends (SR-1) and is lifted only by the two-person path (review finding P1-A). Ignored in
+   * other states, where reinstatement already requires humans for them.
+   */
+  readonly recordedConfirmedViolations?: readonly { readonly eventId: string; readonly controlId: string; readonly operation: string; readonly observedAt: string }[];
 }
 
 export interface EngineOutput {
@@ -106,7 +114,7 @@ export interface EngineOutput {
  * Evaluation records are bounded independently of history (finding 2): a result cites at most this many
  * supporting observations per operation (the latest per operator in the decisive window), and at most
  * `MAX_LISTED_OPERATORS` operators. With `MAX_COVERED_OPERATIONS` = 16 and 8 requirements the record stays
- * well inside the canonicalization budget (4 096 nodes); `conformance-review-regressions` measures it.
+ * well inside the canonicalization budget (4 096 nodes): roughly 1.3 k nodes at that worst case (estimate).
  */
 export const MAX_SUPPORTING_OBSERVATIONS = 4;
 export const MAX_LISTED_OPERATORS = 16;
@@ -244,9 +252,14 @@ function combineOperations(perOperation: readonly { readonly operation: string; 
   const pick = (category: ResultCategory, by: (a: RequirementResult, b: RequirementResult) => number) =>
     perOperation.filter((p) => p.result.category === category).sort((a, b) => by(a.result, b.result) || cmp(a.operation, b.operation))[0];
   const failure = pick('VERIFIED_FAILURE', (a, b) => cmp(b.confirmedFailureAt, a.confirmedFailureAt));
-  const investigating = perOperation
+  // Investigations: the earliest deadline decides when SR-4 fires; a dispute on any operation makes the whole
+  // requirement CONFLICTING, so an expiring single report cannot mask it (review finding P2-E).
+  const open = perOperation
     .filter((p) => INVESTIGATING.includes(p.result.category))
-    .sort((a, b) => cmp(a.result.investigationDeadline, b.result.investigationDeadline) || (a.result.category === b.result.category ? 0 : a.result.category === 'CONFLICTING' ? -1 : 1) || cmp(a.operation, b.operation))[0];
+    .sort((a, b) => cmp(a.result.investigationDeadline, b.result.investigationDeadline) || (a.result.category === b.result.category ? 0 : a.result.category === 'CONFLICTING' ? -1 : 1) || cmp(a.operation, b.operation));
+  const earliest = open[0];
+  const disputed = open.find((p) => p.result.category === 'CONFLICTING');
+  const investigating = earliest === undefined ? undefined : { operation: earliest.operation, result: Object.freeze({ ...earliest.result, category: disputed?.result.category ?? earliest.result.category }) };
   const chosen =
     failure ?? investigating ?? pick('INSUFFICIENT_EVIDENCE', () => 0) ?? pick('STALE_EVIDENCE', (a, b) => cmp(a.freshUntil, b.freshUntil)) ?? pick('VERIFIED_SUCCESS', (a, b) => cmp(a.freshUntil, b.freshUntil))!;
   const unverified = perOperation.filter((p) => p.result.category !== 'VERIFIED_SUCCESS').map((p) => `OPERATION_${p.result.category}:${p.operation}`);
@@ -350,6 +363,29 @@ export function evaluateConformance(input: EngineInput): EngineOutput {
         result = deterministic(requirement, 'INSUFFICIENT_EVIDENCE', 'UNSUPPORTED_EVALUATION');
     }
     byId.set(requirement.requirementId, result);
+  }
+
+  // P1-A: on an ACTIVE credential a durably recorded confirmed critical violation stands until the two-person path lifts it.
+  if (input.credentialState === 'ACTIVE') {
+    for (const requirement of profile.requirements) {
+      if (requirement.evaluation !== 'validator-corroborated' || requirement.severity !== 'critical') continue;
+      const operations = requiredOperations(requirement.challengeType, input.coveredOperations);
+      const recorded = (input.recordedConfirmedViolations ?? []).filter((v) => v.controlId === requirement.requirementId && operations.includes(v.operation));
+      const current = byId.get(requirement.requirementId);
+      if (recorded.length === 0 || current === undefined || current.category === 'VERIFIED_FAILURE') continue;
+      const latestRecord = [...recorded].sort((a, b) => cmp(a.observedAt, b.observedAt) || cmp(a.eventId, b.eventId)).at(-1)!;
+      const standing: RequirementResult = Object.freeze({
+        ...current,
+        category: 'VERIFIED_FAILURE',
+        reasonCodes: Object.freeze(['RECORDED_CONFIRMED_VIOLATION', ...[...new Set(recorded.map((v) => `RECORDED_CONFIRMED_VIOLATION:${v.operation}`))].sort(), ...current.reasonCodes]),
+        evidenceIds: Object.freeze([...new Set([...current.evidenceIds, latestRecord.eventId])].sort()),
+        confirmedFailureAt: latestRecord.observedAt,
+        investigationDeadline: null,
+      });
+      byId.set(requirement.requirementId, standing);
+      const index = corroborated.findIndex((r) => r.requirementId === requirement.requirementId);
+      if (index >= 0) corroborated[index] = standing;
+    }
   }
 
   const requirementResults = Object.freeze(profile.requirements.map((r) => byId.get(r.requirementId)!));

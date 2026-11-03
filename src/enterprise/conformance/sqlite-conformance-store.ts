@@ -353,10 +353,18 @@ CREATE TRIGGER cc_observations_attributed BEFORE INSERT ON cc_observations BEGIN
   SELECT RAISE(ABORT, 'cc:observation challenge mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_challenges c WHERE c.challenge_id = NEW.challenge_id AND c.organization_id = NEW.organization_id AND c.integration_digest = NEW.integration_digest AND c.control_id = NEW.control_id AND c.operation = NEW.operation AND c.profile_id = NEW.profile_id AND c.profile_version = NEW.profile_version);
   SELECT RAISE(ABORT, 'cc:observation evidence missing') WHERE NOT EXISTS (SELECT 1 FROM cc_evidence_packages e WHERE e.evidence_digest = NEW.evidence_digest AND e.organization_id = NEW.organization_id);
 END;
+-- Review P2-B: a violation record exists only as the projection of its own violation observation, written by the trigger
+-- below; a raw writer cannot plant one in advance to collide with (and so suppress) the honest record.
+CREATE TRIGGER cc_confirmed_violations_bound BEFORE INSERT ON cc_confirmed_violations BEGIN
+  SELECT RAISE(ABORT, 'cc:violation record without its observation') WHERE NOT EXISTS (SELECT 1 FROM cc_observations o WHERE o.event_id = NEW.event_id AND o.outcome_class = 'violation'
+    AND o.organization_id = NEW.organization_id AND o.integration_digest = NEW.integration_digest AND o.profile_id = NEW.profile_id AND o.profile_version = NEW.profile_version
+    AND o.control_id = NEW.control_id AND o.operation = NEW.operation AND o.observed_at_ms = NEW.observed_at_ms AND o.accepted_at_ms = NEW.confirmed_at_ms);
+END;
 -- Finding 1: a violation is recorded with the number of distinct operators that reported a violation of the same
 -- subject, profile, control and operation within the profile's corroboration window of it (either side, so arrival
 -- order does not matter). For k = 2 this is exactly CC-D-03; for a larger k it over-approximates, which can only
--- require humans more often. Forged rows can only add violations, never remove one.
+-- require humans more often. Revoked or quarantined validators are counted too (conservative). A forged observation row can only
+-- add a record; it cannot pre-empt or remove one (cc_confirmed_violations_bound, duplicate guards, immutability).
 CREATE TRIGGER cc_observations_record_violation AFTER INSERT ON cc_observations WHEN NEW.outcome_class = 'violation' BEGIN
   INSERT INTO cc_confirmed_violations (event_id, organization_id, integration_digest, profile_id, profile_version, control_id, operation, critical, operator_count, min_operators, observed_at_ms, confirmed_at_ms)
     SELECT NEW.event_id, NEW.organization_id, NEW.integration_digest, NEW.profile_id, NEW.profile_version, NEW.control_id, NEW.operation,
@@ -391,6 +399,9 @@ CREATE TRIGGER cc_evaluations_guard BEFORE INSERT ON cc_evaluations BEGIN
   SELECT RAISE(ABORT, 'cc:suspension proposed for non-active credential') WHERE NEW.requires_suspension = 1 AND ${HEAD('state')} <> 'ACTIVE';
   SELECT RAISE(ABORT, 'cc:protective transition not applicable') WHERE NEW.pt_transition_id IS NOT NULL AND (NEW.requires_suspension <> 1 OR ${HEAD('state')} <> 'ACTIVE');
   SELECT RAISE(ABORT, 'cc:eligibility with failure') WHERE NEW.eligible_for_active = 1 AND (NEW.critical_failure = 1 OR NEW.requires_suspension = 1);
+  -- Review P1-A: an ACTIVE head cannot be evaluated as anything but a critical failure with its suspension while a confirmed critical violation
+  -- was recorded since its activation — later successes do not clear it.
+  SELECT RAISE(ABORT, 'cc:recorded violation without suspension') WHERE ${HEAD('state')} = 'ACTIVE' AND (NEW.critical_failure = 0 OR NEW.pt_transition_id IS NULL) AND ${CONFIRMED_VIOLATION_SINCE_LAST_ACTIVATION};
 END;
 -- One AFTER trigger, so the order is fixed: insert the protective transition (if any), then check the postconditions.
 -- RAISE(ABORT) here is not affected by an outer OR IGNORE / OR REPLACE.
@@ -604,6 +615,8 @@ export interface ConformanceStore {
   listRecentObservations(organizationId: string, integrationDigest: string, sinceMs: number, limit: number): readonly StoredObservationRow[];
   /** One page of the complete history (audit), ordered by observation time then event id, after the given cursor. */
   listObservationPage(organizationId: string, integrationDigest: string, after: { readonly observedAtMs: number; readonly eventId: string } | null, limit: number): readonly StoredObservationRow[];
+  /** Review P2-D: violation observations of one subject observed at or after `sinceMs`, newest first, at most `limit`. */
+  listViolationObservations(organizationId: string, integrationDigest: string, sinceMs: number, limit: number): readonly StoredObservationRow[];
   /** Finding 1: recorded violations of one subject and profile accepted at or after `sinceMs`. */
   listRecordedViolations(organizationId: string, integrationDigest: string, profileId: string, profileVersion: string, sinceMs: number): readonly RecordedViolation[];
   insertRejection(rejection: { receivedAt: string; reason: string; submissionDigest: string; eventId: string | null; validatorId: string | null; challengeId: string | null; conflictsWithEventId: string | null }, sideEffect?: () => void): void;
@@ -920,6 +933,10 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
     listRecentObservations: (organizationId: string, integrationDigest: string, sinceMs: number, limit: number) =>
       (db
         .prepare('SELECT * FROM cc_observations WHERE organization_id = ? AND integration_digest = ? AND observed_at_ms >= ? ORDER BY observed_at_ms DESC, event_id DESC LIMIT ?')
+        .all(organizationId, integrationDigest, Math.floor(sinceMs), Math.max(0, Math.floor(limit))) as Record<string, unknown>[]).map((row) => parseObservation(row)!),
+    listViolationObservations: (organizationId: string, integrationDigest: string, sinceMs: number, limit: number) =>
+      (db
+        .prepare("SELECT * FROM cc_observations WHERE organization_id = ? AND integration_digest = ? AND outcome_class = 'violation' AND observed_at_ms >= ? ORDER BY observed_at_ms DESC, event_id DESC LIMIT ?")
         .all(organizationId, integrationDigest, Math.floor(sinceMs), Math.max(0, Math.floor(limit))) as Record<string, unknown>[]).map((row) => parseObservation(row)!),
     listObservationPage: (organizationId: string, integrationDigest: string, after: { readonly observedAtMs: number; readonly eventId: string } | null, limit: number) =>
       (db

@@ -252,11 +252,20 @@ one operation no longer counts for another (§14, finding 4).
   volumes, not tuned for production.
 * Triggers do not protect against an administrator replacing the database file (§6).
 * T07 of the threat model (fixture ≠ production) is untouched: everything here is a fixture.
-* *(§14)* An **unconfirmed** single-operator dispute that is never evaluated for longer than the
-  evaluation horizon (≈ 7 d 7 h) falls out of the bounded read: the credential then fails closed on
-  stale evidence (SR-2) instead of SR-4 `CONFLICTING_EVIDENCE`. Confirmed violations are not affected
-  (they are recorded durably). A scheduler that evaluates more often than the horizon closes this;
-  scheduling is RN-CONFORM-05.
+* *(§14)* Violation observations are read back to the start of the current period (last activation,
+  or registration), so a dispute does not age out; conformant evidence is read only within the
+  horizon. A dispute raised earlier in the period that was resolved by other operators long ago is
+  therefore resolved again only by conformant evidence inside the horizon from ≥ 2 other operators —
+  stricter than before (it can block automatic recovery), never weaker.
+* *(§14, review P3-F)* The recorded acceptance time of a stored row is not signed: a raw writer holding a
+  genuinely signed submission refused only for arriving late can choose an acceptance time that lets it
+  pass re-authentication. It must still have been observed and submitted within the challenge window
+  and key validity. A signed acceptance receipt is RN-CONFORM-03 (key custody).
+* *(§14, review P2-E)* While one operation of a requirement is under investigation, another operation's
+  missing or lapsed evidence is reported as `OPERATION_…` reason codes but does not suspend until the
+  investigation is decided (at most the 30-minute investigation timeout).
+* *(§14, review P3-G)* `verifyEvidenceHistory` (the full-history audit) is called by tests only; no
+  production caller exists in this synthetic circuit.
 * *(§14)* For a profile with `minDistinctOperators` > 2 the recorded-violation count over ± one window
   over-approximates corroboration; it can only require humans more often, never less.
 * *(§14)* Revocation policy is withdrawal, not rewriting: a validator revoked or quarantined at
@@ -335,3 +344,17 @@ success, so per-operation coverage cannot be satisfied from a partial read.
 (`conformance-structure`); the Founding Assessment commercial NO-GO; the two pinned profile digests.
 The store schema changed (new columns, table, indexes and triggers); it is a new synthetic store, and
 the open-time schema check refuses any file created by the previous version.
+
+### 14.1 Independent re-review of the remediation (AI reviewer, static only; not an accredited audit)
+
+A separate reviewer read `6b21a5b9..b8b2aa84` without executing anything. Its findings and their disposition:
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| P1-A | P1 | Finding 1 was half closed: a violation confirmed while **ACTIVE** and healed before any `evaluate()` left the credential ACTIVE and CONFORMANT (the engine's window rules cleared it). | **Fixed.** For an ACTIVE credential every confirmed critical record since the last activation is a standing VERIFIED_FAILURE (`RECORDED_CONFIRMED_VIOLATION`), so `evaluate` suspends (SR-1) and the verifier refuses; the store's evaluation guard refuses any non-suspending evaluation of an ACTIVE head while such a record exists (`cc:recorded violation without suspension`). Test: `review P1-A …`. |
+| P2-B | P2 | A raw writer could plant a `cc_confirmed_violations` row with a predicted event id; the honest record would then collide and the violation be dropped. | **Fixed.** `cc_confirmed_violations_bound` admits a record only for an existing, equal violation observation. Test: `review P2-B …`. |
+| P2-C | P2 | The history verifier counted records/evaluations in the same millisecond as a T5 (`<= until`), so a violation accepted just after an automatic T5 at the same instant invalidated a legitimate history. | **Fixed.** Strictly before (`< until`); the store guard is never weaker. Test: `review P2-C …`. |
+| P2-D | P2 | The horizon dropped unresolved disputes, so automatic recovery became possible where it had been blocked. | **Fixed.** Violations are read back to the start of the current period. Test: `review P2-D …`. |
+| P2-E | P2 | A per-operation dispute was masked by an earlier-expiring single report on another operation (SR-4 `CORROBORATION_UNAVAILABLE` instead of `CONFLICTING_EVIDENCE`). | **Fixed.** A dispute on any operation makes the requirement CONFLICTING, with the earliest deadline. Test: `review P2-E …`. The 30-minute SR-2 delay it noted is recorded in §10. |
+| P3-F | P3 | The unsigned acceptance time can widen re-authentication for genuinely signed but late-arriving submissions. | **Documented** (§10; docstring corrected). Needs a signed acceptance receipt (RN-CONFORM-03). |
+| P3-G | P3 | Revoked validators counted in the record count (conservative); unverified size claim in a comment; audit used by tests only. | Comment corrected; the other two documented (§6, §10). |
