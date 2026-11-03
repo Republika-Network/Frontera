@@ -188,6 +188,7 @@ export const FV_IDENTITY_REGISTRATION_REFUSALS = Object.freeze([
   'WITNESS_ALREADY_BOUND',
   'STORE_ID_IN_ANOTHER_DOMAIN',
   'LEDGER_UNAVAILABLE',
+  'AUTHENTICITY_UNVERIFIED',
 ] as const);
 export type FvIdentityRegistrationRefusal = (typeof FV_IDENTITY_REGISTRATION_REFUSALS)[number];
 
@@ -667,6 +668,22 @@ function platformOrThrow(): void {
  * only when every piece of evidence agrees; otherwise `pending` (resume later, with a resume capability),
  * `quarantined` (terminal) or `refused` (nothing consumed unless `detail` says the capability was).
  */
+/**
+ * Whether the configured signer's signature over this registration's genesis verifies under the configured
+ * verifier, as its own active key. Any failure, including an unavailable signer, is a refusal before the
+ * capability is consumed.
+ */
+async function authenticityRoundTrips(config: Configuration, storeId: string): Promise<boolean> {
+  try {
+    const genesis = { storeId, organizationId: config.organizationId, sequence: 0, chainDigest: humanIdentityGenesisDigest(storeId, config.organizationId) };
+    const signature = await config.authenticity.signer.signHumanIdentityState!(genesis);
+    const verification = config.authenticity.verifier.verifyHumanIdentityState(genesis, signature);
+    return verification.verified && verification.keyId === config.authenticityKeyId;
+  } catch {
+    return false;
+  }
+}
+
 export async function registerFvIdentity(options: FvIdentityRegistrarOptions, request: { readonly presentation: unknown; readonly registrationId: string; readonly storeId: string }): Promise<FvIdentityRegistrationOutcome> {
   const config = configurationOf(options);
   platformOrThrow();
@@ -716,6 +733,10 @@ export async function registerFvIdentity(options: FvIdentityRegistrarOptions, re
     }
     if (fvSlot.status !== 'unbound') return refused('WITNESS_ALREADY_BOUND');
     if (hostSlot.status === 'bound' && hostSlot.storeId === storeId) return refused('STORE_ID_IN_ANOTHER_DOMAIN');
+
+    // Publication review L1: the store this ceremony will create must verify under the configured verifier. A
+    // misconfiguration is refused here, before anything is consumed or anchored, never quarantined after the genesis.
+    if (!(await authenticityRoundTrips(config, storeId))) return refused('AUTHENTICITY_UNVERIFIED');
 
     // 5. Durable single use, then the intent, before the witness is asked for anything.
     const ledger = await openLedger(config, !existsSync(config.ledgerPath));
@@ -792,6 +813,8 @@ export async function resumeFvIdentityRegistration(options: FvIdentityRegistrarO
     if (!configurationMatches(config, current)) return refused('CONFIGURATION_MISMATCH');
     // The intent it continues must be the one a pinned issuer signed: a record whose fields were rewritten is never continued.
     if (!registrationAuthorized(current, { organizationId: config.organizationId, trustedIssuers: config.trustedIssuers, audience: config.audience, trustDomain: config.trustDomain })) return refused('RECORD_CORRUPT', 'AUTHORIZATION_UNVERIFIED');
+
+    if (!(await authenticityRoundTrips(config, current.storeId))) return refused('AUTHENTICITY_UNVERIFIED');
 
     const verifier = createExecutionCapabilityVerifier({ trustedIssuers: config.trustedIssuers, executor: { audience: config.audience, organizationIds: [config.organizationId], trustDomain: config.trustDomain }, clock: config.clock });
     const verification = verifier.verify({

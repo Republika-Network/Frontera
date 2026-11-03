@@ -11,6 +11,7 @@ import { WITNESS_TOKEN } from '../dist/src/enterprise/__tests__/core07-freshness
 import { AUTHORITY_KEY_A, testSigner, testVerifier } from '../dist/src/enterprise/__tests__/authority-authenticity-fixture.js';
 import { issueRegistrationCapability, newRegistrationId, newStoreId, trustedRegistrationIssuers } from '../dist/src/enterprise/__tests__/fv-identity-registration-issuer-fixture.js';
 import { FV_IDENTITY_STORE_POLICY, witnessKeyDigestOf } from '../dist/src/enterprise/sovereign-status-history/identity-registration.js';
+import { heldByAnotherProcess } from '../dist/src/enterprise/sovereign-status-history/executor-exclusivity.js';
 
 export const ORG = 'org-fv-p4c2b3c2a';
 export const DEPLOYMENT = 'deployment:test-fv-b3c2a';
@@ -117,17 +118,27 @@ export function runChild(world, witness, { operation, request, killAt, hold } = 
   });
 }
 
-/** A child that opens `path` as an exclusive SQLite owner and holds it until killed (an executor still alive). */
-export function holdExclusively(path) {
-  return new Promise((done, fail) => {
+/**
+ * A child that opens `path` as an exclusive SQLite owner and holds it until killed (an executor still alive).
+ * The connection is strongly referenced and used (a collected connection is closed, releasing its lock), and the
+ * lock is confirmed in /proc/locks before this resolves: a holder that does not hold fails the test, not the ceremony.
+ */
+export async function holdExclusively(path) {
+  const child = await new Promise((done, fail) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', `
       const { default: Database } = await import(${JSON.stringify(new URL('../node_modules/better-sqlite3/lib/index.js', import.meta.url).pathname)});
       const db = new Database(${JSON.stringify(path)}, { fileMustExist: true });
       db.pragma('locking_mode = EXCLUSIVE'); db.exec('BEGIN EXCLUSIVE'); db.exec('COMMIT');
-      process.stdout.write('held\\n'); setInterval(() => {}, 1000);
+      globalThis.held = db;
+      process.stdout.write('held\\n'); setInterval(() => db.prepare('SELECT 1').get(), 200);
     `], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NODE_TEST_CONTEXT: '' } });
     child.stdout.once('data', () => done(child));
     child.on('error', fail);
     child.on('exit', (code) => fail(new Error(`holder exited ${String(code)}`)));
   });
+  if (!heldByAnotherProcess(path)) {
+    child.kill('SIGKILL');
+    throw new Error(`the holder does not hold ${path}`);
+  }
+  return child;
 }

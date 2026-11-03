@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, openSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import { checkProtectedFile, confirmExclusivelyHeld, exclusiveCloser } from './executor-exclusivity.js';
@@ -277,6 +277,17 @@ function recordOf(row: Readonly<Record<string, unknown>> | undefined, organizati
   });
 }
 
+/** Whether the file's SQLite header says WAL (header bytes 18 and 19 are 2 for WAL, 1 for a rollback journal). Read with plain I/O. */
+function walHeader(file: string): boolean {
+  const header = Buffer.alloc(20);
+  const fd = openSync(file, 'r');
+  try {
+    return readSync(fd, header, 0, 20, 0) === 20 && header.subarray(0, 16).toString('latin1') === 'SQLite format 3\u0000' && (header[18] === 2 || header[19] === 2);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** The file's identity checks: tables, triggers, meta, integrity. Any failure is corruption (or another organization's record). */
 function verifyStructure(db: Database, organizationId: string): void {
   const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: unknown }[];
@@ -331,6 +342,9 @@ export async function openFvRegistrationRecord(path: string, options: { readonly
       throw new FvIdentityRegistrationRecordError('BUSY', 'The registration record appeared while it was being created; another ceremony is running.');
     }
   }
+  // Publication review L2: a record is a rollback-journal database. A WAL database at this path (another owner's
+  // ledger, history or store, misconfigured) is refused before SQLite opens it, so it is never checkpointed or converted.
+  if (!created && (existsSync(`${file}-wal`) || walHeader(file))) throw new FvIdentityRegistrationRecordError('CORRUPT', 'The file at the registration record path is a WAL database, not a registration record; it was not opened.');
   const { default: SqliteDatabase } = await import('better-sqlite3');
   const db: Database = new SqliteDatabase(file, { fileMustExist: true });
   try {
@@ -348,6 +362,8 @@ export async function openFvRegistrationRecord(path: string, options: { readonly
     if (!held()) throw new FvIdentityRegistrationRecordError('UNAVAILABLE', 'The registration ceremony no longer holds its record; nothing was written.');
   };
   try {
+    // An existing file is confirmed to be this organization's record before any pragma changes it.
+    if (!created) verifyStructure(db, organizationId);
     db.pragma('journal_mode = DELETE');
     db.pragma('synchronous = FULL');
     const empty = db.prepare(`SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1`).get() === undefined;

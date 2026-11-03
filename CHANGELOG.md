@@ -12,11 +12,11 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 - **Executor gate.** The composition's opt-in `registration` option verifies, before opening anything, a registered record of exactly its store, path, witness and organization, on the reserved file, signed over its binding by a pinned issuer (`IDENTITY_UNREGISTERED` otherwise); `status().identityRegistration`. A verified registration executes nothing: `bootstrapExecution` stays `disabled`.
 - **Split.** FV operator enrolment (B3C-2A2) and revocation (B3C-2A3) are designed, not implemented.
 - **Tests:**
-  - 41 e2e tests: capability matrix, single use, substitution, `SIGKILL` at every durable step, recovery, quarantine, concurrency, executor gates, record tampering (publication audit);
+  - 43 e2e tests: capability matrix, single use, substitution, `SIGKILL` at every durable step, recovery, quarantine, concurrency, executor gates, record tampering (publication audit), misconfiguration refusals (publication review);
   - 7 structure tests;
   - two existing import pins gained exact exceptions for the new module, and no assertion was removed.
-- **Mutants:** 18 of 18 targeted mutants killed.
-- **Independent review** (an AI agent of the same model family, not a human): no authority bypass. A Medium is fixed: a witness failure that was not evidence permanently quarantined a registration after its genesis, and is now `pending`. Low and Info items are documented.
+- **Mutants:** 20 of 20 targeted mutants killed: 18 at implementation, plus 2 for the publication-review fixes.
+- **Independent review** (an AI agent of the same model family, not a human): no authority bypass. A Medium is fixed: a witness failure that was not evidence permanently quarantined a registration after its genesis, and is now `pending`. Low and Info items are documented. The publication review (PR #262) found no Critical, High or Medium issue. Two Lows are fixed and refused before anything is consumed: a verifier that does not trust the signer, and a record path naming another owner's WAL database.
 - **Production activation: NO-GO.**
 
 ### Changed — CI-TEST-LOG-01 failure diagnostics for `protocol-tarball-consumption` (CI only; no gate changed)

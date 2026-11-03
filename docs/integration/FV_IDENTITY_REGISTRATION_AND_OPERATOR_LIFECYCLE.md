@@ -15,7 +15,7 @@ No FV operator can be enrolled or revoked by anything in this increment.
 
 | Contract | What exists | Limitation for FV registration |
 |---|---|---|
-| AUTH-03 store (`human-identity/sqlite-human-identity-store.ts`) | Signed, hash-chained head; `create: true` makes a genesis only in an empty file; `exclusive` (B3C-3): exclusive lock, fenced writes, guarded close, `storeId` pin checked before any write or witness contact; FV domain only with `exclusive`; an exclusive owner never enrols. | Any trusted in-process caller could perform an FV genesis; nothing recorded who authorized it. |
+| AUTH-03 store (`human-identity/sqlite-human-identity-store.ts`) | Signed, hash-chained head; `create: true` makes a genesis only in an empty file; `exclusive` (B3C-3): exclusive lock, fenced writes, guarded close, `storeId` pin checked on open (on the `create` path after the genesis commit, which the ceremony runs only once the witness holds S's genesis); FV domain only with `exclusive`; an exclusive owner never enrols. | Any trusted in-process caller could perform an FV genesis; nothing recorded who authorized it. |
 | AUTH-02/03 service (`human-identity/service.ts`) | Principals, admin-authorized single-use enrolment tokens, WebAuthn registration with proof of possession, recognition, admin and owner revocation, decision challenges. | **Administration is the Host's**: `identityAdministratorFor` accepts only a CTRL-02 `organization-administrator` of the Host's operator plane. Reused for FV, every Host administrator would administer FV operators. Not reused (§10). |
 | CORE-07 (`authority-state-freshness/`) | Per-(kind, organization) witness slots; `fv-bootstrap-identity-state` is the FV domain; signed receipts bound to a fresh challenge and the binding; genesis enrolled **before** the local genesis, adopted only if the witness holds exactly that store's genesis; a slot binds once, never rebinds; the witness refuses a store id already bound in the other identity domain. | `genesisStoreId` adopts **whichever** store id the slot holds at genesis: it cannot tell an authorized genesis from another one. |
 | G-02A execution capability (`execution-capability/`) | A closed, canonical, signed single-use capability; a standalone verifier (pinned issuers and keys, exact audience, organization, trust domain, ≤ 60 s window, action, resource, and an action binding the executor **recomputes**); a durable consumption ledger (one row per capability and per issuer execution, committed before any side effect, forward-only). | The ledger is not rollback-anchored. No FV action or binding format existed; no production issuance path for it (G-02B issues only from a governed grant). |
@@ -143,7 +143,7 @@ where it was (`pending`) or quarantines it.
 
 **The executor's verification (`verifyFvIdentityRegistration`, opt-in `registration` composition option).**
 Before the composition opens anything of its own, it requires a `registered` record of exactly this
-organization, FV domain, store id, path and witness, on the very file the ceremony reserved, whose stored
+organization, FV domain, store id, path and witness **id** (the record's signed witness key digest, deployment and signing key are not compared with the executor's own configuration; CORE-07 confirms the binding at open), on the very file the ceremony reserved, whose stored
 capability verifies under a pinned issuer key over exactly the binding the record's own fields recompute to.
 Opening the store under freshness then confirms that the witness binds S at a head the store holds, and the
 held file is checked again against the reserved identity. With `registration` absent (every existing test),
@@ -238,7 +238,7 @@ Unchanged: fdinfo lock verification, fail-stop, the guarded close, the status/st
 ## 12. Results
 
 **Tests.**
-- `tests/fv-p4c2b3c2a-identity-registration.e2e.test.mjs`: 41 tests, including four from the publication audit. They use a real reference witness, real AUTH-03 stores, the real G-02A verifier and ledger, and child processes killed by `SIGKILL` at each durable step.
+- `tests/fv-p4c2b3c2a-identity-registration.e2e.test.mjs`: 43 tests, including four from the publication audit and two from the publication review. They use a real reference witness, real AUTH-03 stores, the real G-02A verifier and ledger, and child processes killed by `SIGKILL` at each durable step.
 - `src/enterprise/__tests__/fv-p4c2b3c2a-identity-registration-structure.test.ts`: 7 tests.
 - Two existing import-isolation pins gained an exact, commented exception for `identity-registration.ts`, with new assertions that it composes no identity service, decision channel or settlement capability:
   - `fv-p4c2b2-structure` 50/51/52;
@@ -246,7 +246,7 @@ Unchanged: fdinfo lock verification, fail-stop, the guarded close, the status/st
 
   No assertion was removed.
 
-**Targeted mutants:** 18 of 18 killed. Each was applied to the compiled module in a separate copy and run against the targeted tests only, and every file was restored and hash-verified. The mutants cover:
+**Targeted mutants:** 18 of 18 killed at implementation, plus 2 of 2 for the publication-review fixes (removing the authenticity probe; touching a WAL database at the record path). Each was applied to the compiled module in a separate copy and run against the targeted tests only, and every file was restored and hash-verified. The mutants cover:
 - removing the capability signature check, the organization scope check, the execution scope check, and one-time consumption (register and resume);
 - removing the witness identity check (resume and executor), the store-id pin, the existing-store refusal and the foreign-file refusal;
 - removing the genesis readback and the cross-domain check;
@@ -265,6 +265,15 @@ Unchanged: fdinfo lock verification, fail-stop, the guarded close, the status/st
 | The policy text said "owner-only directory", but the check is "not writable by group or others". | Info | Wording fixed. |
 | The gate is opt-in, and in-process callers can still perform an FV genesis directly. | Info | Already an activation requirement (§13). |
 | An empty file placed at the record path gives a permanent `RECORD_CORRUPT`. | Info | Accepted: a same-user self-denial of service. |
+
+**Publication review of PR #262** (a fresh read-only AI agent, not human). It found no Critical, High or Medium issue. Its 13 priority checks came back clean.
+
+| Finding | Severity | Resolution |
+|---|---|---|
+| A registrar whose verifier does not trust the signer's key passed every check up to the genesis. It was then quarantined (`STORE_NOT_GENESIS`) with the slot bound: a misconfiguration locked the organization out. Reproduced. | Low | **Fixed.** Register and resume sign and verify this registration's genesis with the configured signer and verifier before anything is consumed. A failure is `AUTHENTICITY_UNVERIFIED`. One regression test; its mutant is killed. |
+| A record path naming another owner's WAL database was checkpointed and converted to a rollback journal before being refused. Reproduced. | Low | **Fixed.** A WAL database (by header, or by a `-wal` file) is refused before SQLite opens it. An existing file's structure is verified before any pragma. One regression test checks the file is byte-for-byte unchanged; its mutant is killed. |
+| The executor compares only the witness id, not the signed witness key digest, deployment or signing key. | Low | Accepted as defence in depth (CORE-07 confirms the binding at open). The §7 wording was narrowed. |
+| Resume and register report `registered` from the record alone. A crash between creating the record file and its schema leaves a permanently corrupt record. `registrationAuthorized` skips the rule that a key id names one issuer. A rejecting observer promise goes unhandled. The §1 wording on the store pin was too strong. | Info | Status-only, liveness-only, or misconfiguration-only. Documented; the §1 wording was corrected. |
 
 **Publication audit (B3C-2A1-REL): what the record's fields are worth.** This audit plays a raw same-user
 writer. That writer drops the triggers, rewrites rows and re-creates the triggers, and can also replace,

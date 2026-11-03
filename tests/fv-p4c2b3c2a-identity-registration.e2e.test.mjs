@@ -4,7 +4,7 @@
 // keys and temporary directories only.
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, existsSync, linkSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, linkSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { establishStatusHistory, verifySovereignStatus } from '@aoc-enterprise/sovereign-receiver-verification';
@@ -602,6 +602,47 @@ describe('FV-P4C-2B3C-2A1 — the executor verifies the registration before its 
       composeFvProtectedHostLike(world, binding.storeId, boundary),
       (e) => e.code === 'IDENTITY_REFUSED',
     );
+  });
+});
+
+describe('FV-P4C-2B3C-2A1 — publication review (PR #262): a misconfiguration is refused before anything is consumed, and touches nothing it does not own', () => {
+  it('a verifier that does not trust the signer is refused before the capability is consumed or the witness anchored (register and resume)', async () => {
+    const { witness, world } = await freshWorld();
+    const binding = bindingFor(world, witness);
+    const mistrusting = { authenticity: { signer: testSigner(AUTHORITY_KEY_A), verifier: testVerifier([AUTHORITY_KEY_B]) } };
+    const attempt = registerRequest(binding);
+    assert.deepEqual(await register(world, witness, attempt.request, mistrusting), { outcome: 'refused', reason: 'AUTHENTICITY_UNVERIFIED' });
+    assert.deepEqual(await fvRows(witness), [], 'nothing anchored');
+    assert.equal(await view(world), undefined, 'no intent recorded');
+    // The same capability, under the correct configuration, still registers: nothing was consumed.
+    assert.equal((await register(world, witness, attempt.request)).outcome, 'registered');
+    // Resume: a crash after the genesis was anchored, then a mistrusting resume, then the same resume capability correctly.
+    const { witness: w2, world: q } = await freshWorld();
+    const b2 = bindingFor(q, w2);
+    assert.equal((await runChild(q, w2, { operation: 'register', request: registerRequest(b2).request, killAt: 'witness-anchored' })).killed, true);
+    const completion = resumeRequest(b2);
+    assert.deepEqual(await resume(q, w2, completion.request, mistrusting), { outcome: 'refused', reason: 'AUTHENTICITY_UNVERIFIED' });
+    assert.equal((await view(q)).state, 'witness-anchored', 'never quarantined');
+    assert.equal((await resume(q, w2, completion.request)).outcome, 'registered');
+  });
+
+  it('a record path naming another owner’s WAL database is refused before SQLite opens it: never checkpointed, never converted', async () => {
+    const { witness, world } = await freshWorld();
+    const foreign = join(world.dir, 'someone-elses.sqlite');
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(foreign);
+    db.pragma('journal_mode = WAL');
+    db.exec('CREATE TABLE t (x)');
+    db.close();
+    chmodSync(foreign, 0o600);
+    const before = readFileSync(foreign);
+    assert.deepEqual(await register(world, witness, registerRequest(bindingFor(world, witness)).request, { recordPath: foreign }), { outcome: 'refused', reason: 'RECORD_CORRUPT' });
+    assert.deepEqual(readFileSync(foreign), before, 'the foreign database is byte-for-byte unchanged');
+    assert.equal(existsSync(`${foreign}-journal`), false);
+    const verdict = await verifyFvIdentityRegistration({ recordPath: foreign, organizationId: world.org, storePath: world.paths.store, storeId: newStoreId(), witnessId: witness.witnessId, trustedIssuers: trustedRegistrationIssuers(), audience: AUDIENCE, trustDomain: TRUST_DOMAIN });
+    assert.equal(verdict.verified, false);
+    assert.deepEqual(readFileSync(foreign), before);
+    assert.deepEqual(await fvRows(witness), []);
   });
 });
 
