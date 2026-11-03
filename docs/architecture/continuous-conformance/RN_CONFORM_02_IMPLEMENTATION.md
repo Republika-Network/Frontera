@@ -35,7 +35,8 @@
 | `lifecycle.ts` | The credential state machine T1–T8 (WP-10) |
 | `verifier.ts` | History verification and the fail-closed in-process status check; a local high-water mark (WP-11) |
 
-Test harness and suites: `src/enterprise/__tests__/conformance-*.ts` (§8 below). Differential probe:
+Test harness and suites: `src/enterprise/__tests__/conformance-*.ts` (§8 below). The PR #263 Codex-review
+remediation is recorded in §14. Differential probe:
 `scripts/protocol/check-conformance-canonicalization.mjs`.
 
 ## 3. Trust boundaries
@@ -142,6 +143,13 @@ restructured so the atomic record is **one row**:
    that the head equals the new transition. `RAISE(ABORT)` is not affected by a conflict clause.
 6. The open-time check compares the name **and SQL text** of every table, index and trigger with the
    schema, so a same-name trigger with a weakened body is refused.
+7. *(PR #263 remediation, §14)* `AFTER INSERT ON cc_observations` records every accepted violation in the
+   append-only `cc_confirmed_violations`, with the number of distinct operators that reported a violation
+   of the same subject, profile, control and operation within the corroboration window. A critical row
+   at or above `minDistinctOperators` is a **confirmed critical violation**, durable from the moment the
+   corroborating observation is accepted. The T5 guard requires two consumed human decisions whenever
+   such a row was accepted at or after the credential's last activation. The T2 guard refuses issuance at
+   or after `candidate_until_ms`.
 
 Stored **observations** are re-authenticated before every evaluation and every verification
 (`authenticateStoredObservation`: signature under the enrolled key, stored digest, every column
@@ -182,6 +190,15 @@ prevented.
   (two humans); T8 expiry (90 d). REVOKED and EXPIRED are terminal. A prepared action binds its
   evaluation and is refused if tampered, older than 15 min, or if the head moved; eligibility is re-
   established at commit.
+* **Bounded evaluation (§14, finding 2):** an evaluation reads, through an index, only the newest
+  `MAX_EVALUATION_OBSERVATIONS` (4 096) observations within the evaluation horizon (longest freshness +
+  grace + window + investigation timeout ≈ 7 d 7 h). More than that is `evidenceTruncated`: no success can
+  be established (fail closed: SR-2 on an ACTIVE credential, never eligible otherwise), while violations
+  among the newest observations still confirm under SR-1. Each result cites at most 4 supporting
+  observations per operation. The full history stays in the store and is audited by
+  `verifyEvidenceHistory` in pages of 512.
+* **Operation coverage (§14, finding 4):** each enforcement requirement is evaluated for every covered
+  operation separately; G08 once. The requirement is the weakest of its operations.
 * **Verifier:** existence in the caller's organization, full history verification, exact subject and
   profile digest, committed state ACTIVE, term, operation covered and not excluded, critical evidence
   fresh *now*, no pending protective action, no open investigation, and an optional local high-water
@@ -201,6 +218,11 @@ All in `src/enterprise/__tests__/`, run as compiled `dist/…/*.test.js` with `n
 | `conformance-end-to-end` | Stages A–N in one run: `CANDIDATE → ACTIVE → SUSPENDED → ACTIVE` (T1, T2, T4, T5; stateVersion 1–4) |
 | `conformance-review-regressions` | One test per independent-review finding (§13): conflict clauses, REPLACE/upsert, injected and rewritten evidence rows, laundered reinstatement, same-name trigger replacement, borrowed evidence packages |
 | `conformance-structure` | No network/HTTP/XRPL/token code; imported by nothing outside its module and tests; no Assurance imports; no committed private keys; rn.sv digest and NO-GO unchanged |
+| `conformance-remediation` | The five Codex findings on PR #263 (§14), each with the reported scenario reproduced on real SQLite, its store-boundary and raw-connection variant, restart, and boundaries |
+
+The harness's baseline now runs every enforcement challenge for **each** covered operation
+(`document.export`, `document.open`) and G08 once — 11 challenges instead of 6 — because evidence for
+one operation no longer counts for another (§14, finding 4).
 
 ## 9. Deviations from the RN-CONFORM-01 contracts
 
@@ -230,6 +252,17 @@ All in `src/enterprise/__tests__/`, run as compiled `dist/…/*.test.js` with `n
   volumes, not tuned for production.
 * Triggers do not protect against an administrator replacing the database file (§6).
 * T07 of the threat model (fixture ≠ production) is untouched: everything here is a fixture.
+* *(§14)* An **unconfirmed** single-operator dispute that is never evaluated for longer than the
+  evaluation horizon (≈ 7 d 7 h) falls out of the bounded read: the credential then fails closed on
+  stale evidence (SR-2) instead of SR-4 `CONFLICTING_EVIDENCE`. Confirmed violations are not affected
+  (they are recorded durably). A scheduler that evaluates more often than the horizon closes this;
+  scheduling is RN-CONFORM-05.
+* *(§14)* For a profile with `minDistinctOperators` > 2 the recorded-violation count over ± one window
+  over-approximates corroboration; it can only require humans more often, never less.
+* *(§14)* Revocation policy is withdrawal, not rewriting: a validator revoked or quarantined at
+  evaluation time is excluded from every later evaluation, including for evidence accepted before.
+* *(§14)* A raw writer can still insert forged rows; they are refused on re-authentication and only
+  ever add recorded violations (stricter), never remove one.
 
 ## 11. Deferred work and follow-ups
 
@@ -277,3 +310,28 @@ regression test; the original proofs of concept were re-run and are now refused.
 Remaining risks: see §10. In particular the database cannot verify signatures, so a writer with raw
 access can still insert *structurally* valid rows; such tampering is detected by the verifier
 (transition, decision and observation signatures are all re-verified), not prevented.
+
+## 14. PR #263 Codex review remediation (founder decision: fix all five before merge)
+
+Five P2 findings were posted by the Codex reviewer on `6b21a5b9`. None was accepted as residual risk.
+Each fix below has a regression test in `conformance-remediation.test.ts` that reproduces the reported
+scenario on real SQLite through the real services.
+
+| # | Codex thread (location) | Root cause | Fix | Regression test | Invariant |
+|---|---|---|---|---|---|
+| 1 | `lifecycle.ts:145` | Whether reinstatement needed humans was derived only from **committed evaluations**. A violation corroborated while SUSPENDED for `EVIDENCE_STALE`/`CORROBORATION_UNAVAILABLE`, followed by revalidation before anyone called `evaluate()`, left no trace once later successes cleared it in the engine — `reinstateAutomatically` returned ACTIVE without humans (a residual of P1-3). | Confirmation is recorded **at acceptance** by trigger in the append-only `cc_confirmed_violations` (§6 item 7), independent of evaluations and transitions. The lifecycle, the T5 store guard and the history verifier all require two humans when a confirmed critical violation was accepted since the last activation. | `Codex finding 1 — …` (A–I: stale suspension → unevaluated corroborated bypass → persisted → full revalidation → automatic refused; DB refuses T5 via store and raw connection; record cannot be deleted/updated; restart; one human / same human / other proposal refused; two humans reinstate; history verifies) + active-period variant + single-operator negative | I1, I2, I8 |
+| 2 | `engine.ts:117` | Every evaluation embedded **every** usable observation id (per requirement and again overall); the record is digested under a 4 096-node canonicalization limit, so ≈ 2 172 observations made `evaluate()` throw `TOO_MANY_NODES` and no protective suspension could commit. Reads were unbounded scans and corroboration was O(n²). | Bounded supporting evidence per result; indexed newest-first read within the evaluation horizon, capped at 4 096 with an explicit fail-closed `EVALUATION_CAPACITY_EXCEEDED`; sliding-window corroboration (O(n log n)); full history kept and audited by `verifyEvidenceHistory` (paged). | `Codex finding 2 — …` (> 2 200 accepted observations: evaluation conformant, record size equal to a fresh credential's, deterministic; fresh corroborated bypass → SUSPENDED; full history re-authenticates with 0 defects); horizon test (old A+B evidence cannot satisfy quorum); capacity test (SR-2 with explicit reason, verifier refuses, SR-1 still fires) | I3, I7 |
+| 3 | `sqlite-conformance-store.ts:385` | T2 checked only the 90-day credential term; the 30-day candidate deadline was enforced only by `applyTimeRules`, so a candidate could be issued after its term if that rule had not run. | T2 refused at the store when `effective_at_ms ≥ candidate_until_ms` (deadline exclusive for issuance, inclusive for T3 expiry — exactly complementary); the lifecycle refuses `prepare('issue')` and `commit` with `CANDIDATE_TERM_ENDED`; the history verifier reports `TERM_VIOLATION`. | `Codex finding 3 — …` (1 ms before the deadline succeeds; at the deadline: replayed preparation with two valid approvals, fresh preparation, fully formed two-human T2 through the store and a raw connection all refused, after a restart; T3 still expires; verifier refuses a late T2 written with the triggers dropped) | I6 |
+| 4 | `engine.ts:205` | Accepted observations carried no operation; the engine aggregated by control only, so `document.open` evidence satisfied `document.export`. | The operation is stored (column, trigger-checked against the challenge, re-checked against the signed observation) and carried into the engine; each enforcement requirement is evaluated per covered operation and combined as the weakest (§7). G08 is operation-independent. Integrations are limited to 16 covered operations. | `Codex finding 4 — …` (A–F: open-only evidence → export `INSUFFICIENT_EVIDENCE`, not eligible; export bypass not masked by fresh open success → SR-1; full evidence activates) + G (a changed declared scope is a new integration digest; old evidence is not reused; the new operation needs its own evidence) | I4 |
+| 5 | `evidence.ts:319` | Re-authentication of stored rows re-checked signatures and bindings but not the challenge **deadline** or the enrolled key's **validity interval**, so signed-but-late observations inserted through the store were counted. | One acceptance contract (`checkObservationAuthority` steps 2–8, `checkObservationCustody` step 10) used by both `submitObservation` and `authenticateStoredObservation`, evaluated as of the row's recorded acceptance time; plus column checks for operation and millisecond times. Policy: historical checks for validity; revocation/quarantine at evaluation time withdraws a validator's evidence without reporting it as forged. | `Codex finding 5 — …` (late rows → `CHALLENGE_EXPIRED`, backdated acceptance → `FUTURE_DATED`, verifier `EVIDENCE_TAMPERED`, never counted, same after reopen; invalid rows never complete quorum; key expired at observation time → `KEY_NOT_VALID`; honest evidence stays valid after its key and challenge expire; tampered stored challenge → `CHALLENGE_UNKNOWN`; revoked key withdraws without `EVIDENCE_TAMPERED`) | I5 |
+
+**Interactions checked.** Recorded violations (1) are per control **and operation**, consistent with the
+per-operation engine (4): a violation of `document.open` by A and of `document.export` by B is not a
+corroboration. They do not depend on the bounded read (2), so a confirmed violation can never fall
+out of view. The capacity bound (2) applies across all operations of (4): truncation denies every
+success, so per-operation coverage cannot be satisfied from a partial read.
+
+**Unchanged.** No HTTP, network, XRPL, Fileverse or token code; `rn.sv@0.1.0` and its digest
+(`conformance-structure`); the Founding Assessment commercial NO-GO; the two pinned profile digests.
+The store schema changed (new columns, table, indexes and triggers); it is a new synthetic store, and
+the open-time schema check refuses any file created by the previous version.
