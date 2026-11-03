@@ -169,8 +169,9 @@ describe('RN-CONFORM-02 conformance signatures (§9)', () => {
     const expected = `sha256:${createHash('sha256').update(spki).digest('hex')}`;
     assert.equal(deriveConformanceKeyId(key), expected);
     assert.equal(deriveConformanceKeyId(pem), expected);
-    const rsa = generateKeyPairSync('rsa', { modulusLength: 1024 }).publicKey;
-    assert.throws(() => deriveConformanceKeyId(rsa));
+    // A non-Ed25519 key is refused (a strong P-256 key, so the refusal is about the algorithm, not key size).
+    const ecdsa = generateKeyPairSync('ec', { namedCurve: 'P-256' }).publicKey;
+    assert.throws(() => deriveConformanceKeyId(ecdsa));
   });
 
   it('verifies only the right payload, domain and trusted key', () => {

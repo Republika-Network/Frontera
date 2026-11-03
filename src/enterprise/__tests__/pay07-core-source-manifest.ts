@@ -150,6 +150,7 @@ export const CORE_SOURCE_CLASSIFICATION: Readonly<Record<string, { readonly scop
       'authority-governance': 'outside the governed payment path',
       'collateralization-governance': 'outside the governed payment path',
       'content-protection': 'outside the governed payment path',
+      conformance: 'RN-CONFORM-02 synthetic continuous-conformance circuit: an isolated library composed by no Host, route or qualified run; not on the governed payment path',
       'emergency-control': 'Host emergency-control service; the shared runtime port is in src/features/emergency-control-runtime',
       'encumbrance-release-governance': 'outside the governed payment path',
       events: 'Host event publisher',
