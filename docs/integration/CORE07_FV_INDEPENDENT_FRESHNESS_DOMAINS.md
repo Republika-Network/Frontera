@@ -2,7 +2,8 @@
 
 **Status: internal and non-operational. Not production-ready.**
 - No FV store is enrolled anywhere in production, and the FV executor still composes nothing.
-- The FV registration ceremony (the only path that may create and anchor the FV store) is not implemented.
+- The FV registration ceremony (the only production path that creates and anchors the FV store) exists since
+  FV-P4C-2B3C-2A1, non-operational and unreachable (`FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md`); no production issuer of its capability exists.
 - Bootstrap execution stays disabled (no trusted status source, B6).
 
 This increment closes FV-P4C-2B3C-3's review **M1** at the API, persistence and verification levels: the
@@ -128,9 +129,10 @@ reported the same way (never retried as a lost race).
    and the FV domain enrolls the FV genesis at the witness before the local genesis is committed (the
    standard CORE-07 genesis order). Only tests do this (`createAnchoredFvIdentity` in
    `tests/fv-p4c2b3b-support.mjs`, marked test-only).
-3. **The FV registration ceremony:** not implemented. It is the only future path that may create the FV
-   store; it must run against the deployment's own witness, record the new store id as the composition's
-   pin, and never take an existing store.
+3. **The FV registration ceremony:** implemented by FV-P4C-2B3C-2A1 (`FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md`). It is the only production
+   source that creates the FV store (structure test), authorized by a G-02A capability that binds the
+   witness, the domain and a preselected store id; it enrols the genesis in this domain before the local
+   genesis, never takes an existing store, and quarantines rather than adopts a slot bound to another store.
 
 Not provided: no production enrollment, no automatic enrollment at startup, no baseline enrollment of an
 existing FV store (the exclusive owner refuses `enrollment`), no re-anchoring after a rollback, no reset.
@@ -207,12 +209,14 @@ The reviewer also confirmed the witness rule's atomicity across two witness proc
 Counts are in the increment report and the CHANGELOG.
 
 ## 10. Known limitations
-- The FV registration ceremony and FV credential enrollment and revocation do not exist; an FV store
-  anchored at a witness exists only in tests.
+- FV credential enrollment and revocation do not exist (B3C-2A2/A3). The registration ceremony exists
+  (`FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md`), but nothing in production invokes it or issues its capability.
 - The cross-domain store rule is enforced atomically by the witness; the reference witness implements it,
   and a third-party witness must too (the client's own check is not atomic).
-- Any trusted in-process caller of the AUTH-03 store library can perform an FV genesis; there is no
-  registration capability yet. The FV registration ceremony must provide one.
+- Any trusted in-process caller of the AUTH-03 store library can still perform an FV genesis: the store
+  itself does not demand the registration capability. The ceremony is the only production source that does
+  (structure test), and the executor's `registration` gate refuses a store no authorized registration
+  created.
 - The witness handshake does not advertise the kinds it supports.
 - Nothing in code yet requires the FV store to be composed with freshness: an FV store opened without a
   witness has no rollback detection. Composing it in its domain is an activation requirement.

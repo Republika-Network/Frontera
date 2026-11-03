@@ -397,7 +397,9 @@ state (for example `READY_INACTIVE`) through the backoff. Fixed: the state is cl
   - executor-mediated or cold snapshot, and restore into quarantine;
   - operator ceremonies for quarantined intents and lost executors.
 - **B3C-3: done** (`FV_AUTH03_IDENTITY_OWNERSHIP.md`); its CORE-07 witness-slot prerequisite is done by
-  CORE-07-FV-WITNESS. The FV registration ceremony that anchors the store remains.
+  CORE-07-FV-WITNESS. The FV registration ceremony that anchors the store: **B3C-2A1** (`FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md`), run as a
+  separate offline process, never through the supervisor's status/stop channel. The executor's entry still
+  composes nothing; when a composition is supplied, its `registration` option is the readiness gate.
 - **Deployment isolation:** its own container or unit and volume, and the supervisor's platform adapter.
 - **B6:** a trusted issuer-currentness source.
 - **FV-P4D:** an independent continuity witness.

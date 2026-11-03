@@ -4,6 +4,21 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2B3C-2A1 FV bootstrap identity registration (internal, not composed, not operational)
+- **What.** The only production path that creates an FV bootstrap identity store, exactly once per organization (`sovereign-status-history/identity-registration.ts`, `identity-registration-record.ts`; `docs/integration/FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md`). An offline ceremony, invoked explicitly; nothing in the Host, scripts, deployment, the dedicated executor or its supervisor invokes it.
+- **Authority, reused.** A G-02A execution capability (new action `frontera.fv-bootstrap-identity.register`, binding format `frontera.fv-identity-registration-binding.v1`), verified by G-02A's standalone verifier against pinned issuers and a binding the registrar recomputes (organization, FV domain, deployment, witness id and key digest, preselected store id, path, store policy, signing key), and consumed in G-02A's durable ledger before anything else. No Host token, operator credential or flag is accepted. No production issuer exists; issuance is test-only.
+- **Sequence and evidence.** A forward-only record (`intent-recorded` → `witness-anchored` → `store-created` → `registered`, or `quarantined`), each state durable before the next external step; the genesis enrolled at the witness's FV slot before the store file is reserved with `O_EXCL`; the AUTH-03 store created as its exclusive, pinned, FV-domain owner; `registered` only after a readback under freshness. The witness slot (bound once, never rebound) is the authoritative pin: a replay, a second capability or a full local wipe never yields a second store.
+- **Recovery.** A lost or failed answer is `pending`, never success; continuing needs a separate, single-use resume capability bound to the registration and the same configuration; inconsistent evidence quarantines for good. No adoption of an existing store, no reset, no rebind.
+- **Executor gate.** The composition's opt-in `registration` option verifies, before opening anything, a registered record of exactly its store, path, witness and organization, on the reserved file, signed over its binding by a pinned issuer (`IDENTITY_UNREGISTERED` otherwise); `status().identityRegistration`. A verified registration executes nothing: `bootstrapExecution` stays `disabled`.
+- **Split.** FV operator enrolment (B3C-2A2) and revocation (B3C-2A3) are designed, not implemented.
+- **Tests:**
+  - 43 e2e tests: capability matrix, single use, substitution, `SIGKILL` at every durable step, recovery, quarantine, concurrency, executor gates, record tampering (publication audit), misconfiguration refusals (publication review);
+  - 7 structure tests;
+  - two existing import pins gained exact exceptions for the new module, and no assertion was removed.
+- **Mutants:** 20 of 20 targeted mutants killed: 18 at implementation, plus 2 for the publication-review fixes.
+- **Independent review** (an AI agent of the same model family, not a human): no authority bypass. A Medium is fixed: a witness failure that was not evidence permanently quarantined a registration after its genesis, and is now `pending`. Low and Info items are documented. The publication review (PR #262) found no Critical, High or Medium issue. Two Lows are fixed and refused before anything is consumed: a verifier that does not trust the signer, and a record path naming another owner's WAL database.
+- **Production activation: NO-GO.**
+
 ### Changed — CI-TEST-LOG-01 failure diagnostics for `protocol-tarball-consumption` (CI only; no gate changed)
 - **The problem.** The tarball validator held each battery command's output in memory and kept only the last 3,000 characters of a failed step, then deleted the isolated copy. TAP reports failures where they ran, so the failing test was never named (PRs #255 and #259).
 - **The fix** (`scripts/protocol/lib-test-diagnostics.mjs`):
