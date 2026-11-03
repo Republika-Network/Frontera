@@ -88,9 +88,19 @@ async function fvStore(path: string, boundary: AuthorityStateFreshnessBoundary, 
 }
 
 let principal = 0;
+/**
+ * Advances a store by exactly one signed, witnessed row. A Host store: by its Host administrator. FV-P4C-2B3C-2A2B:
+ * an FV store refuses Host administration, so its exclusive owner appends one synthetic row through the store's own
+ * (trusted) append — these tests are about freshness positions, not about who may enrol whom.
+ */
 async function advance(store: HumanIdentityStore): Promise<void> {
   principal += 1;
-  await createHumanIdentityService({ store, relyingParty: RP, operatorIds: OPERATORS, now: () => new Date(NOW) }).createPrincipal(admin, { operatorId: OPERATORS[principal % OPERATORS.length] ?? 'op-a', displayName: `Synthetic ${String(principal)}` });
+  const operatorId = `${OPERATORS[principal % OPERATORS.length] ?? 'op-a'}-${String(principal)}`;
+  if (store.exclusiveOwner) {
+    await store.append({ kind: 'principal_created', operatorId, objectId: null, payload: JSON.stringify({ displayName: `Synthetic ${String(principal)}`, userHandle: `synthetic-${String(principal)}` }), recordedBy: 'test:core07-advance', recordedAt: NOW }, () => undefined);
+    return;
+  }
+  await createHumanIdentityService({ store, relyingParty: RP, operatorIds: [...OPERATORS, operatorId], now: () => new Date(NOW) }).createPrincipal(admin, { operatorId, displayName: `Synthetic ${String(principal)}` });
 }
 
 const slotOf = async (witness: StartedWitness, stateKind: string, organizationId = ORG): Promise<Record<string, unknown> | undefined> =>
@@ -260,7 +270,9 @@ describe('CORE-07-FV-WITNESS independence — one witness, one organization, two
       freshness: { boundary: await boundaryFor(witness, OTHER_ORG), stateKind: FV_BOOTSTRAP_IDENTITY_STATE_KIND },
       exclusive: { beforeWrite: () => undefined, closer: plainCloser },
     });
-    await createHumanIdentityService({ store: fv, relyingParty: RP, operatorIds: OPERATORS, now: () => new Date(NOW) }).createPrincipal(otherAdmin, { operatorId: 'op-a', displayName: 'Synthetic' });
+    // FV-P4C-2B3C-2A2B: an FV store refuses Host administration; its owner advances it by one row.
+    void otherAdmin;
+    await advance(fv);
     fv.close();
     copyFileSync(join(dir, 'fv-other.sqlite'), join(dir, 'host-other.sqlite'));
     await assert.rejects(

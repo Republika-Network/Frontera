@@ -63,6 +63,15 @@ describe('FV-P4C-2B2 structure — internal, unreachable, not composed', () => {
         '../human-identity/first-administrator.js',
         '../human-identity/index.js',
       ],
+      // FV-P4C-2B3C-2A2B: the operator-enrolment ceremony, the family's third step: it reads FV roles and has AUTH-03's
+      // FV operator rows verify and append the enrolment (neither exported from AUTH-03's index); it executes nothing.
+      [join(MODULE, 'identity-registration-operator.ts')]: [
+        '../authority-state-freshness/index.js',
+        '../human-identity/first-administrator.js',
+        '../human-identity/fv-domain.js',
+        '../human-identity/fv-operator.js',
+        '../human-identity/index.js',
+      ],
     };
     for (const file of walk(MODULE)) {
       for (const specifier of specifiers(file)) {

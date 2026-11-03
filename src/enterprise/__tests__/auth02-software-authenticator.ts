@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
 
 import type { AuthenticationOptionsJSON, RegistrationOptionsJSON } from '../human-identity/index.js';
 
@@ -100,6 +100,16 @@ export interface SoftwareAuthenticatorOptions {
   readonly synced?: boolean;
   /** Reuse this credential id (duplicate-registration tests). */
   readonly credentialId?: Uint8Array;
+  /** FV-P4C-2B3C-2A2B (TEST-ONLY): continue a passkey exported by {@link SoftwareAuthenticator.exportState} (a child process signing as it). */
+  readonly restore?: SoftwareAuthenticatorState;
+}
+
+/** TEST-ONLY: a synthetic passkey's whole state, so another test process can continue it. Never a real credential. */
+export interface SoftwareAuthenticatorState {
+  readonly credentialId: string;
+  readonly privateKeyPem: string;
+  readonly counter: number;
+  readonly userHandle: string | undefined;
 }
 
 export class SoftwareAuthenticator {
@@ -115,9 +125,15 @@ export class SoftwareAuthenticator {
   constructor(options: SoftwareAuthenticatorOptions) {
     this.origin = options.origin;
     this.synced = options.synced === true;
-    this.credentialId = options.credentialId ?? randomBytes(32);
-    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    this.credentialId = options.restore !== undefined ? Buffer.from(options.restore.credentialId, 'base64url') : (options.credentialId ?? randomBytes(32));
+    const generated = options.restore === undefined ? generateKeyPairSync('ec', { namedCurve: 'P-256' }) : undefined;
+    const privateKey = generated?.privateKey ?? createPrivateKey(options.restore!.privateKeyPem);
+    const publicKey = generated?.publicKey ?? createPublicKey(privateKey);
     this.privateKey = privateKey;
+    if (options.restore !== undefined) {
+      this.counter = options.restore.counter;
+      this.userHandle = options.restore.userHandle;
+    }
     const jwk = publicKey.export({ format: 'jwk' });
     this.x = Buffer.from(jwk.x ?? '', 'base64url');
     this.y = Buffer.from(jwk.y ?? '', 'base64url');
@@ -125,6 +141,11 @@ export class SoftwareAuthenticator {
 
   get id(): string {
     return b64url(this.credentialId);
+  }
+
+  /** TEST-ONLY: this synthetic passkey's state (see {@link SoftwareAuthenticatorOptions.restore}). */
+  exportState(): SoftwareAuthenticatorState {
+    return { credentialId: this.id, privateKeyPem: this.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(), counter: this.counter, userHandle: this.userHandle };
   }
 
   /** The COSE_Key (EC2, ES256, P-256) of this credential. */

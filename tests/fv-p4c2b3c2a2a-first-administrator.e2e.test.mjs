@@ -65,6 +65,15 @@ async function withStore(world, witness, registration, use) {
     store.close();
   }
 }
+/** The FV store through a plain (non-owner) handle, without freshness: what a same-user writer holding the signing key could open. */
+async function withPlainStore(w, use) {
+  const store = await openSqliteHumanIdentityStore(w.paths.store, { organizationId: w.org, now: () => new Date().toISOString(), authenticity: { signer: testSigner(AUTHORITY_KEY_A), verifier: testVerifier([AUTHORITY_KEY_A]) } });
+  try {
+    return await use(store);
+  } finally {
+    store.close();
+  }
+}
 const kinds = (world, witness, registration) => withStore(world, witness, registration, (store) => store.history().map((row) => row.kind));
 
 async function world() {
@@ -128,15 +137,19 @@ describe('FV-P4C-2B3C-2A2A — the first FV administrator is enrolled once, by t
 
   it('a store already holding anything (the Host’s humans, written by a Host administrator) is refused before consumption: never a first administrator beside them', async () => {
     const { witness, world: w, registration } = await world();
-    await withStore(w, witness, registration, async (store) => {
+    // FV-P4C-2B3C-2A2B: the FV owner's handle refuses Host administration, so the Host human is written through a plain
+    // handle (a same-user writer with the signing key, before any first administrator exists) — outside the witness.
+    await withPlainStore(w, async (store) => {
       const identity = createHumanIdentityService({ store, relyingParty: RP, operatorIds: OPERATORS });
       const admin = identityAdministratorFor({ plane: 'operator', operatorId: 'ops-admin', organizationId: w.org, role: 'organization-administrator', credentialClass: 'operator', actorRef: 'operator-plane:ops-admin' });
       await identity.createPrincipal(admin, { operatorId: OPERATORS[0], displayName: 'Host human' });
     });
+    // The witness never saw that row: the FV store is refused (a fork) before anything is consumed.
     const { request, capability } = enrollRequest(adminBinding(registration));
-    assert.deepEqual(await enroll(w, witness, request), { outcome: 'refused', reason: 'STORE_NOT_EMPTY' });
+    assert.deepEqual(await enroll(w, witness, request), { outcome: 'refused', reason: 'STORE_REFUSED', detail: 'AUTHORITY_FRESHNESS_FORK_DETECTED' });
     assert.equal(await ledgerState(w, capability.capabilityId), 'absent');
-    assert.deepEqual(await kinds(w, witness, registration), ['principal_created']);
+    assert.deepEqual(await withPlainStore(w, (store) => store.history().map((row) => row.kind)), ['principal_created']);
+    assert.deepEqual(await fvSlot(witness, w.org), [[0, null]]);
   });
 });
 

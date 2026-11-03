@@ -174,7 +174,11 @@ export type HumanIdentityErrorCode =
   /** FV-P4C-2B2B-F1: a bootstrap settlement was attempted without this service's own live settlement capability. Nothing was read or recorded. */
   | 'HUMAN_IDENTITY_DECISION_SETTLEMENT_UNAUTHORIZED'
   /** FV-P4C-2B3C-2A2A: the FV store holds something other than this first administrator's rows; nothing was written. */
-  | 'HUMAN_IDENTITY_FIRST_ADMINISTRATOR_CONFLICT';
+  | 'HUMAN_IDENTITY_FIRST_ADMINISTRATOR_CONFLICT'
+  /** FV-P4C-2B3C-2A2B: AUTH-02's general (Host) administration, enrolment-token registration or owner revocation was attempted on an FV identity store. Nothing was written. */
+  | 'HUMAN_IDENTITY_FV_ADMINISTRATION_REFUSED'
+  /** FV-P4C-2B3C-2A2B: an FV operator enrolment's evidence does not verify against the store's signed history (administrator, assertion, candidate, prior head, window), or its rows conflict with it. Nothing was written. */
+  | 'HUMAN_IDENTITY_FV_OPERATOR_REFUSED';
 
 export class HumanIdentityError extends Error {
   constructor(

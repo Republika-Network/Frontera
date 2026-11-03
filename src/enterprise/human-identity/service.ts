@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import type { EnterpriseOperatorPrincipal } from '../operator-control/operator-authenticator.js';
 import { canonicalJson, type HumanIdentityJson, type StoredHumanIdentityRow } from './chain.js';
+import { fvOwnedHistory } from './fv-domain.js';
 import {
   HumanIdentityError,
   type AuthenticationOptionsJSON,
@@ -645,7 +646,18 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
 
   const state = (): IdentityState => project(store.history(), organizationId);
 
+  /**
+   * FV-P4C-2B3C-2A2B — Host administrator authority never implies FV administrator authority. An FV identity store
+   * (opened by its exclusive FV owner, or whose signed history begins with the FV administrator) refuses every
+   * general administrative act, enrolment-token registration and owner revocation, before anything is signed and
+   * again in each append's guard. FV principals are added only by the FV ceremonies' own AUTH-03 rules.
+   */
+  function notFvOwned(history: readonly StoredHumanIdentityRow[] = store.history()): void {
+    if (store.exclusiveOwner || fvOwnedHistory(history)) throw new HumanIdentityError('HUMAN_IDENTITY_FV_ADMINISTRATION_REFUSED', 'This is an FV identity store: Host administration, enrolment tokens and owner revocation do not apply to it.');
+  }
+
   function administrator(value: IdentityAdministrator): IdentityAdministrator {
+    notFvOwned();
     if (!ADMINISTRATORS.has(value)) throw new HumanIdentityError('HUMAN_IDENTITY_ADMINISTRATOR_REQUIRED', 'An administrative act requires an administrator established by the operator plane.');
     if (value.organizationId !== organizationId) throw new HumanIdentityError('HUMAN_IDENTITY_ADMINISTRATOR_REQUIRED', "The administrator belongs to another organization than this Host's.");
     return value;
@@ -935,6 +947,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const displayName = input.displayName;
       if (typeof displayName !== 'string' || displayName.trim() !== displayName || displayName.length === 0 || displayName.length > 128) throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'displayName must be a non-empty trimmed string of at most 128 characters.');
       await store.append(row('principal_created', operatorId, null, { displayName, userHandle: randomBytes(32).toString('base64url') }, actor.actorRef), (history) => {
+        notFvOwned(history);
         if (project(history, organizationId).principals.has(operatorId)) throw new HumanIdentityError('HUMAN_IDENTITY_PRINCIPAL_EXISTS', 'A human principal already exists for that operator.');
       });
       return (state().principals.get(operatorId) as PrincipalState).principal;
@@ -944,6 +957,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const actor = administrator(admin);
       const why = reasonOf(reason);
       await store.append(row('principal_revoked', operatorId, null, { reason: why }, actor.actorRef), (history) => {
+        notFvOwned(history);
         const found = project(history, organizationId).principals.get(operatorId);
         if (found === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_UNKNOWN_PRINCIPAL', 'No human principal exists for that operator.');
         if (found.principal.state === 'revoked') throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That human principal is already revoked.');
@@ -958,6 +972,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const secret = randomBytes(32).toString('base64url');
       const expiresAt = after(enrolmentTtl);
       await store.append(row('enrolment_authorized', operatorId, enrolmentId, { expiresAt, tokenVerifier: verifierOf(secret) }, actor.actorRef), (history) => {
+        notFvOwned(history);
         const current = project(history, organizationId);
         activePrincipal(current, operatorId);
         // Decided against the verified history, so concurrent issuers cannot exceed it.
@@ -975,6 +990,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const current = state().enrolments.get(enrolmentId);
       if (current === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'No such enrolment.');
       await store.append(row('enrolment_revoked', current.operatorId, enrolmentId, { reason: why }, actor.actorRef), (history) => {
+        notFvOwned(history);
         const record = project(history, organizationId).enrolments.get(enrolmentId);
         if (record === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'No such enrolment.');
         if (record.revoked || record.consumed) throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That enrolment is already revoked or consumed.');
@@ -984,6 +1000,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
 
     beginRegistration(enrolmentToken) {
       const current = state();
+      notFvOwned(store.history());
       const enrolment = openEnrolment(current, enrolmentToken);
       const principal = activePrincipal(current, enrolment.operatorId);
       const challenge = challengeFor('registration', { operatorId: enrolment.operatorId, enrolmentId: enrolment.enrolmentId });
@@ -1001,6 +1018,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     },
 
     async finishRegistration(enrolmentToken, raw) {
+      notFvOwned();
       const enrolment = openEnrolment(state(), enrolmentToken);
       const response = parseRegistrationResponse(raw);
       const clientData = clientDataOf(response.response.clientDataJSON, 'webauthn.create', relyingParty);
@@ -1031,6 +1049,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
             CEREMONY_RECORDER,
           ),
         (history) => {
+          notFvOwned(history);
           const current = notUsed(challengeDigest)(history);
           if (current.credentials.has(verified.credentialId)) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_DUPLICATE', 'That credential id is already registered.');
           const record = current.enrolments.get(enrolment.enrolmentId);
@@ -1081,6 +1100,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const existing = state().credentials.get(credentialId);
       if (existing === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'No such credential.');
       await store.append(row('credential_revoked', existing.view.operatorId, credentialId, { reason: why, revokedBy: 'administrator' }, actor.actorRef), (history) => {
+        notFvOwned(history);
         const credential = project(history, organizationId).credentials.get(credentialId);
         if (credential === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'No such credential.');
         if (credential.view.state === 'revoked') throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That credential is already revoked.');
@@ -1089,6 +1109,8 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     },
 
     beginOwnerRevocation(credentialId) {
+      // FV-P4C-2B3C-2A2B: revocation of an FV credential is B3C-2A3's, never this general path.
+      notFvOwned();
       const current = state();
       const target = current.credentials.get(credentialId);
       if (target === undefined || target.view.state !== 'active') throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'The credential is unknown or revoked.');
@@ -1098,6 +1120,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     },
 
     async finishOwnerRevocation(credentialId, raw, reason) {
+      notFvOwned();
       const why = reasonOf(reason);
       const response = parseAuthenticationResponse(raw);
       const clientData = clientDataOf(response.response.clientDataJSON, 'webauthn.get', relyingParty);
@@ -1113,6 +1136,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
         // One row (CORE-07 advances one position per append): the revocation also records the asserting credential's use.
         row('credential_revoked', target.view.operatorId, credentialId, { reason: why, revokedBy: 'owner', assertedWith: asserting, counter: use.counter, backedUp: use.backedUp, challengeDigest }, `owner:${asserting}`),
         (history) => {
+          notFvOwned(history);
           const current = notUsed(challengeDigest)(history);
           stillUsable(asserting, current);
           counterStillAdvances(current, asserting, use.counter);
@@ -1269,4 +1293,25 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
   };
   // Review fix: frozen, so no holder of the general service can replace a method and intercept a capability passed to it.
   return { service: Object.freeze(service), instance };
+}
+
+/** A read-only summary of AUTH-02's own projection (see {@link humanIdentityStateOf}). */
+export interface HumanIdentityStateSummary {
+  readonly principals: ReadonlyMap<string, { readonly state: 'active' | 'revoked'; readonly userHandle: string }>;
+  readonly credentials: ReadonlyMap<string, { readonly operatorId: string; readonly publicKey: string; readonly state: 'active' | 'revoked'; readonly counter: number }>;
+  readonly usedChallenges: ReadonlySet<string>;
+}
+
+/**
+ * FV-P4C-2B3C-2A2B — AUTH-02's own projection of a verified history (principals, credentials, consumed challenges),
+ * read-only, so the FV operator rows (`fv-operator.ts`) decide with exactly AUTH-02's semantics rather than a second
+ * reading of the rows. Throws `HUMAN_IDENTITY_STORE_CORRUPT` on a history AUTH-02 itself would refuse.
+ */
+export function humanIdentityStateOf(history: readonly StoredHumanIdentityRow[], organizationId: string): HumanIdentityStateSummary {
+  const current = project(history, organizationId);
+  return Object.freeze({
+    principals: new Map([...current.principals].map(([id, p]) => [id, Object.freeze({ state: p.principal.state, userHandle: p.userHandle })] as const)),
+    credentials: new Map([...current.credentials].map(([id, c]) => [id, Object.freeze({ operatorId: c.view.operatorId, publicKey: c.publicKey, state: c.view.state, counter: c.view.counter })] as const)),
+    usedChallenges: new Set(current.usedChallenges),
+  });
 }
