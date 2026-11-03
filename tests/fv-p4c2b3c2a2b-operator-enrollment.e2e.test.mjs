@@ -512,6 +512,23 @@ describe('FV-P4C-2B3C-2A2B — review findings: the role needs the administrator
     });
   });
 
+  it('publication review F1: an approval AUTH-03 refused as stale, appended later by a signing-key holder, never verifies as an operator', async () => {
+    const { witness, w } = await world();
+    await withStore(w, witness, async (store) => {
+      const evidence = await evidenceFor(w, witness, store, { operatorId: 'fv-op-stale' });
+      const verified = await verifyFvOperatorEvidence(store.history(), store, evidence, contextOf(w, witness));
+      assert.equal(verified.verified, true);
+      // The head moves (an AUTH-02 authentication): AUTH-03 now refuses the approval.
+      const identity = createHumanIdentityService({ store, relyingParty: RP, operatorIds: [ADMIN] });
+      await identity.finishAuthentication(w.admin.assert(identity.beginAuthentication(), { counter: 5_000 }));
+      await assert.rejects(appendFvOperator(store, evidence, contextOf(w, witness)), { reason: 'STALE_HEAD' });
+      // A signing-key holder appends the genuine, signed rows anyway, at the later position.
+      for (const row of verified.rows) await store.append(row, () => undefined);
+      assert.equal(fvRolesOf(store.history()).get('fv-op-stale'), 'fv-operator', 'structurally recognizable');
+      assert.deepEqual([...(await verifyFvOperatorRoles(store.history(), w.world.org, RP))], [], 'never a verified operator');
+    });
+  });
+
   it('a request under another deployment’s configuration is refused; a rolled-back store never revives a consumed authorization', async () => {
     const { witness, w } = await world();
     assert.deepEqual(await enroll(w, witness, operatorRequest(w).request, { deploymentId: 'deployment:other' }), { outcome: 'refused', reason: 'CONFIGURATION_MISMATCH' });

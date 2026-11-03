@@ -367,7 +367,8 @@ export function fvOperatorProgress(history: readonly StoredHumanIdentityRow[], p
 /**
  * FV-P4C-2B3C-2A2B (review M1) — re-verifies, from the signed history alone, every principal `fvRolesOf` calls an
  * `fv-operator`: the authorizing `credential_used` row's stored contract recomputes to its commitment, names exactly
- * this principal, and its stored assertion verifies — by the administrator's credential as it was at that point of the
+ * this principal and organization, was made at exactly that row's position (its prior head and chain digest), names
+ * the credential registered right after, and its stored assertion verifies — by the administrator's credential as it was at that point of the
  * history, user verified, pinned RP ID and origins — over that commitment's challenge. A row a holder of the store's
  * signing key appended without an administrator credential's signature fails here. It proves "authorized by a
  * credential the signed history attributes to the administrator", no more: the store's signing key (the deployment's
@@ -385,6 +386,14 @@ export async function verifyFvOperatorRoles(history: readonly StoredHumanIdentit
       const payload = JSON.parse(used.payload) as { authorization?: unknown; assertion?: { clientDataJSON?: unknown; authenticatorData?: unknown; signature?: unknown }; authorizationCommitment?: unknown };
       const authorization = fvOperatorAuthorizationOf(payload.authorization);
       if (authorization === undefined || fvOperatorAuthorizationCommitment(authorization) !== payload.authorizationCommitment || authorization.candidate.operatorId !== operatorId || authorization.administrator.credentialId !== used.objectId) continue;
+      // Publication review F1: the context AUTH-03 enforced, not only the signature. The approval was made at exactly the
+      // position its authorizing row holds (prior head and chain digest, which also binds the store id), for this
+      // organization, and the credential registered right after is the one the administrator approved.
+      if (authorization.organizationId !== organizationId || authorization.priorHead.sequence !== index - 1 || chainDigestAt(history, authorization.storeId, organizationId, index - 1) !== authorization.priorHead.chainDigest) continue;
+      const registered = history[index + 2];
+      if (registered?.kind !== 'credential_registered' || registered.operatorId !== operatorId || registered.objectId === null) continue;
+      const registeredKey = (JSON.parse(registered.payload) as { publicKey?: unknown }).publicKey;
+      if (typeof registeredKey !== 'string' || firstAdministratorCredentialDigest({ credentialId: registered.objectId, publicKey: registeredKey }) !== authorization.candidate.credentialDigest) continue;
       const prior = humanIdentityStateOf(history.slice(0, index - 1), organizationId);
       const credential = prior.credentials.get(authorization.administrator.credentialId);
       if (credential === undefined || credential.operatorId !== authorization.administrator.operatorId || credential.state !== 'active') continue;

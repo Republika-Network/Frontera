@@ -844,7 +844,7 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
 ### 16.8 Evidence
 
 - **Tests.**
-  - `tests/fv-p4c2b3c2a2b-operator-enrollment.e2e.test.mjs`: 26 tests, with real child processes paused or SIGKILLed. They include a role-forgery matrix, each case scored both structurally and by the verifier, a request under another deployment's configuration, and a rolled-back store that never revives a consumed authorization.
+  - `tests/fv-p4c2b3c2a2b-operator-enrollment.e2e.test.mjs`: 27 tests, with real child processes paused or SIGKILLed. They include a role-forgery matrix, each case scored both structurally and by the verifier, a request under another deployment's configuration, and a rolled-back store that never revives a consumed authorization.
   - `fv-p4c2b3c2a2b-operator-enrollment-structure.test.ts`: 5 tests.
 - **Existing tests that wrote to FV stores through Host administration** were moved to an FV-legitimate write. Every one of their assertions is kept:
   - the B3B support's anchored FV worlds now enrol their humans the FV way;
@@ -856,7 +856,7 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
 
   | Suite | Result |
   |---|---|
-  | B3C-2A2B | 26/26 |
+  | B3C-2A2B | 27/27 |
   | B3C-2A2A | 22/22 |
   | HF01 | 16/16 |
   | B3C-2A1 | 43/43 |
@@ -871,7 +871,7 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
   | PROD-02 | 57/57 |
 
   Gates, all passing: typecheck, lint, `check:aoc-boundaries`, `check:release-coherence`, `check:protocol-consumption`, `validate:publishability` and `legal:check`.
-- **Targeted mutants: 21 of 22 applicable killed.** They ran on the compiled code in a separate copy, and every file was restored and hash-checked.
+- **Targeted mutants: 22 of 23 applicable killed** (including the publication review's verifier-position check). They ran on the compiled code in a separate copy, and every file was restored and hash-checked.
   - **Killed:**
     - Host administration accepted on an FV store;
     - the FV marker taken only from the handle, or only from the history;
@@ -890,7 +890,7 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
     - the store fence unchecked (a store file replaced under a paused ceremony);
     - bootstrap enabled.
   - **The consumed-challenge check: killed, after correcting an earlier classification.** It was first classified as unreachable, but re-checking showed it is reachable. A direct AUTH-03 caller can present a *new* candidate credential answering an earlier, consumed candidate challenge (the same request id and nonce) under a genuine administrator signature at the new head. Without the check, AUTH-02 would read the doubly consumed challenge as a corrupt store. It is now tested.
-  - **Surviving: 1. The append guard's head check: A, equivalent.** The guard also requires the rows after the prior head to be exactly this plan's earlier rows, which implies the history's length. The prior chain cannot change, because the history is append-only and chain-verified on every read.
+  - **Surviving: 1. The append guard's length and chain check: B, redundant under store invariants** (corrected from "equivalent" by the publication review). The guard's plan-prefix check does not imply them by itself; for a history shorter than the prior head it returns 0. They are implied only by the store's own invariants: an append-only, chain-verified history, the exclusive write fence, the file-identity check, and CORE-07's rollback refusal. These are tested in B3C-3, 2A1 and here. It is not exploitable.
   - **Not applicable:** "accept a forged recovery record" has no record-trusting branch to mutate; the checks a forged record must pass (the signature and the candidate) are mutated and killed. "Wrong-slot witness evidence" is CORE-07's, covered by HF01's H03 and H04.
 - **Independent review** (a fresh read-only AI agent of the same model family; **not a human review**). No Critical or High. It reproduced:
   - **M1, Medium:** the `fv-operator` role was read from any signed row with the right recorder, so a holder of the store's signing key could add an operator without the administrator's signature. **Fixed:** the role needs the authorizing row directly before it, and `verifyFvOperatorRoles` re-verifies the stored assertion. Both are tested.
@@ -902,6 +902,13 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
   - the test-only authenticator export stays under `__tests__`.
 
   After the fixes, the reviewer's probe gives no role to the raw row, and ignores the rewritten unsigned fields.
+- **Publication review (PR #267, head `0830b2fa`; a fresh read-only AI agent, not human).** Nothing blocks merge, and
+  the changes to existing tests hide no regression. It reproduced:
+  - **F1, Low:** `verifyFvOperatorRoles` accepted an approval AUTH-03 had refused as stale, if a signing-key holder
+    appended its signed rows later. **Fixed:** the verifier now requires the approval's prior head and chain digest
+    at exactly its row's position, this organization, and the approved credential registered right after. Tested.
+
+  It also corrected the surviving mutant's classification, above.
 
 This remains internal and non-operational. Nothing new is reachable from the Host, the executor or its supervisor; the executor gate is unchanged; `bootstrapExecution` stays `disabled`.
 
