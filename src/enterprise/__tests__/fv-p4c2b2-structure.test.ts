@@ -39,6 +39,17 @@ describe('FV-P4C-2B2 structure — internal, unreachable, not composed', () => {
       [join(MODULE, 'executor-exclusivity.ts')]: ['node:worker_threads'],
       // FV-P4C-2B3C-1: the supervisor alone starts the dedicated executor process (it opens no file; see its structure test).
       [join(MODULE, 'dedicated-executor-supervisor.ts')]: ['node:child_process'],
+      // FV-P4C-2B3C-2A1: the registration ceremony alone verifies a G-02A capability (verifier, ledger, CORE-02 key
+      // registry), anchors a genesis at CORE-07 and creates the AUTH-03 store (its index, and its pure genesis-digest
+      // leaf). It executes nothing and is reached by nothing in the Host (its own structure test).
+      [join(MODULE, 'identity-registration.ts')]: [
+        '../authority-authenticity/signature-verification.js',
+        '../authority-state-freshness/index.js',
+        '../execution-capability/index.js',
+        '../execution-capability/reference/consumption-ledger.js',
+        '../human-identity/chain.js',
+        '../human-identity/index.js',
+      ],
     };
     for (const file of walk(MODULE)) {
       for (const specifier of specifiers(file)) {

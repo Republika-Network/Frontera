@@ -13,6 +13,9 @@ import { coordinateStatusHistoryBootstrap } from './bootstrap-coordinator.js';
 import type { StatusHistoryBootstrapResult, StatusHistoryReceiverPort } from './bootstrap-coordinator.js';
 import { checkProtectedFile, confirmExclusivelyHeld, exclusiveCloser, exclusivitySupported, heldByAnotherProcess } from './executor-exclusivity.js';
 import type { ProtectedPathRefusal } from './executor-exclusivity.js';
+import { verifyFvIdentityRegistration } from './identity-registration.js';
+import type { ExecutionCapabilityTrustedIssuer } from './identity-registration.js';
+import { fileIdentityOf } from './identity-registration-record.js';
 import { createHostHistoryInventory } from './host-inventory.js';
 import type { HostHistoryConfiguration, HostInventoryStatus } from './host-inventory.js';
 import { createHumanDecisionBootstrapAuthorizer } from './human-decision-authorizer.js';
@@ -61,7 +64,7 @@ import type { ProtectedContinuityStore } from './protected-continuity-store.js';
 
 export class FvProtectedHostError extends Error {
   constructor(
-    readonly code: 'OPTIONS_INVALID' | 'PLATFORM_UNSUPPORTED' | 'PATH_REFUSED' | 'EXECUTOR_HELD' | 'PROTECTED_STORE_REFUSED' | 'IDENTITY_REFUSED' | 'CUSTODY_REFUSED',
+    readonly code: 'OPTIONS_INVALID' | 'PLATFORM_UNSUPPORTED' | 'PATH_REFUSED' | 'EXECUTOR_HELD' | 'PROTECTED_STORE_REFUSED' | 'IDENTITY_REFUSED' | 'IDENTITY_UNREGISTERED' | 'CUSTODY_REFUSED',
     message: string,
   ) {
     super(message);
@@ -96,6 +99,16 @@ export interface FvProtectedHostOptions {
     readonly relyingParty: RelyingPartyConfiguration;
     readonly operatorIds: readonly string[];
   };
+  /**
+   * FV-P4C-2B3C-2A1 — the identity store's registration evidence (`identity-registration.ts`). When given,
+   * nothing is opened unless the registration record shows a **registered** FV registration of exactly
+   * this organization, store id, store path and witness, on the very file the ceremony reserved, authorized
+   * by a capability that one of `trustedIssuers` signed for the registrar's `audience` and `trustDomain`; it
+   * needs `identity.freshness` (the witness confirms the binding when the store opens). A registration still
+   * pending, quarantined, missing or of anything else is `IDENTITY_UNREGISTERED`. A verified registration
+   * makes nothing operational: bootstrap execution still needs a status source (B6).
+   */
+  readonly registration?: { readonly recordPath: string; readonly trustedIssuers: readonly ExecutionCapabilityTrustedIssuer[]; readonly audience: string; readonly trustDomain: string };
   /** CORE-05's approver-standing port, answered from Kernel-Authority. */
   readonly standing: BootstrapStandingPort;
   readonly organizationId: string;
@@ -121,6 +134,8 @@ export interface FvProtectedHostStatus {
   readonly readiness: FvProtectedHostReadiness;
   readonly epoch: number;
   readonly bootstrapExecution: 'disabled' | 'enabled';
+  /** FV-P4C-2B3C-2A1: whether the identity store's registration evidence was verified at startup (`registration`). Never a permission to bootstrap. */
+  readonly identityRegistration: 'verified' | 'unverified';
   /** Histories refused by the filesystem policy: never opened, quarantined. */
   readonly pathRefusals: Readonly<Record<string, ProtectedPathRefusal>>;
   /** Pending intents by namespace (request ids); `null` when the store cannot be read. */
@@ -244,6 +259,37 @@ export async function composeFvProtectedHost(options: FvProtectedHostOptions): P
     if (refused !== undefined) pathRefusals[namespace] = refused;
   }
 
+  // 2b. FV-P4C-2B3C-2A1: the identity store's registration evidence, before anything of the executor's is opened.
+  // Read once into a snapshot; it needs the witness, which then confirms the binding when the store opens.
+  const rawRegistration = options.registration;
+  const registration =
+    rawRegistration === undefined
+      ? undefined
+      : typeof rawRegistration === 'object' && rawRegistration !== null
+        ? Object.freeze({ recordPath: rawRegistration.recordPath, trustedIssuers: rawRegistration.trustedIssuers, audience: rawRegistration.audience, trustDomain: rawRegistration.trustDomain })
+        : invalid('registration is the identity store’s registration record and its pinned issuers.');
+  let registeredFile: string | undefined;
+  if (registration !== undefined) {
+    if (typeof registration.recordPath !== 'string' || registration.recordPath.trim() === '' || !Array.isArray(registration.trustedIssuers) || typeof registration.audience !== 'string' || typeof registration.trustDomain !== 'string') {
+      invalid('registration is a record path, the pinned registration issuers, and the registrar’s audience and trust domain.');
+    }
+    if (freshnessOption === undefined) throw new FvProtectedHostError('OPTIONS_INVALID', 'A registered identity store is verified against its witness: registration needs identity.freshness.');
+    const recordPath = resolve(registration.recordPath);
+    if ([protectedPath, identityPath, ...configured.values()].includes(recordPath)) invalid('The registration record is its own file.');
+    const verdict = await verifyFvIdentityRegistration({
+      recordPath,
+      organizationId,
+      storePath: identityPath,
+      storeId: identity.storeId,
+      witnessId: freshnessOption.boundary.witnessId,
+      trustedIssuers: registration.trustedIssuers,
+      audience: registration.audience,
+      trustDomain: registration.trustDomain,
+    });
+    if (!verdict.verified) throw new FvProtectedHostError('IDENTITY_UNREGISTERED', `The bootstrap identity store has no verified registration (${verdict.failure}); nothing was opened.`);
+    registeredFile = verdict.storeFileIdentity;
+  }
+
   // The executor's state. The protected store's lock is the executor's authority: the first failed
   // confirmation of it loses the executor for good. A history's lock is that namespace's: losing it fences
   // and excludes that history only.
@@ -306,7 +352,8 @@ export async function composeFvProtectedHost(options: FvProtectedHostOptions): P
     if (heldByAnotherProcess(identityPath)) throw new FvProtectedHostError('EXECUTOR_HELD', 'Another process holds the bootstrap identity store; this Host executes nothing.');
     throw new FvProtectedHostError('IDENTITY_REFUSED', `The bootstrap identity store could not be opened: ${(error as Error).message}`);
   }
-  if (identityStore.storeId !== identity.storeId || identityStore.organizationId !== organizationId || !confirmExclusivelyHeld([identityPath])) {
+  // FV-P4C-2B3C-2A1: the file now held is the one the registration reserved (not a replacement put there after the check).
+  if (identityStore.storeId !== identity.storeId || identityStore.organizationId !== organizationId || !confirmExclusivelyHeld([identityPath]) || (registeredFile !== undefined && fileIdentityOf(identityPath) !== registeredFile)) {
     identityStore.close();
     records.close();
     throw new FvProtectedHostError('IDENTITY_REFUSED', 'The store at the bootstrap identity path is not the pinned one (another store, a copy or a replacement), or it is not held; nothing is served.');
@@ -382,7 +429,7 @@ export async function composeFvProtectedHost(options: FvProtectedHostOptions): P
         pendingIntents[namespace] = null;
       }
     }
-    return Object.freeze({ readiness, epoch: records.epoch, bootstrapExecution: statusSource === undefined ? 'disabled' : 'enabled', pathRefusals: Object.freeze({ ...pathRefusals }), pendingIntents: Object.freeze(pendingIntents), inventory: inventoryStatus });
+    return Object.freeze({ readiness, epoch: records.epoch, bootstrapExecution: statusSource === undefined ? 'disabled' : 'enabled', identityRegistration: registeredFile === undefined ? 'unverified' : 'verified', pathRefusals: Object.freeze({ ...pathRefusals }), pendingIntents: Object.freeze(pendingIntents), inventory: inventoryStatus });
   };
 
   const host: FvProtectedHost = Object.freeze({

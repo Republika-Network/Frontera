@@ -263,9 +263,11 @@ unchanged; no production reachability; stale executors cannot write.
   `fv-bootstrap-identity-state`, at the API, persistence and verification levels.
 
 **Still open (each blocks operational activation):**
-- The FV registration ceremony that creates the FV store and anchors its genesis in that domain at the
-  deployment's witness (only a test-only genesis exists).
-- The FV credential enrolment and revocation ceremonies. Revoking a Host credential does not revoke an FV
+- ~~The FV registration ceremony that creates the FV store and anchors its genesis in that domain at the
+  deployment's witness~~: **implemented, non-operational, by FV-P4C-2B3C-2A1** (`FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md`). Activation still
+  needs a production registration issuer and the composition's `registration` gate made mandatory.
+- The FV credential enrolment and revocation ceremonies (B3C-2A2 and B3C-2A3, designed in `FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md`, not
+  implemented). Revoking a Host credential does not revoke an FV
   credential.
 - B3C-2 backup and restore.
 - Operational process and filesystem isolation.
