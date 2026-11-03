@@ -6,7 +6,7 @@ import type { IntegrationVersionRecord, TransitionRecord } from '../conformance/
 import { RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1, profileDigest } from '../conformance/profile.js';
 import { ConformanceRegistryError } from '../conformance/registry.js';
 import { createHighWaterMark, verifyCredentialHistory, verifyCurrentConformance } from '../conformance/verifier.js';
-import { BASELINE, ORG_A, approvals, buildCircuit, cleanupAll, expectation, integrationInput, issue, observe, runBaseline, submit, verdict } from './conformance-support.js';
+import { BASELINE, ORG_A, approvals, baselineChallengeCount, buildCircuit, cleanupAll, expectation, integrationInput, issue, observe, runBaseline, submit, verdict } from './conformance-support.js';
 
 /**
  * RN-CONFORM-02 §6 — the required end-to-end scenario, Stages A–N, in one
@@ -49,7 +49,9 @@ describe('RN-CONFORM-02 synthetic continuous conformance circuit — end to end'
     // Stage D/E — baseline challenges; correctly signed observations accepted.
     const credential = lifecycle.registerCandidate({ organizationId: ORG_A, integrationDigest: c.integration.integrationDigest });
     const results = runBaseline(c, [c.validators.A, c.validators.B]);
-    assert.equal(results.length, BASELINE.length * 2);
+    // Every enforcement challenge for each covered operation (document.export, document.open), G08 once (finding 4).
+    assert.equal(results.length, baselineChallengeCount() * 2);
+    assert.equal(baselineChallengeCount(), BASELINE.length * 2 - 1);
     assert.ok(results.every((r) => r.accepted));
     // …and invalid, replayed or mismatched evidence rejected.
     const extra = issue(c, 'G06', [c.validators.A]);

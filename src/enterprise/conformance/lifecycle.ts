@@ -34,10 +34,10 @@ import { signConformancePayload } from './signing.js';
  * | # | Edge | How |
  * |---|---|---|
  * | T1 | ∅ → CANDIDATE | `registerCandidate` |
- * | T2 | CANDIDATE → ACTIVE | `prepare('issue')` + two humans + `commit` |
+ * | T2 | CANDIDATE → ACTIVE | `prepare('issue')` + two humans + `commit`, strictly before `candidateUntil` (store-enforced) |
  * | T3 | CANDIDATE → EXPIRED | `applyTimeRules` (candidate term) |
  * | T4 | ACTIVE → SUSPENDED | `evaluate` — automatic, atomic with the evaluation, no human |
- * | T5 | SUSPENDED → ACTIVE | after `CRITICAL_VIOLATION_CONFIRMED`/`CONFLICTING_EVIDENCE`, or a critical failure confirmed while suspended: `prepare('reinstate')` with a remediation declaration + full revalidation + two new decisions from two distinct humans (they may be the people who approved issuance; the decisions themselves are single-use); after `EVIDENCE_STALE`/`CORROBORATION_UNAVAILABLE`: `reinstateAutomatically` once revalidated |
+ * | T5 | SUSPENDED → ACTIVE | after `CRITICAL_VIOLATION_CONFIRMED`/`CONFLICTING_EVIDENCE`, or a critical failure confirmed while suspended, or any confirmed critical violation accepted since the last activation (durable record, store-enforced): `prepare('reinstate')` with a remediation declaration + full revalidation + two new decisions from two distinct humans (they may be the people who approved issuance; the decisions themselves are single-use); after `EVIDENCE_STALE`/`CORROBORATION_UNAVAILABLE`: `reinstateAutomatically` once revalidated |
  * | T6 | SUSPENDED → REVOKED | `prepare('revoke')` + two humans, or `applyTimeRules` after the suspension timeout (the only automatic revocation) |
  * | T7 | ACTIVE → REVOKED | `prepare('revoke')` + two humans |
  * | T8 | ACTIVE/SUSPENDED → EXPIRED | `applyTimeRules` (credential term) |
@@ -62,6 +62,7 @@ export type LifecycleRefusal =
   | 'NOT_ELIGIBLE'
   | 'NO_LONGER_ELIGIBLE'
   | 'REMEDIATION_REQUIRED'
+  | 'CANDIDATE_TERM_ENDED'
   | 'HUMAN_PATH_NOT_APPLICABLE'
   | 'AUTOMATIC_PATH_NOT_APPLICABLE'
   | 'MALFORMED_INPUT'
@@ -90,11 +91,28 @@ export interface LoadedCredential {
   readonly profile: ConformanceProfileDefinition;
 }
 
-/** Everything the engine needs, read from committed storage only. */
+/** Finding 2: an evaluation reads at most this many observations; more is an explicit, fail-closed capacity condition. */
+export const MAX_EVALUATION_OBSERVATIONS = 4096;
+
 /**
- * Everything the engine needs, read from committed storage only. Every observation row is
- * re-authenticated from its signed submission (`authenticateStoredObservation`); rows that fail are
- * never evaluated and are counted in `unauthenticated`, which the verifier treats as tampering.
+ * Finding 2: the evaluation horizon — how far back an observation can still change a result. A success
+ * older than the longest freshness window plus the grace period is lapsed, and every corroboration or
+ * dispute needs observations within one window (plus the investigation timeout) of each other; older
+ * observations remain in the store and in the audited history, but are not read to evaluate.
+ * Confirmed violations do not depend on this horizon: they are recorded durably at acceptance
+ * (`cc_confirmed_violations`, finding 1).
+ */
+export function evaluationHorizonMs(profile: ConformanceProfileDefinition): number {
+  const freshest = Math.max(0, ...profile.requirements.map((r) => r.freshnessSeconds ?? 0));
+  return (freshest + profile.freshnessGraceSeconds + profile.corroboration.windowSeconds + profile.corroboration.investigationTimeoutSeconds) * 1000;
+}
+
+/**
+ * Everything the engine needs, read from committed storage only — a **bounded** read (finding 2): the
+ * newest `maxObservations` observations of the subject within the evaluation horizon, through an index.
+ * When there are more, `evidenceTruncated` makes the engine fail closed. Every observation row read is
+ * re-authenticated from its signed submission under the acceptance contract (finding 5); rows that fail
+ * are never evaluated and are counted in `unauthenticated`, which the verifier treats as tampering.
  */
 export function loadEngineInput(
   store: ConformanceStore,
@@ -103,6 +121,7 @@ export function loadEngineInput(
   credentialId: string,
   now: string,
   coordinatorPublicKeyPem: string,
+  options: { readonly maxObservations?: number } = {},
 ): { loaded: LoadedCredential; input: EngineInput; unauthenticated: readonly string[] } | undefined {
   const credential = store.getCredential(organizationId, credentialId);
   const head = store.getHead(organizationId, credentialId);
@@ -111,9 +130,13 @@ export function loadEngineInput(
   const profile = profiles.resolve(credential.profileId, credential.profileVersion, credential.profileDigest);
   if (integration === undefined || !profile.ok) return undefined;
   const nowMs = toMs(now);
-  const all = store.listObservations(organizationId, credential.integrationDigest);
-  const unauthenticated = all.filter((row) => authenticateStoredObservation(store, row, coordinatorPublicKeyPem) !== null).map((row) => row.eventId);
-  const rows = all.filter((row) => !unauthenticated.includes(row.eventId));
+  const cap = Math.max(1, Math.floor(options.maxObservations ?? MAX_EVALUATION_OBSERVATIONS));
+  const read = store.listRecentObservations(organizationId, credential.integrationDigest, nowMs - evaluationHorizonMs(profile.definition), cap + 1);
+  const evidenceTruncated = read.length > cap;
+  const all = evidenceTruncated ? read.slice(0, cap) : read;
+  const unauthenticated = all.filter((row) => authenticateStoredObservation(store, profiles, row, coordinatorPublicKeyPem) !== null).map((row) => row.eventId);
+  const rejected = new Set(unauthenticated);
+  const rows = all.filter((row) => !rejected.has(row.eventId));
   const excluded = new Set<string>();
   for (const validatorId of new Set(rows.map((r) => r.validatorId))) {
     const v = store.getValidator(validatorId);
@@ -124,25 +147,46 @@ export function loadEngineInput(
     input: {
       profile: profile.definition,
       integration: { integrationDigest: credential.integrationDigest, sdk: integration.record.sdk },
+      coveredOperations: credential.coveredOperations,
       observations: rows.map(toAccepted),
       excludedValidatorIds: [...excluded].sort(),
       evaluatedAt: now,
       credentialState: head.state,
       revalidationSince: head.state === 'SUSPENDED' ? head.effectiveAt : null,
+      evidenceTruncated,
     },
     unauthenticated,
   };
 }
 
+/** The effective time of the most recent transition to ACTIVE, or `null` if the credential was never active. */
+export function lastActivationMs(store: ConformanceStore, organizationId: string, credentialId: string): number | null {
+  let last: number | null = null;
+  for (const row of store.listTransitions(organizationId, credentialId)) {
+    if (row.columns.to !== 'ACTIVE') continue;
+    const at = toMs((JSON.parse(row.recordJson) as TransitionRecord).effectiveAt);
+    if (last === null || at > last) last = at;
+  }
+  return last;
+}
+
 /**
- * Whether lifting the current suspension needs the two-person path: the suspension's own reason is a
- * violation or dispute, **or** a critical failure was confirmed while suspended (a
- * suspension that began as stale or unavailable evidence does not launder a later confirmed violation).
+ * Whether lifting the current suspension needs the two-person path (finding 1, P1-3): the suspension's own
+ * reason is a violation or dispute; **or** a critical failure was confirmed by an evaluation while
+ * suspended; **or** a confirmed critical violation was accepted at any time since the credential last
+ * became ACTIVE — read from the durable `cc_confirmed_violations` record, so it holds even if no
+ * evaluation was ever committed for it and even after later successes would clear it in the engine.
+ * The store enforces the same rule on every T5 insert.
  */
 export function reinstatementNeedsHumans(store: ConformanceStore, organizationId: string, credentialId: string, head: CredentialHead): boolean {
   if ((HUMAN_REINSTATEMENT_REASONS as readonly string[]).includes(head.reasonCode)) return true;
   const since = toMs(head.effectiveAt);
-  return store.listEvaluations(organizationId, credentialId).some((e) => e.record.criticalFailureConfirmed && toMs(e.record.evaluatedAt) >= since);
+  if (store.listEvaluations(organizationId, credentialId).some((e) => e.record.criticalFailureConfirmed && toMs(e.record.evaluatedAt) >= since)) return true;
+  const credential = store.getCredential(organizationId, credentialId);
+  const activatedAt = lastActivationMs(store, organizationId, credentialId);
+  // Never active and suspended cannot happen (T4 leaves ACTIVE only); refuse the automatic path defensively.
+  if (credential === undefined || activatedAt === null) return true;
+  return store.listRecordedViolations(organizationId, credential.integrationDigest, credential.profileId, credential.profileVersion, activatedAt).some((v) => v.confirmed);
 }
 
 export function signTransition(record: TransitionRecord, registryKey: KeyObject): SignedTransition {
@@ -211,11 +255,14 @@ export function createCredentialLifecycle(deps: {
   readonly humans: SyntheticHumanDirectory;
   /** Stored observations are re-authenticated against the coordinator's challenges before every evaluation. */
   readonly coordinatorPublicKeyPem: string;
+  /** Capacity of one evaluation's evidence read (default `MAX_EVALUATION_OBSERVATIONS`). */
+  readonly maxEvaluationObservations?: number;
 }): CredentialLifecycle {
   const { store, profiles, clock, random, registryKey, humans, coordinatorPublicKeyPem } = deps;
+  const readOptions = deps.maxEvaluationObservations === undefined ? {} : { maxObservations: deps.maxEvaluationObservations };
 
   const load = (organizationId: string, credentialId: string, now: string) => {
-    const result = loadEngineInput(store, profiles, organizationId, credentialId, now, coordinatorPublicKeyPem);
+    const result = loadEngineInput(store, profiles, organizationId, credentialId, now, coordinatorPublicKeyPem, readOptions);
     if (result === undefined) throw new CredentialLifecycleError('UNKNOWN_CREDENTIAL');
     return result;
   };
@@ -367,7 +414,7 @@ export function createCredentialLifecycle(deps: {
     },
 
     assess(organizationId: string, credentialId: string) {
-      const result = loadEngineInput(store, profiles, organizationId, credentialId, clock.now(), coordinatorPublicKeyPem);
+      const result = loadEngineInput(store, profiles, organizationId, credentialId, clock.now(), coordinatorPublicKeyPem, readOptions);
       return result === undefined ? undefined : { loaded: result.loaded, engine: evaluateConformance(result.input) };
     },
 
@@ -416,6 +463,8 @@ export function createCredentialLifecycle(deps: {
         reasonCode = input.reasonCode;
       } else {
         if (kind === 'issue' && head.state !== 'CANDIDATE') throw new CredentialLifecycleError('WRONG_STATE', head.state);
+        // Finding 3: issuable strictly before candidateUntil; at or after it, only T3 (expiry) applies.
+        if (kind === 'issue' && toMs(now) >= toMs(loaded.credential.candidateUntil)) throw new CredentialLifecycleError('CANDIDATE_TERM_ENDED', loaded.credential.candidateUntil);
         if (kind === 'reinstate') {
           if (head.state !== 'SUSPENDED') throw new CredentialLifecycleError('WRONG_STATE', head.state);
           if (!reinstatementNeedsHumans(store, input.organizationId, input.credentialId, head)) throw new CredentialLifecycleError('HUMAN_PATH_NOT_APPLICABLE', head.reasonCode);
@@ -473,6 +522,8 @@ export function createCredentialLifecycle(deps: {
       if (toMs(now) - toMs(b.preparedAt) > PREPARED_ACTION_MAX_AGE_MS || toMs(now) < toMs(b.preparedAt)) throw new CredentialLifecycleError('PREPARED_ACTION_EXPIRED');
       const { loaded, input } = load(b.organizationId, b.credentialId, now);
       if (loaded.head.stateVersion !== b.stateVersion - 1 || loaded.head.state !== b.fromState) throw new CredentialLifecycleError('CAS_CONFLICT', 'the credential moved since the action was prepared');
+      // Finding 3: late approvals, or a replayed earlier issuance, cannot activate a candidate whose term has ended (the store refuses it too).
+      if (b.transitionCode === 'T2' && toMs(now) >= toMs(loaded.credential.candidateUntil)) throw new CredentialLifecycleError('CANDIDATE_TERM_ENDED', loaded.credential.candidateUntil);
       if (b.toState === 'ACTIVE') {
         // Eligibility is re-established at commit time: evidence that went stale or a violation that arrived since preparation refuses.
         const engine = evaluateConformance(input);

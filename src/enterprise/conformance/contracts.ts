@@ -41,6 +41,23 @@ export const CHALLENGE_CATALOGUE: Readonly<Record<ChallengeType, { readonly cont
   G08: Object.freeze({ controlId: 'CR-08', expectedOutcome: 'deployment_digest_match', title: 'Unauthorized deployment/version change' }),
 });
 
+/** The operation a G08 digest challenge performs; every other challenge names a covered operation. */
+export const DEPLOYMENT_ATTESTATION_OPERATION = 'deployment.read-attested-manifest' as const;
+
+/** At most this many covered operations per integration version: evaluation is per (requirement, operation), so this bounds it. */
+export const MAX_COVERED_OPERATIONS = 16;
+
+/**
+ * The operations a requirement served by `challengeType` must be verified for (finding 4).
+ * An enforcement challenge (G01, G02, G05, G06, G07) is evaluated for **each** covered operation
+ * separately: evidence for one operation never stands in for another. The G08 deployment-digest
+ * comparison is operation-independent and is evaluated once, for `DEPLOYMENT_ATTESTATION_OPERATION`.
+ */
+export function requiredOperations(challengeType: string | null, coveredOperations: readonly string[]): readonly string[] {
+  if (challengeType === 'G08') return Object.freeze([DEPLOYMENT_ATTESTATION_OPERATION]);
+  return Object.freeze([...new Set(coveredOperations)].sort());
+}
+
 export interface PlatformRecord {
   readonly schema: 'rn.conformance.platform/1';
   readonly platformId: string;
@@ -154,6 +171,8 @@ export interface AcceptedObservation {
   readonly validatorId: string;
   readonly operatorId: string;
   readonly controlId: string;
+  /** The exact operation the challenge exercised (signed by the coordinator and the validator). */
+  readonly operation: string;
   readonly integrationDigest: string;
   readonly profileId: string;
   readonly profileVersion: string;

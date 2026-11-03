@@ -80,8 +80,8 @@ describe('RN-CONFORM-02 review regressions', () => {
     const violations = c.store.listObservations(ORG_A, c.integration.integrationDigest).filter((o) => o.outcomeClass === 'violation');
     assert.equal(violations.length, 2);
     const v = violations[0]!;
-    const cols = 'event_id, challenge_id, validator_id, operator_id, organization_id, integration_digest, profile_id, profile_version, control_id, evidence_digest, outcome_class, claim_matches, observed_at, accepted_at, observation_digest, submission_json';
-    const values = [v.eventId, v.challengeId, v.validatorId, v.operatorId, v.organizationId, v.integrationDigest, v.profileId, v.profileVersion, v.controlId, v.evidenceDigest, 'conformant', 1, v.observedAt, v.acceptedAt, v.observationDigest, '{}'];
+    const cols = 'event_id, challenge_id, validator_id, operator_id, organization_id, integration_digest, profile_id, profile_version, control_id, operation, evidence_digest, outcome_class, claim_matches, observed_at, observed_at_ms, accepted_at, accepted_at_ms, observation_digest, submission_json';
+    const values = [v.eventId, v.challengeId, v.validatorId, v.operatorId, v.organizationId, v.integrationDigest, v.profileId, v.profileVersion, v.controlId, v.operation, v.evidenceDigest, 'conformant', 1, v.observedAt, v.observedAtMs, v.acceptedAt, v.acceptedAtMs, v.observationDigest, '{}'];
     assert.throws(() => db.prepare(`INSERT OR REPLACE INTO cc_observations (${cols}) VALUES (${cols.split(',').map(() => '?').join(', ')})`).run(...values), /cc:duplicate cc_observations/);
     assert.throws(() => db.prepare(`INSERT INTO cc_observations (${cols}) VALUES (${cols.split(',').map(() => '?').join(', ')}) ON CONFLICT (event_id) DO UPDATE SET outcome_class = 'conformant'`).run(...values), /cc:duplicate cc_observations/);
     assert.throws(() => db.prepare(`REPLACE INTO cc_consumed_decisions SELECT * FROM cc_consumed_decisions LIMIT 1`).run(), /cc:duplicate cc_consumed_decisions/);
@@ -100,8 +100,8 @@ describe('RN-CONFORM-02 review regressions', () => {
     const challenge = issue(c, 'G01', [c.validators.C]);
     const pkgDigest = c.store.listObservations(ORG_A, c.integration.integrationDigest)[0]!.evidenceDigest;
     db.prepare(
-      'INSERT INTO cc_observations (event_id, challenge_id, validator_id, operator_id, organization_id, integration_digest, profile_id, profile_version, control_id, evidence_digest, outcome_class, claim_matches, observed_at, accepted_at, observation_digest, submission_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run('evt-injected', challenge.challenge.challengeId, 'validator-c', 'op-synthetic-c', ORG_A, c.integration.integrationDigest, challenge.challenge.profileId, challenge.challenge.profileVersion, 'CR-01', pkgDigest, 'conformant', 1, c.clock.now(), c.clock.now(), conformanceDigest({ forged: true }), '{}');
+      'INSERT INTO cc_observations (event_id, challenge_id, validator_id, operator_id, organization_id, integration_digest, profile_id, profile_version, control_id, operation, evidence_digest, outcome_class, claim_matches, observed_at, observed_at_ms, accepted_at, accepted_at_ms, observation_digest, submission_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run('evt-injected', challenge.challenge.challengeId, 'validator-c', 'op-synthetic-c', ORG_A, c.integration.integrationDigest, challenge.challenge.profileId, challenge.challenge.profileVersion, 'CR-01', challenge.challenge.operation, pkgDigest, 'conformant', 1, c.clock.now(), c.clock.ms(), c.clock.now(), c.clock.ms(), conformanceDigest({ forged: true }), '{}');
     const injected = verdict(c, credentialId);
     assert.deepEqual([injected.conformant, injected.reason, injected.detail], [false, 'EVIDENCE_TAMPERED', 'evt-injected']);
     // The lifecycle never evaluates it: the injected row is not in the evidence of a new evaluation.

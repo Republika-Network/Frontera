@@ -74,6 +74,15 @@ const TWO_HUMANS = (action: string, consumedFor: string, binding: string, subjec
 )`;
 
 const PREV = (column: string) => `(SELECT p.${column} FROM cc_transitions p WHERE p.credential_id = NEW.credential_id AND p.state_version = NEW.state_version - 1)`;
+/**
+ * Finding 1: a confirmed critical violation of this credential's exact subject and profile was accepted at or after the
+ * credential last became ACTIVE — during that active period or during the current suspension — whether or not any
+ * evaluation was ever committed for it.
+ */
+const CONFIRMED_VIOLATION_SINCE_LAST_ACTIVATION = `EXISTS (SELECT 1 FROM cc_confirmed_violations v, cc_credentials c WHERE c.credential_id = NEW.credential_id
+        AND v.organization_id = c.organization_id AND v.integration_digest = c.integration_digest AND v.profile_id = c.profile_id AND v.profile_version = c.profile_version
+        AND v.critical = 1 AND v.operator_count >= v.min_operators
+        AND v.confirmed_at_ms >= (SELECT MAX(t.effective_at_ms) FROM cc_transitions t WHERE t.credential_id = NEW.credential_id AND t.to_state = 'ACTIVE'))`;
 const HEAD = (column: string) => `(SELECT h.${column} FROM cc_heads h WHERE h.credential_id = NEW.credential_id)`;
 
 const IDENTITY_KEYS: Readonly<Record<string, readonly (readonly string[])[]>> = Object.freeze({
@@ -88,6 +97,7 @@ const IDENTITY_KEYS: Readonly<Record<string, readonly (readonly string[])[]>> = 
   cc_challenges: [['challenge_id'], ['idempotency_key'], ['nonce']],
   cc_evidence_packages: [['evidence_digest']],
   cc_observations: [['event_id'], ['challenge_id', 'validator_id']],
+  cc_confirmed_violations: [['event_id']],
   cc_rejections: [['rejection_seq']],
   cc_credentials: [['credential_id'], ['integration_digest', 'profile_id', 'profile_version']],
   cc_evaluations: [['evaluation_id'], ['evaluation_digest']],
@@ -188,6 +198,7 @@ CREATE TABLE cc_challenges (
   profile_id TEXT NOT NULL,
   profile_version TEXT NOT NULL,
   control_id TEXT NOT NULL,
+  operation TEXT NOT NULL,
   issued_at_ms INTEGER NOT NULL,
   deadline_ms INTEGER NOT NULL,
   challenge_json TEXT NOT NULL,
@@ -209,15 +220,39 @@ CREATE TABLE cc_observations (
   profile_id TEXT NOT NULL,
   profile_version TEXT NOT NULL,
   control_id TEXT NOT NULL,
+  operation TEXT NOT NULL,
   evidence_digest TEXT NOT NULL,
   outcome_class TEXT NOT NULL CHECK (outcome_class IN ('conformant', 'violation', 'inconclusive')),
   claim_matches INTEGER NOT NULL CHECK (claim_matches IN (0, 1)),
   observed_at TEXT NOT NULL,
+  observed_at_ms INTEGER NOT NULL,
   accepted_at TEXT NOT NULL,
+  accepted_at_ms INTEGER NOT NULL,
   observation_digest TEXT NOT NULL,
   submission_json TEXT NOT NULL,
   UNIQUE (challenge_id, validator_id)
 );
+-- Bounded evaluation reads (finding 2): newest-first within the evaluation horizon, by subject.
+CREATE INDEX cc_observations_by_subject_time ON cc_observations (organization_id, integration_digest, observed_at_ms, event_id);
+CREATE INDEX cc_observations_violations ON cc_observations (integration_digest, profile_id, profile_version, control_id, operation, outcome_class, observed_at_ms);
+-- Finding 1: one row per accepted violation observation, written by trigger in the same statement as the
+-- observation. A row whose operator_count reaches min_operators on a critical control is a confirmed
+-- critical violation. It is append-only: no evaluation, re-evaluation or appeal can remove it.
+CREATE TABLE cc_confirmed_violations (
+  event_id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  integration_digest TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  profile_version TEXT NOT NULL,
+  control_id TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  critical INTEGER NOT NULL CHECK (critical IN (0, 1)),
+  operator_count INTEGER NOT NULL,
+  min_operators INTEGER NOT NULL,
+  observed_at_ms INTEGER NOT NULL,
+  confirmed_at_ms INTEGER NOT NULL
+);
+CREATE INDEX cc_confirmed_violations_by_subject ON cc_confirmed_violations (organization_id, integration_digest, profile_id, profile_version, confirmed_at_ms);
 CREATE TABLE cc_rejections (
   rejection_seq INTEGER PRIMARY KEY AUTOINCREMENT,
   received_at TEXT NOT NULL,
@@ -291,7 +326,7 @@ CREATE TABLE cc_heads (
 );
 
 -- Immutable records: never updated, never deleted.
-${['cc_meta', 'cc_profiles', 'cc_platforms', 'cc_integrations', 'cc_operators', 'cc_consumed_decisions', 'cc_validators', 'cc_validator_events', 'cc_challenges', 'cc_evidence_packages', 'cc_observations', 'cc_rejections', 'cc_credentials', 'cc_evaluations', 'cc_transitions']
+${['cc_meta', 'cc_profiles', 'cc_platforms', 'cc_integrations', 'cc_operators', 'cc_consumed_decisions', 'cc_validators', 'cc_validator_events', 'cc_challenges', 'cc_evidence_packages', 'cc_observations', 'cc_confirmed_violations', 'cc_rejections', 'cc_credentials', 'cc_evaluations', 'cc_transitions']
   .map(
     (table) => `CREATE TRIGGER ${table}_no_update BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:immutable ${table}'); END;
 CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:immutable ${table}'); END;`,
@@ -315,8 +350,25 @@ CREATE TRIGGER cc_validators_enrolled BEFORE INSERT ON cc_validators BEGIN
 END;
 CREATE TRIGGER cc_observations_attributed BEFORE INSERT ON cc_observations BEGIN
   SELECT RAISE(ABORT, 'cc:observation operator mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_validators v WHERE v.validator_id = NEW.validator_id AND v.operator_id = NEW.operator_id);
-  SELECT RAISE(ABORT, 'cc:observation challenge mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_challenges c WHERE c.challenge_id = NEW.challenge_id AND c.organization_id = NEW.organization_id AND c.integration_digest = NEW.integration_digest AND c.control_id = NEW.control_id AND c.profile_id = NEW.profile_id AND c.profile_version = NEW.profile_version);
+  SELECT RAISE(ABORT, 'cc:observation challenge mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_challenges c WHERE c.challenge_id = NEW.challenge_id AND c.organization_id = NEW.organization_id AND c.integration_digest = NEW.integration_digest AND c.control_id = NEW.control_id AND c.operation = NEW.operation AND c.profile_id = NEW.profile_id AND c.profile_version = NEW.profile_version);
   SELECT RAISE(ABORT, 'cc:observation evidence missing') WHERE NOT EXISTS (SELECT 1 FROM cc_evidence_packages e WHERE e.evidence_digest = NEW.evidence_digest AND e.organization_id = NEW.organization_id);
+END;
+-- Finding 1: a violation is recorded with the number of distinct operators that reported a violation of the same
+-- subject, profile, control and operation within the profile's corroboration window of it (either side, so arrival
+-- order does not matter). For k = 2 this is exactly CC-D-03; for a larger k it over-approximates, which can only
+-- require humans more often. Forged rows can only add violations, never remove one.
+CREATE TRIGGER cc_observations_record_violation AFTER INSERT ON cc_observations WHEN NEW.outcome_class = 'violation' BEGIN
+  INSERT INTO cc_confirmed_violations (event_id, organization_id, integration_digest, profile_id, profile_version, control_id, operation, critical, operator_count, min_operators, observed_at_ms, confirmed_at_ms)
+    SELECT NEW.event_id, NEW.organization_id, NEW.integration_digest, NEW.profile_id, NEW.profile_version, NEW.control_id, NEW.operation,
+      EXISTS (SELECT 1 FROM json_each(p.definition_json, '$.requirements') r WHERE json_extract(r.value, '$.requirementId') = NEW.control_id AND json_extract(r.value, '$.severity') = 'critical'),
+      (SELECT COUNT(DISTINCT o.operator_id) FROM cc_observations o WHERE o.organization_id = NEW.organization_id AND o.integration_digest = NEW.integration_digest
+        AND o.profile_id = NEW.profile_id AND o.profile_version = NEW.profile_version AND o.control_id = NEW.control_id AND o.operation = NEW.operation AND o.outcome_class = 'violation'
+        AND o.observed_at_ms BETWEEN NEW.observed_at_ms - json_extract(p.definition_json, '$.corroboration.windowSeconds') * 1000 AND NEW.observed_at_ms + json_extract(p.definition_json, '$.corroboration.windowSeconds') * 1000),
+      json_extract(p.definition_json, '$.corroboration.minDistinctOperators'),
+      NEW.observed_at_ms, NEW.accepted_at_ms
+    FROM cc_profiles p WHERE p.profile_id = NEW.profile_id AND p.profile_version = NEW.profile_version;
+  -- Postcondition: an outer OR IGNORE cannot silently skip the record.
+  SELECT RAISE(ABORT, 'cc:violation not recorded') WHERE NOT EXISTS (SELECT 1 FROM cc_confirmed_violations v WHERE v.event_id = NEW.event_id AND v.integration_digest = NEW.integration_digest AND v.control_id = NEW.control_id);
 END;
 CREATE TRIGGER cc_credentials_bound BEFORE INSERT ON cc_credentials BEGIN
   SELECT RAISE(ABORT, 'cc:credential integration mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_integrations i WHERE i.integration_digest = NEW.integration_digest AND i.organization_id = NEW.organization_id AND i.profile_id = NEW.profile_id AND i.profile_version = NEW.profile_version);
@@ -382,9 +434,12 @@ CREATE TRIGGER cc_transitions_guard BEFORE INSERT ON cc_transitions BEGIN
   SELECT RAISE(ABORT, 'cc:activation without eligible evaluation') WHERE NEW.to_state = 'ACTIVE' AND NOT EXISTS (SELECT 1 FROM cc_evaluations e WHERE e.evaluation_id = NEW.evaluation_id AND e.credential_id = NEW.credential_id AND e.eligible_for_active = 1 AND e.credential_state_version = NEW.state_version - 1 AND e.evaluated_at_ms <= NEW.effective_at_ms);
   SELECT RAISE(ABORT, 'cc:activation against standing failure') WHERE NEW.to_state = 'ACTIVE' AND EXISTS (SELECT 1 FROM cc_evaluations f, cc_evaluations e WHERE e.evaluation_id = NEW.evaluation_id AND f.credential_id = NEW.credential_id AND f.critical_failure = 1 AND f.evaluation_id <> e.evaluation_id AND f.evaluated_at_ms >= e.evaluated_at_ms);
   SELECT RAISE(ABORT, 'cc:activation after credential term') WHERE NEW.to_state = 'ACTIVE' AND NEW.effective_at_ms >= (SELECT c.valid_until_ms FROM cc_credentials c WHERE c.credential_id = NEW.credential_id);
+  -- Finding 3: a candidate is issuable strictly before candidate_until (T3 expires it at candidate_until or later). No approval overrides this.
+  SELECT RAISE(ABORT, 'cc:issuance after candidate term') WHERE NEW.transition_code = 'T2' AND NEW.effective_at_ms >= (SELECT c.candidate_until_ms FROM cc_credentials c WHERE c.credential_id = NEW.credential_id);
   SELECT RAISE(ABORT, 'cc:issuance requires two humans') WHERE NEW.transition_code = 'T2' AND NOT ${TWO_HUMANS('credential.issue', 'NEW.transition_id', 'NEW.action_binding_digest', 'NEW.credential_id')};
   SELECT RAISE(ABORT, 'cc:reinstatement requires two humans') WHERE NEW.transition_code = 'T5' AND (${PREV('reason_code')} IN ('CRITICAL_VIOLATION_CONFIRMED', 'CONFLICTING_EVIDENCE')
-      OR EXISTS (SELECT 1 FROM cc_evaluations f WHERE f.credential_id = NEW.credential_id AND f.critical_failure = 1 AND f.evaluated_at_ms >= ${PREV('effective_at_ms')})) AND NOT ${TWO_HUMANS('credential.reinstate', 'NEW.transition_id', 'NEW.action_binding_digest', 'NEW.credential_id')};
+      OR EXISTS (SELECT 1 FROM cc_evaluations f WHERE f.credential_id = NEW.credential_id AND f.critical_failure = 1 AND f.evaluated_at_ms >= ${PREV('effective_at_ms')})
+      OR ${CONFIRMED_VIOLATION_SINCE_LAST_ACTIVATION}) AND NOT ${TWO_HUMANS('credential.reinstate', 'NEW.transition_id', 'NEW.action_binding_digest', 'NEW.credential_id')};
   SELECT RAISE(ABORT, 'cc:revocation requires two humans or the suspension timeout') WHERE NEW.to_state = 'REVOKED' AND NOT (
        (NEW.reason_code = 'SUSPENSION_TIMEOUT' AND NEW.from_state = 'SUSPENDED' AND NEW.action_binding_digest IS NULL
          AND NEW.effective_at_ms >= ${PREV('effective_at_ms')} + (SELECT c.suspension_revocation_ms FROM cc_credentials c WHERE c.credential_id = NEW.credential_id))
@@ -415,7 +470,7 @@ END;
 
 const TABLES = Object.freeze([
   'cc_meta', 'cc_profiles', 'cc_platforms', 'cc_integrations', 'cc_operators', 'cc_consumed_decisions', 'cc_validators', 'cc_validator_events',
-  'cc_challenges', 'cc_evidence_packages', 'cc_observations', 'cc_rejections', 'cc_credentials', 'cc_evaluations', 'cc_transitions', 'cc_heads',
+  'cc_challenges', 'cc_evidence_packages', 'cc_observations', 'cc_confirmed_violations', 'cc_rejections', 'cc_credentials', 'cc_evaluations', 'cc_transitions', 'cc_heads',
 ]);
 
 export type ConformanceStoreErrorCode = 'CAS_CONFLICT' | 'INVARIANT_REFUSED' | 'CONFLICT' | 'NOT_FOUND' | 'CORRUPT' | 'BUSY' | 'OPEN_REFUSED';
@@ -477,13 +532,30 @@ export interface StoredObservationRow {
   readonly profileId: string;
   readonly profileVersion: string;
   readonly controlId: string;
+  readonly operation: string;
   readonly evidenceDigest: string;
   readonly outcomeClass: 'conformant' | 'violation' | 'inconclusive';
   readonly claimMatches: boolean;
   readonly observedAt: string;
+  /** Written as `Date.parse(observedAt)`; re-checked on every re-authentication. */
+  readonly observedAtMs: number;
   readonly acceptedAt: string;
+  readonly acceptedAtMs: number;
   readonly observationDigest: string;
   readonly submissionJson: string;
+}
+
+/** A recorded violation (finding 1). `confirmed` = critical and reported by ≥ `minOperators` distinct operators within the window. */
+export interface RecordedViolation {
+  readonly eventId: string;
+  readonly controlId: string;
+  readonly operation: string;
+  readonly critical: boolean;
+  readonly operatorCount: number;
+  readonly minOperators: number;
+  readonly confirmed: boolean;
+  readonly observedAtMs: number;
+  readonly confirmedAtMs: number;
 }
 
 export interface StoredTransitionRow {
@@ -526,7 +598,14 @@ export interface ConformanceStore {
   insertObservation(row: StoredObservationRow): void;
   getObservation(eventId: string): StoredObservationRow | undefined;
   getObservationForChallengeValidator(challengeId: string, validatorId: string): StoredObservationRow | undefined;
+  /** The complete evidence history of one subject, oldest first (audit; not the evaluation path). */
   listObservations(organizationId: string, integrationDigest: string): readonly StoredObservationRow[];
+  /** Finding 2: at most `limit` observations of one subject observed at or after `sinceMs`, newest first, through an index. */
+  listRecentObservations(organizationId: string, integrationDigest: string, sinceMs: number, limit: number): readonly StoredObservationRow[];
+  /** One page of the complete history (audit), ordered by observation time then event id, after the given cursor. */
+  listObservationPage(organizationId: string, integrationDigest: string, after: { readonly observedAtMs: number; readonly eventId: string } | null, limit: number): readonly StoredObservationRow[];
+  /** Finding 1: recorded violations of one subject and profile accepted at or after `sinceMs`. */
+  listRecordedViolations(organizationId: string, integrationDigest: string, profileId: string, profileVersion: string, sinceMs: number): readonly RecordedViolation[];
   insertRejection(rejection: { receivedAt: string; reason: string; submissionDigest: string; eventId: string | null; validatorId: string | null; challengeId: string | null; conflictsWithEventId: string | null }, sideEffect?: () => void): void;
   listRejections(): readonly { reason: string; eventId: string | null; validatorId: string | null; challengeId: string | null; submissionDigest: string; conflictsWithEventId: string | null }[];
   createCredential(record: CredentialRecord, suspensionRevocationMs: number, genesis: SignedTransition): void;
@@ -644,11 +723,14 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
           profileId: String(row['profile_id']),
           profileVersion: String(row['profile_version']),
           controlId: String(row['control_id']),
+          operation: String(row['operation']),
           evidenceDigest: String(row['evidence_digest']),
           outcomeClass: String(row['outcome_class']) as StoredObservationRow['outcomeClass'],
           claimMatches: row['claim_matches'] === 1,
           observedAt: String(row['observed_at']),
+          observedAtMs: Number(row['observed_at_ms']),
           acceptedAt: String(row['accepted_at']),
+          acceptedAtMs: Number(row['accepted_at_ms']),
           observationDigest: String(row['observation_digest']),
           submissionJson: String(row['submission_json']),
         });
@@ -799,8 +881,8 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
       run(() => {
         const c = signed.challenge;
         db.prepare(
-          'INSERT INTO cc_challenges (challenge_id, idempotency_key, nonce, organization_id, integration_digest, profile_id, profile_version, control_id, issued_at_ms, deadline_ms, challenge_json, signature_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        ).run(c.challengeId, c.idempotencyKey, c.nonce, c.organizationId, c.integrationDigest, c.profileId, c.profileVersion, c.controlId, Date.parse(c.issuedAt), Date.parse(c.deadline), canonicalizeConformance(c), canonicalizeConformance(signed.coordinatorSignature));
+          'INSERT INTO cc_challenges (challenge_id, idempotency_key, nonce, organization_id, integration_digest, profile_id, profile_version, control_id, operation, issued_at_ms, deadline_ms, challenge_json, signature_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).run(c.challengeId, c.idempotencyKey, c.nonce, c.organizationId, c.integrationDigest, c.profileId, c.profileVersion, c.controlId, c.operation, Date.parse(c.issuedAt), Date.parse(c.deadline), canonicalizeConformance(c), canonicalizeConformance(signed.coordinatorSignature));
       }),
     getChallenge: (challengeId: string) => parseChallenge(db.prepare('SELECT challenge_json, signature_json FROM cc_challenges WHERE challenge_id = ?').get(challengeId) as Record<string, unknown> | undefined),
     getChallengeByIdempotencyKey: (key: string) => parseChallenge(db.prepare('SELECT challenge_json, signature_json FROM cc_challenges WHERE idempotency_key = ?').get(key) as Record<string, unknown> | undefined),
@@ -822,8 +904,11 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
     insertObservation: (row: StoredObservationRow) =>
       run(() => {
         db.prepare(
-          'INSERT INTO cc_observations (event_id, challenge_id, validator_id, operator_id, organization_id, integration_digest, profile_id, profile_version, control_id, evidence_digest, outcome_class, claim_matches, observed_at, accepted_at, observation_digest, submission_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        ).run(row.eventId, row.challengeId, row.validatorId, row.operatorId, row.organizationId, row.integrationDigest, row.profileId, row.profileVersion, row.controlId, row.evidenceDigest, row.outcomeClass, row.claimMatches ? 1 : 0, row.observedAt, row.acceptedAt, row.observationDigest, row.submissionJson);
+          'INSERT INTO cc_observations (event_id, challenge_id, validator_id, operator_id, organization_id, integration_digest, profile_id, profile_version, control_id, operation, evidence_digest, outcome_class, claim_matches, observed_at, observed_at_ms, accepted_at, accepted_at_ms, observation_digest, submission_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).run(
+          row.eventId, row.challengeId, row.validatorId, row.operatorId, row.organizationId, row.integrationDigest, row.profileId, row.profileVersion, row.controlId, row.operation, row.evidenceDigest,
+          row.outcomeClass, row.claimMatches ? 1 : 0, row.observedAt, row.observedAtMs, row.acceptedAt, row.acceptedAtMs, row.observationDigest, row.submissionJson,
+        );
       }),
     getObservation: (eventId: string) => parseObservation(db.prepare('SELECT * FROM cc_observations WHERE event_id = ?').get(eventId) as Record<string, unknown> | undefined),
     getObservationForChallengeValidator: (challengeId: string, validatorId: string) =>
@@ -832,6 +917,37 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
       (db.prepare('SELECT * FROM cc_observations WHERE organization_id = ? AND integration_digest = ? ORDER BY observed_at, event_id').all(organizationId, integrationDigest) as Record<string, unknown>[]).map(
         (row) => parseObservation(row)!,
       ),
+    listRecentObservations: (organizationId: string, integrationDigest: string, sinceMs: number, limit: number) =>
+      (db
+        .prepare('SELECT * FROM cc_observations WHERE organization_id = ? AND integration_digest = ? AND observed_at_ms >= ? ORDER BY observed_at_ms DESC, event_id DESC LIMIT ?')
+        .all(organizationId, integrationDigest, Math.floor(sinceMs), Math.max(0, Math.floor(limit))) as Record<string, unknown>[]).map((row) => parseObservation(row)!),
+    listObservationPage: (organizationId: string, integrationDigest: string, after: { readonly observedAtMs: number; readonly eventId: string } | null, limit: number) =>
+      (db
+        .prepare(
+          'SELECT * FROM cc_observations WHERE organization_id = ? AND integration_digest = ? AND (? IS NULL OR observed_at_ms > ? OR (observed_at_ms = ? AND event_id > ?)) ORDER BY observed_at_ms, event_id LIMIT ?',
+        )
+        .all(organizationId, integrationDigest, after === null ? null : 1, after?.observedAtMs ?? 0, after?.observedAtMs ?? 0, after?.eventId ?? '', Math.max(0, Math.floor(limit))) as Record<string, unknown>[]).map(
+        (row) => parseObservation(row)!,
+      ),
+    listRecordedViolations: (organizationId: string, integrationDigest: string, profileId: string, profileVersion: string, sinceMs: number) =>
+      (db
+        .prepare('SELECT * FROM cc_confirmed_violations WHERE organization_id = ? AND integration_digest = ? AND profile_id = ? AND profile_version = ? AND confirmed_at_ms >= ? ORDER BY confirmed_at_ms, event_id')
+        .all(organizationId, integrationDigest, profileId, profileVersion, Math.floor(sinceMs)) as Record<string, unknown>[]).map((row) => {
+        const critical = row['critical'] === 1;
+        const operatorCount = Number(row['operator_count']);
+        const minOperators = Number(row['min_operators']);
+        return Object.freeze({
+          eventId: String(row['event_id']),
+          controlId: String(row['control_id']),
+          operation: String(row['operation']),
+          critical,
+          operatorCount,
+          minOperators,
+          confirmed: critical && operatorCount >= minOperators,
+          observedAtMs: Number(row['observed_at_ms']),
+          confirmedAtMs: Number(row['confirmed_at_ms']),
+        });
+      }),
     insertRejection: (r, sideEffect?: () => void) =>
       run(() =>
         db.transaction(() => {

@@ -2,10 +2,11 @@ import { canonicalizeConformance, conformanceDigest } from './canonical.js';
 import { HUMAN_DECISION_FORMAT, SYNTHETIC_DESIGNATION, toMs, type CredentialState, type TransitionCode, type TransitionRecord } from './contracts.js';
 import { evaluateConformance } from './engine.js';
 import { verifyTwoPersonAuthority, type SyntheticHumanDirectory } from './human-authority.js';
+import { authenticateStoredObservation, type StoredObservationDefect } from './evidence.js';
 import { HUMAN_REINSTATEMENT_REASONS, loadEngineInput } from './lifecycle.js';
 import type { EvaluationRecord } from './contracts.js';
 import type { ConformanceProfileRegistry } from './profile.js';
-import type { ConformanceStore } from './sqlite-conformance-store.js';
+import type { ConformanceStore, RecordedViolation } from './sqlite-conformance-store.js';
 import { verifyConformanceSignature } from './signing.js';
 
 /**
@@ -51,19 +52,29 @@ export type HistoryFailure =
   | 'EVALUATION_DIGEST_MISMATCH'
   | 'HUMAN_APPROVAL_MISSING'
   | 'HUMAN_APPROVAL_INVALID'
+  | 'TERM_VIOLATION'
   | 'HEAD_MISMATCH';
 
 export type HistoryVerification =
   | { readonly valid: true; readonly stateVersion: number; readonly state: CredentialState; readonly headTransitionDigest: string; readonly transitions: readonly TransitionRecord[] }
   | { readonly valid: false; readonly failure: HistoryFailure; readonly atStateVersion: number | null };
 
-function humanRequired(record: TransitionRecord, previous: TransitionRecord | undefined, evaluations: readonly EvaluationRecord[]): 'credential.issue' | 'credential.reinstate' | 'credential.revoke' | null {
+function humanRequired(
+  record: TransitionRecord,
+  previous: TransitionRecord | undefined,
+  lastActivation: TransitionRecord | undefined,
+  evaluations: readonly EvaluationRecord[],
+  violations: readonly RecordedViolation[],
+): 'credential.issue' | 'credential.reinstate' | 'credential.revoke' | null {
   if (record.transitionCode === 'T2') return 'credential.issue';
   if (record.transitionCode === 'T5' && previous !== undefined) {
     const since = toMs(previous.effectiveAt);
     const until = toMs(record.effectiveAt);
     const failedWhileSuspended = evaluations.some((e) => e.criticalFailureConfirmed && toMs(e.evaluatedAt) >= since && toMs(e.evaluatedAt) <= until);
-    if ((HUMAN_REINSTATEMENT_REASONS as readonly string[]).includes(previous.reasonCode) || failedWhileSuspended) return 'credential.reinstate';
+    // Finding 1: a confirmed critical violation accepted since the last activation, recorded durably whether or not it was ever evaluated.
+    const activatedAt = lastActivation === undefined ? Number.NEGATIVE_INFINITY : toMs(lastActivation.effectiveAt);
+    const confirmedSinceActivation = violations.some((v) => v.confirmed && v.confirmedAtMs >= activatedAt && v.confirmedAtMs <= until);
+    if ((HUMAN_REINSTATEMENT_REASONS as readonly string[]).includes(previous.reasonCode) || failedWhileSuspended || confirmedSinceActivation) return 'credential.reinstate';
   }
   if (record.to === 'REVOKED' && record.reasonCode !== 'SUSPENSION_TIMEOUT') return 'credential.revoke';
   return null;
@@ -82,7 +93,9 @@ export function verifyCredentialHistory(
     const rows = store.listTransitions(organizationId, credentialId);
     if (credential === undefined || rows.length === 0) return fail('NO_HISTORY');
     const evaluations = new Map(store.listEvaluations(organizationId, credentialId).map((e) => [e.record.evaluationId, e]));
+    const violations = store.listRecordedViolations(organizationId, credential.integrationDigest, credential.profileId, credential.profileVersion, Number.MIN_SAFE_INTEGER);
     const records: TransitionRecord[] = [];
+    let lastActivation: TransitionRecord | undefined;
     for (const [index, row] of rows.entries()) {
       const sv = index + 1;
       let record: TransitionRecord;
@@ -117,6 +130,9 @@ export function verifyCredentialHistory(
         if (record.from !== previous.to) return fail('FROM_STATE_MISMATCH', sv);
         if (!ALLOWED.some(([from, to, code]) => from === record.from && to === record.to && code === record.transitionCode)) return fail('TRANSITION_NOT_ALLOWED', sv);
         if (toMs(record.effectiveAt) < toMs(previous.effectiveAt)) return fail('TRANSITION_NOT_ALLOWED', sv);
+        // Finding 3: issuance strictly before the candidate term ends; no activation at or after the credential term.
+        if (record.transitionCode === 'T2' && toMs(record.effectiveAt) >= toMs(credential.candidateUntil)) return fail('TERM_VIOLATION', sv);
+        if (record.to === 'ACTIVE' && toMs(record.effectiveAt) >= toMs(credential.validUntil)) return fail('TERM_VIOLATION', sv);
       }
       if (record.evaluationId !== null) {
         const evaluation = evaluations.get(record.evaluationId);
@@ -127,7 +143,7 @@ export function verifyCredentialHistory(
       } else if (record.to === 'ACTIVE' || record.to === 'SUSPENDED') {
         return fail('EVALUATION_MISSING', sv);
       }
-      const action = humanRequired(record, previous, [...evaluations.values()].map((e) => e.record));
+      const action = humanRequired(record, previous, lastActivation, [...evaluations.values()].map((e) => e.record), violations);
       if (action !== null) {
         const refs = record.humanDecisions;
         if (
@@ -149,6 +165,7 @@ export function verifyCredentialHistory(
         return fail('HUMAN_APPROVAL_INVALID', sv);
       }
       records.push(Object.freeze(record));
+      if (record.to === 'ACTIVE') lastActivation = record;
     }
     const last = records[records.length - 1]!;
     const head = store.getHead(organizationId, credentialId);
@@ -231,6 +248,8 @@ export function verifyCurrentConformance(
     readonly coordinatorPublicKeyPem: string;
     readonly humans?: SyntheticHumanDirectory;
     readonly highWaterMark?: HighWaterMark;
+    /** Capacity of the bounded evidence read (default `MAX_EVALUATION_OBSERVATIONS`). */
+    readonly maxEvaluationObservations?: number;
   },
   expect: ConformanceExpectation,
   now: string,
@@ -270,7 +289,7 @@ export function verifyCurrentConformance(
     if (toMs(now) >= toMs(credential.validUntil)) return verdict('CREDENTIAL_EXPIRED', at);
     if (credential.declaredExclusions.includes(expect.operation)) return verdict('OPERATION_EXCLUDED', at);
     if (!credential.coveredOperations.includes(expect.operation)) return verdict('OPERATION_NOT_IN_SCOPE', at);
-    const loaded = loadEngineInput(deps.store, deps.profiles, expect.organizationId, expect.credentialId, now, deps.coordinatorPublicKeyPem);
+    const loaded = loadEngineInput(deps.store, deps.profiles, expect.organizationId, expect.credentialId, now, deps.coordinatorPublicKeyPem, deps.maxEvaluationObservations === undefined ? {} : { maxObservations: deps.maxEvaluationObservations });
     if (loaded === undefined) return verdict('VERIFIER_ERROR', at);
     // A stored observation that does not re-authenticate means the evidence store was written outside the acceptance boundary.
     if (loaded.unauthenticated.length > 0) return verdict('EVIDENCE_TAMPERED', { ...at, detail: loaded.unauthenticated.join(',') });
@@ -287,4 +306,41 @@ export function verifyCurrentConformance(
   } catch {
     return verdict('VERIFIER_ERROR');
   }
+}
+
+/** One page of the evidence audit. */
+export const EVIDENCE_AUDIT_PAGE = 512;
+
+export type EvidenceHistoryVerification = {
+  /** Every stored observation of the subject was read (in pages of `EVIDENCE_AUDIT_PAGE`). */
+  readonly observations: number;
+  readonly defects: readonly { readonly eventId: string; readonly defect: StoredObservationDefect }[];
+};
+
+/**
+ * Finding 2/5: the complete evidence history of one subject re-authenticated, oldest first, in bounded
+ * pages — the audit counterpart of the bounded evaluation read. Nothing is skipped or discarded: old
+ * evidence that no longer affects evaluation is still verified here, under the same acceptance
+ * contract. A store failure propagates to the caller; it is never reported as a clean audit.
+ */
+export function verifyEvidenceHistory(
+  deps: { readonly store: ConformanceStore; readonly profiles: ConformanceProfileRegistry; readonly coordinatorPublicKeyPem: string },
+  organizationId: string,
+  integrationDigest: string,
+): EvidenceHistoryVerification {
+  const defects: { eventId: string; defect: StoredObservationDefect }[] = [];
+  let observations = 0;
+  let cursor: { observedAtMs: number; eventId: string } | null = null;
+  for (;;) {
+    const page = deps.store.listObservationPage(organizationId, integrationDigest, cursor, EVIDENCE_AUDIT_PAGE);
+    for (const row of page) {
+      observations += 1;
+      const defect = authenticateStoredObservation(deps.store, deps.profiles, row, deps.coordinatorPublicKeyPem);
+      if (defect !== null) defects.push({ eventId: row.eventId, defect });
+    }
+    if (page.length < EVIDENCE_AUDIT_PAGE) break;
+    const last = page[page.length - 1]!;
+    cursor = { observedAtMs: last.observedAtMs, eventId: last.eventId };
+  }
+  return Object.freeze({ observations, defects: Object.freeze(defects) });
 }

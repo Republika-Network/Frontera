@@ -1,4 +1,5 @@
 import {
+  requiredOperations,
   toMs,
   toTimestamp,
   type AcceptedObservation,
@@ -42,6 +43,17 @@ import { sdkSupported, type ConformanceProfileDefinition, type ConformanceRequir
  *   confirms it instead. Unresolved past the deadline, SR-4 suspends with
  *   `CONFLICTING_EVIDENCE`. Recency never decides a dispute.
  *
+ * Every rule above is applied per **(requirement, operation)** (finding 4):
+ * an enforcement challenge's evidence counts only for the exact covered
+ * operation it exercised, every covered operation needs its own corroborated
+ * success, and a requirement is only as good as its weakest operation. The
+ * G08 deployment-digest comparison is operation-independent.
+ *
+ * Results are **bounded** (finding 2): each cites only the supporting
+ * observations of its decisive window, never the whole history; and when the
+ * caller's bounded read hit capacity (`evidenceTruncated`), no success can be
+ * established, while violations among the newest observations still count.
+ *
  * A confirmed violation stands until a full success window lies **entirely
  * after** it. When a credential is SUSPENDED, conformant evidence observed
  * before the suspension (`revalidationSince`) does not count at all, so
@@ -65,6 +77,8 @@ export function classifyOutcome(expected: ExpectedOutcome, observed: ObservedOut
 export interface EngineInput {
   readonly profile: ConformanceProfileDefinition;
   readonly integration: { readonly integrationDigest: string; readonly sdk: { readonly package: string; readonly version: string } };
+  /** The credential's covered operations. Every enforcement requirement must be verified for each of them (finding 4). */
+  readonly coveredOperations: readonly string[];
   /** Accepted observations for exactly this integration digest and profile. Others are ignored defensively. */
   readonly observations: readonly AcceptedObservation[];
   /** Validators whose observations no longer count (revoked or quarantined). */
@@ -72,6 +86,13 @@ export interface EngineInput {
   readonly evaluatedAt: string;
   readonly credentialState: CredentialState;
   readonly revalidationSince: string | null;
+  /**
+   * True when the bounded evidence read hit its capacity (finding 2). The engine then fails closed:
+   * conformance cannot be established (no success, no dispute resolution), while violations in the
+   * newest observations it did read are still classified, so a fresh corroborated violation still
+   * suspends under SR-1.
+   */
+  readonly evidenceTruncated?: boolean;
 }
 
 export interface EngineOutput {
@@ -81,6 +102,15 @@ export interface EngineOutput {
   readonly evidenceIds: readonly string[];
 }
 
+/**
+ * Evaluation records are bounded independently of history (finding 2): a result cites at most this many
+ * supporting observations per operation (the latest per operator in the decisive window), and at most
+ * `MAX_LISTED_OPERATORS` operators. With `MAX_COVERED_OPERATIONS` = 16 and 8 requirements the record stays
+ * well inside the canonicalization budget (4 096 nodes); `conformance-review-regressions` measures it.
+ */
+export const MAX_SUPPORTING_OBSERVATIONS = 4;
+export const MAX_LISTED_OPERATORS = 16;
+
 interface Obs {
   readonly id: string;
   readonly op: string;
@@ -88,18 +118,50 @@ interface Obs {
   readonly cls: OutcomeClass;
 }
 
-/** The end times of every window of length `w` holding observations from ≥ `k` distinct operators. */
+const byTime = (a: Obs, b: Obs) => a.t - b.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/**
+ * The end times of every window of length `w` holding observations from ≥ `k` distinct operators.
+ * A sliding window over the time-sorted list: O(n log n), not O(n²).
+ */
 function windowEnds(list: readonly Obs[], k: number, w: number): number[] {
-  const sorted = [...list].sort((a, b) => a.t - b.t || a.id.localeCompare(b.id));
+  const sorted = [...list].sort(byTime);
   const ends: number[] = [];
+  const counts = new Map<string, number>();
+  let start = 0;
   for (const end of sorted) {
-    const ops = new Set(sorted.filter((o) => o.t <= end.t && o.t >= end.t - w).map((o) => o.op));
-    if (ops.size >= k) ends.push(end.t);
+    counts.set(end.op, (counts.get(end.op) ?? 0) + 1);
+    while (sorted[start]!.t < end.t - w) {
+      const leaving = sorted[start]!.op;
+      const left = (counts.get(leaving) ?? 1) - 1;
+      if (left === 0) counts.delete(leaving);
+      else counts.set(leaving, left);
+      start += 1;
+    }
+    if (counts.size >= k) ends.push(end.t);
   }
   return ends;
 }
 
-function evaluateCorroborated(requirement: ConformanceRequirementDefinition, profile: ConformanceProfileDefinition, all: readonly Obs[], nowMs: number, revalidationSinceMs: number | null): RequirementResult {
+const latest = (values: readonly number[]): number | null => (values.length === 0 ? null : values.reduce((a, b) => (b > a ? b : a)));
+
+/** The supporting set of one window: the latest observation of each operator, newest first, capped; ids in sorted order. */
+function supporting(list: readonly Obs[]): string[] {
+  const perOperator = new Map<string, Obs>();
+  for (const o of [...list].sort(byTime).reverse()) if (!perOperator.has(o.op)) perOperator.set(o.op, o);
+  return [...perOperator.values()].slice(0, MAX_SUPPORTING_OBSERVATIONS).map((o) => o.id).sort();
+}
+
+const operators = (list: readonly Obs[]) => [...new Set(list.map((o) => o.op))].sort().slice(0, MAX_LISTED_OPERATORS);
+
+function evaluateCorroborated(
+  requirement: ConformanceRequirementDefinition,
+  profile: ConformanceProfileDefinition,
+  all: readonly Obs[],
+  nowMs: number,
+  revalidationSinceMs: number | null,
+  truncated: boolean,
+): RequirementResult {
   const k = profile.corroboration.minDistinctOperators;
   const w = profile.corroboration.windowSeconds * 1000;
   const tConfirm = profile.corroboration.investigationTimeoutSeconds * 1000;
@@ -108,21 +170,21 @@ function evaluateCorroborated(requirement: ConformanceRequirementDefinition, pro
   const usable = all.filter((o) => o.cls !== 'inconclusive');
   if (usable.length !== all.length) reasons.push('INCONCLUSIVE_OBSERVATIONS_IGNORED');
   const violations = usable.filter((o) => o.cls === 'violation');
-  const conformant = usable.filter((o) => o.cls === 'conformant' && (revalidationSinceMs === null || o.t >= revalidationSinceMs));
-  if (revalidationSinceMs !== null && conformant.length !== usable.filter((o) => o.cls === 'conformant').length) reasons.push('PRE_SUSPENSION_EVIDENCE_NOT_COUNTED');
+  const allConformant = usable.filter((o) => o.cls === 'conformant');
+  // Capacity exceeded: conformance cannot be established from a partial read (fail closed); violations still count.
+  const conformant = truncated ? [] : allConformant.filter((o) => revalidationSinceMs === null || o.t >= revalidationSinceMs);
+  if (truncated) reasons.push('EVALUATION_CAPACITY_EXCEEDED');
+  else if (revalidationSinceMs !== null && conformant.length !== allConformant.length) reasons.push('PRE_SUSPENSION_EVIDENCE_NOT_COUNTED');
 
-  const base = {
-    requirementId: requirement.requirementId,
-    severity: requirement.severity,
-    evidenceIds: Object.freeze(usable.map((o) => o.id).sort()),
-  };
-  const result = (category: ResultCategory, extra: Partial<Omit<RequirementResult, 'requirementId' | 'severity' | 'category' | 'evidenceIds'>> = {}): RequirementResult =>
+  const result = (category: ResultCategory, evidence: readonly string[], extra: Partial<Omit<RequirementResult, 'requirementId' | 'severity' | 'category' | 'evidenceIds'>> = {}): RequirementResult =>
     Object.freeze({
-      ...base,
+      requirementId: requirement.requirementId,
+      severity: requirement.severity,
       category,
       reasonCodes: Object.freeze([...reasons, ...(extra.reasonCodes ?? [])]),
-      conformantOperators: Object.freeze([...new Set(conformant.map((o) => o.op))].sort()),
-      violationOperators: Object.freeze([...new Set(violations.map((o) => o.op))].sort()),
+      conformantOperators: Object.freeze(operators(conformant)),
+      violationOperators: Object.freeze(operators(violations)),
+      evidenceIds: Object.freeze([...evidence]),
       latestSuccessAt: extra.latestSuccessAt ?? null,
       freshUntil: extra.freshUntil ?? null,
       confirmedFailureAt: extra.confirmedFailureAt ?? null,
@@ -130,38 +192,73 @@ function evaluateCorroborated(requirement: ConformanceRequirementDefinition, pro
     });
 
   // 1. The latest confirmed violation, if one exists.
-  const confirmedEnds = windowEnds(violations, k, w);
-  const lastConfirmed = confirmedEnds.length === 0 ? null : Math.max(...confirmedEnds);
+  const lastConfirmed = latest(windowEnds(violations, k, w));
   const after = (o: Obs) => lastConfirmed === null || o.t > lastConfirmed;
   const postConformant = conformant.filter(after);
   const postViolations = violations.filter(after);
   const successEnds = windowEnds(postConformant, k, w);
   if (lastConfirmed !== null && successEnds.length === 0) {
-    return result('VERIFIED_FAILURE', { reasonCodes: ['CORROBORATED_VIOLATION'], confirmedFailureAt: toTimestamp(lastConfirmed) });
+    const window = violations.filter((o) => o.t <= lastConfirmed && o.t >= lastConfirmed - w);
+    return result('VERIFIED_FAILURE', supporting(window), { reasonCodes: ['CORROBORATED_VIOLATION'], confirmedFailureAt: toTimestamp(lastConfirmed) });
   }
 
   // 2. Unconfirmed violations after the last confirmed one: resolved only by ≥ 2 other operators observing conformance afterwards.
   const resolved = (v: Obs) => new Set(postConformant.filter((c) => c.op !== v.op && c.t > v.t).map((c) => c.op)).size >= disputeOthers;
-  const unresolved = postViolations.filter((v) => !resolved(v)).sort((a, b) => a.t - b.t || a.id.localeCompare(b.id));
+  const unresolved = postViolations.filter((v) => !resolved(v)).sort(byTime);
   if (postViolations.length > unresolved.length) reasons.push('DISPUTE_RESOLVED_BY_ADDITIONAL_OPERATORS');
   if (lastConfirmed !== null) reasons.push('REMEDIATED_AFTER_CONFIRMED_VIOLATION');
   const first = unresolved[0];
   if (first !== undefined) {
     const deadline = first.t + tConfirm;
     const expired = nowMs > deadline;
-    const conflicting = postConformant.some((c) => c.op !== first.op && (c.t > first.t || first.t - c.t <= w));
-    return result(conflicting ? 'CONFLICTING' : 'UNCONFIRMED_VIOLATION', {
+    const disagreeing = postConformant.filter((c) => c.op !== first.op && (c.t > first.t || first.t - c.t <= w));
+    const conflicting = disagreeing.length > 0;
+    return result(conflicting ? 'CONFLICTING' : 'UNCONFIRMED_VIOLATION', [...new Set([first.id, ...supporting(disagreeing)])].sort(), {
       reasonCodes: [conflicting ? 'OPERATORS_DISAGREE' : 'SINGLE_OPERATOR_VIOLATION', ...(expired ? ['INVESTIGATION_EXPIRED'] : ['INVESTIGATION_OPEN'])],
       investigationDeadline: toTimestamp(deadline),
     });
   }
 
   // 3. Success, staleness or absence.
-  if (successEnds.length === 0) return result('INSUFFICIENT_EVIDENCE', { reasonCodes: ['NO_CORROBORATED_SUCCESS'] });
-  const latest = Math.max(...successEnds);
-  const freshUntil = latest + (requirement.freshnessSeconds ?? 0) * 1000;
-  if (nowMs > freshUntil) return result('STALE_EVIDENCE', { reasonCodes: ['FRESHNESS_WINDOW_LAPSED'], latestSuccessAt: toTimestamp(latest), freshUntil: toTimestamp(freshUntil) });
-  return result('VERIFIED_SUCCESS', { reasonCodes: ['CORROBORATED_SUCCESS'], latestSuccessAt: toTimestamp(latest), freshUntil: toTimestamp(freshUntil) });
+  const latestSuccess = latest(successEnds);
+  if (latestSuccess === null) return result('INSUFFICIENT_EVIDENCE', [], { reasonCodes: ['NO_CORROBORATED_SUCCESS'] });
+  const window = postConformant.filter((o) => o.t <= latestSuccess && o.t >= latestSuccess - w);
+  const freshUntil = latestSuccess + (requirement.freshnessSeconds ?? 0) * 1000;
+  if (nowMs > freshUntil) return result('STALE_EVIDENCE', supporting(window), { reasonCodes: ['FRESHNESS_WINDOW_LAPSED'], latestSuccessAt: toTimestamp(latestSuccess), freshUntil: toTimestamp(freshUntil) });
+  return result('VERIFIED_SUCCESS', supporting(window), { reasonCodes: ['CORROBORATED_SUCCESS'], latestSuccessAt: toTimestamp(latestSuccess), freshUntil: toTimestamp(freshUntil) });
+}
+
+const INVESTIGATING: readonly ResultCategory[] = ['CONFLICTING', 'UNCONFIRMED_VIOLATION'];
+/** Code-unit order: deterministic and locale-independent. */
+const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const cmp = (a: string | null, b: string | null) => order(a ?? '', b ?? '');
+
+/**
+ * Combines one requirement's per-operation results (finding 4). The requirement is only as good as its
+ * weakest operation: a confirmed failure of any operation fails it; otherwise the investigation that
+ * expires first decides; otherwise a missing operation makes it INSUFFICIENT_EVIDENCE; otherwise the
+ * stalest operation decides freshness. Success needs every required operation verified. Deterministic.
+ */
+function combineOperations(perOperation: readonly { readonly operation: string; readonly result: RequirementResult }[]): RequirementResult {
+  if (perOperation.length === 1) return perOperation[0]!.result;
+  const pick = (category: ResultCategory, by: (a: RequirementResult, b: RequirementResult) => number) =>
+    perOperation.filter((p) => p.result.category === category).sort((a, b) => by(a.result, b.result) || cmp(a.operation, b.operation))[0];
+  const failure = pick('VERIFIED_FAILURE', (a, b) => cmp(b.confirmedFailureAt, a.confirmedFailureAt));
+  const investigating = perOperation
+    .filter((p) => INVESTIGATING.includes(p.result.category))
+    .sort((a, b) => cmp(a.result.investigationDeadline, b.result.investigationDeadline) || (a.result.category === b.result.category ? 0 : a.result.category === 'CONFLICTING' ? -1 : 1) || cmp(a.operation, b.operation))[0];
+  const chosen =
+    failure ?? investigating ?? pick('INSUFFICIENT_EVIDENCE', () => 0) ?? pick('STALE_EVIDENCE', (a, b) => cmp(a.freshUntil, b.freshUntil)) ?? pick('VERIFIED_SUCCESS', (a, b) => cmp(a.freshUntil, b.freshUntil))!;
+  const unverified = perOperation.filter((p) => p.result.category !== 'VERIFIED_SUCCESS').map((p) => `OPERATION_${p.result.category}:${p.operation}`);
+  const extraReasons = [...new Set(perOperation.flatMap((p) => p.result.reasonCodes))].filter((r) => !chosen.result.reasonCodes.includes(r)).sort();
+  const union = (pickList: (r: RequirementResult) => readonly string[], cap: number) => Object.freeze([...new Set(perOperation.flatMap((p) => pickList(p.result)))].sort().slice(0, cap));
+  return Object.freeze({
+    ...chosen.result,
+    reasonCodes: Object.freeze([...chosen.result.reasonCodes, ...extraReasons, ...unverified]),
+    conformantOperators: union((r) => r.conformantOperators, MAX_LISTED_OPERATORS),
+    violationOperators: union((r) => r.violationOperators, MAX_LISTED_OPERATORS),
+    evidenceIds: union((r) => r.evidenceIds, Number.MAX_SAFE_INTEGER),
+  });
 }
 
 function deterministic(requirement: ConformanceRequirementDefinition, category: ResultCategory, reason: string, extra: { latestSuccessAt?: string | null; freshUntil?: string | null } = {}): RequirementResult {
@@ -185,6 +282,7 @@ export function evaluateConformance(input: EngineInput): EngineOutput {
   const nowMs = toMs(input.evaluatedAt);
   if (!Number.isFinite(nowMs)) throw new TypeError('evaluatedAt must be a timestamp.');
   const revalidationSinceMs = input.revalidationSince === null ? null : toMs(input.revalidationSince);
+  const truncated = input.evidenceTruncated === true;
   const excluded = new Set(input.excludedValidatorIds);
   const relevant = input.observations.filter(
     (o) =>
@@ -199,10 +297,15 @@ export function evaluateConformance(input: EngineInput): EngineOutput {
   const byId = new Map<string, RequirementResult>();
   for (const requirement of profile.requirements) {
     if (requirement.evaluation !== 'validator-corroborated') continue;
-    const observations = relevant
-      .filter((o) => o.controlId === requirement.requirementId)
-      .map((o): Obs => ({ id: o.eventId, op: o.operatorId, t: toMs(o.observedAt), cls: o.outcomeClass }));
-    const result = evaluateCorroborated(requirement, profile, observations, nowMs, revalidationSinceMs);
+    // One evaluation per required operation: evidence is bound to the exact control and operation it exercised.
+    const perOperation = requiredOperations(requirement.challengeType, input.coveredOperations).map((operation) => {
+      const observations = relevant
+        .filter((o) => o.controlId === requirement.requirementId && o.operation === operation)
+        .map((o): Obs => ({ id: o.eventId, op: o.operatorId, t: toMs(o.observedAt), cls: o.outcomeClass }));
+      return { operation, result: evaluateCorroborated(requirement, profile, observations, nowMs, revalidationSinceMs, truncated) };
+    });
+    // No required operation at all (an integration with no covered operation cannot exist; defensive) is no evidence.
+    const result = perOperation.length === 0 ? deterministic(requirement, 'INSUFFICIENT_EVIDENCE', 'NO_REQUIRED_OPERATION') : combineOperations(perOperation);
     corroborated.push(result);
     byId.set(requirement.requirementId, result);
   }

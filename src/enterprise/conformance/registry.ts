@@ -2,6 +2,7 @@ import { createPublicKey } from 'node:crypto';
 
 import { conformanceDigest } from './canonical.js';
 import {
+  MAX_COVERED_OPERATIONS,
   SYNTHETIC_OPERATOR_STATEMENT,
   compareSemver,
   isDigest,
@@ -100,7 +101,7 @@ function checkIntegrationInput(input: unknown): IntegrationVersionInput {
     isIdentifier(profile.record['id']) && isSemver(profile.record['version']) && isDigest(profile.record['digest']);
   if (!ok) throw new ConformanceRegistryError('MALFORMED_INPUT', 'field value');
   const ops = r['coveredOperations'];
-  if (!Array.isArray(ops) || ops.length === 0 || !ops.every((o) => typeof o === 'string' && OPERATION.test(o)) || new Set(ops).size !== ops.length) throw new ConformanceRegistryError('MALFORMED_INPUT', 'coveredOperations');
+  if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_COVERED_OPERATIONS || !ops.every((o) => typeof o === 'string' && OPERATION.test(o)) || new Set(ops).size !== ops.length) throw new ConformanceRegistryError('MALFORMED_INPUT', 'coveredOperations');
   const exclusions = r['declaredExclusions'];
   if (!Array.isArray(exclusions)) throw new ConformanceRegistryError('MALFORMED_INPUT', 'declaredExclusions');
   for (const e of exclusions) {

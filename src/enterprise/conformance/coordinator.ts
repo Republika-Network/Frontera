@@ -4,6 +4,7 @@ import { canonicalizeConformance } from './canonical.js';
 import {
   CHALLENGE_CATALOGUE,
   CHALLENGE_TYPES,
+  DEPLOYMENT_ATTESTATION_OPERATION,
   isIdentifier,
   toMs,
   toTimestamp,
@@ -34,8 +35,8 @@ export const secureRandomSource: RandomSource = Object.freeze({ bytes: (length: 
 
 export const CHALLENGE_NONCE_BYTES = 32;
 export const MAX_CHALLENGE_DEADLINE_SECONDS = 15 * 60;
-/** The operation a G08 digest challenge performs; every other challenge names a covered operation. */
-export const DEPLOYMENT_ATTESTATION_OPERATION = 'deployment.read-attested-manifest';
+/** Re-exported: defined in `contracts.ts` so the pure engine can use it without importing the coordinator. */
+export { DEPLOYMENT_ATTESTATION_OPERATION };
 
 export function newIdentifier(random: RandomSource, prefix: string): string {
   return `${prefix}_${random.bytes(16).toString('hex')}`;

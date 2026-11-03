@@ -2,7 +2,7 @@ import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { conformanceDigest } from '../conformance/canonical.js';
-import { toMs, toTimestamp, type AcceptedObservation, type CredentialState, type OutcomeClass } from '../conformance/contracts.js';
+import { DEPLOYMENT_ATTESTATION_OPERATION, toMs, toTimestamp, type AcceptedObservation, type CredentialState, type OutcomeClass } from '../conformance/contracts.js';
 import { classifyOutcome, evaluateConformance, type EngineInput } from '../conformance/engine.js';
 import { CredentialLifecycleError } from '../conformance/lifecycle.js';
 import { RN_CONFORMANCE_INTEGRATION_PROFILE_V0_1, RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1, profileDigest } from '../conformance/profile.js';
@@ -36,7 +36,7 @@ const T = toMs('2026-11-02T09:00:00.000Z');
 const at = (minutes: number) => toTimestamp(T + minutes * 60_000);
 const DIGEST = `sha256:${'d'.repeat(64)}`;
 let n = 0;
-const o = (op: string, cls: OutcomeClass, minutes: number, control = 'CR-01', validatorId = `val-${op}`): AcceptedObservation => {
+const o = (op: string, cls: OutcomeClass, minutes: number, control = 'CR-01', validatorId = `val-${op}`, operation = control === 'CR-08' ? DEPLOYMENT_ATTESTATION_OPERATION : 'document.open'): AcceptedObservation => {
   n += 1;
   return {
     eventId: `evt-${n}`,
@@ -44,6 +44,7 @@ const o = (op: string, cls: OutcomeClass, minutes: number, control = 'CR-01', va
     validatorId,
     operatorId: op,
     controlId: control,
+    operation,
     integrationDigest: DIGEST,
     profileId: RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileId,
     profileVersion: RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileVersion,
@@ -62,6 +63,7 @@ const engine = (observations: AcceptedObservation[], minutes: number, state: Cre
   evaluateConformance({
     profile: RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1,
     integration: { integrationDigest: DIGEST, sdk: SDK },
+    coveredOperations: ['document.open'],
     observations,
     excludedValidatorIds: [],
     evaluatedAt: at(minutes),
@@ -192,6 +194,7 @@ describe('RN-CONFORM-02 engine: freshness and scope', () => {
     const out = evaluateConformance({
       profile: RN_CONFORMANCE_INTEGRATION_PROFILE_V0_1,
       integration: { integrationDigest: DIGEST, sdk: SDK },
+      coveredOperations: ['document.open'],
       observations: otherControlsPass(0, 'none').map((x) => ({ ...x, profileId: 'rn.conformance.integration' })),
       excludedValidatorIds: [],
       evaluatedAt: at(1),

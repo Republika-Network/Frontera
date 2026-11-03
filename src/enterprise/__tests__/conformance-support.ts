@@ -352,14 +352,19 @@ export function integrationInput(profileDigest: string, overrides: Record<string
 let idempotencyCounter = 0;
 
 /** Issues one challenge of `type` to `validators`. */
-export function issue(c: Circuit, type: ChallengeType, validators: readonly SyntheticValidator[], options: { idempotencyKey?: string; deadlineSeconds?: number; integrationDigest?: string; organizationId?: string } = {}): SignedChallenge {
+export function issue(
+  c: Circuit,
+  type: ChallengeType,
+  validators: readonly SyntheticValidator[],
+  options: { idempotencyKey?: string; deadlineSeconds?: number; integrationDigest?: string; organizationId?: string; operation?: string } = {},
+): SignedChallenge {
   idempotencyCounter += 1;
   return c.services().coordinator.issue({
     idempotencyKey: options.idempotencyKey ?? `idem-${type}-${idempotencyCounter}`,
     organizationId: options.organizationId ?? ORG_A,
     integrationDigest: options.integrationDigest ?? c.integration.integrationDigest,
     challengeType: type,
-    operation: type === 'G08' ? DEPLOYMENT_ATTESTATION_OPERATION : 'document.open',
+    operation: type === 'G08' ? DEPLOYMENT_ATTESTATION_OPERATION : (options.operation ?? 'document.open'),
     fixtureRef: 'fixture-synthetic-pep-v1',
     assignedValidatorIds: validators.map((v) => v.validatorId),
     deadlineSeconds: options.deadlineSeconds ?? 600,
@@ -427,12 +432,27 @@ export function submit(c: Circuit, raw: string): SubmissionResult {
 
 export const BASELINE: readonly ChallengeType[] = Object.freeze(['G01', 'G02', 'G05', 'G06', 'G07', 'G08']);
 
-/** Runs every baseline challenge against `validators` and submits their honest observations. Returns submission results. */
-export function runBaseline(c: Circuit, validators: readonly SyntheticValidator[]): SubmissionResult[] {
+/** The operations one baseline challenge type is run for: each covered operation for enforcement challenges, the attestation operation for G08 (finding 4). */
+export function baselineOperations(type: ChallengeType, operations: readonly string[] = OPERATIONS): readonly string[] {
+  return type === 'G08' ? [DEPLOYMENT_ATTESTATION_OPERATION] : operations;
+}
+
+/** Challenges in one full baseline over `operations`. */
+export function baselineChallengeCount(operations: readonly string[] = OPERATIONS): number {
+  return BASELINE.reduce((n, type) => n + baselineOperations(type, operations).length, 0);
+}
+
+/**
+ * Runs every baseline challenge, for every covered operation (`operations`, default all of the fixture's), against `validators`
+ * and submits their honest observations. Returns submission results.
+ */
+export function runBaseline(c: Circuit, validators: readonly SyntheticValidator[], operations: readonly string[] = OPERATIONS): SubmissionResult[] {
   const results: SubmissionResult[] = [];
   for (const type of BASELINE) {
-    const challenge = issue(c, type, validators);
-    for (const v of validators) results.push(submit(c, observe(c, v, challenge)));
+    for (const operation of baselineOperations(type, operations)) {
+      const challenge = issue(c, type, validators, { operation });
+      for (const v of validators) results.push(submit(c, observe(c, v, challenge)));
+    }
   }
   return results;
 }

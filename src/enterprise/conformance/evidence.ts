@@ -13,13 +13,14 @@ import {
   readClosed,
   toMs,
   type AcceptedObservation,
+  type ChallengePayload,
   type ObservationPayload,
 } from './contracts.js';
 import { verifyChallenge } from './coordinator.js';
 import { classifyOutcome } from './engine.js';
 import type { ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceClock } from './registry.js';
-import { ConformanceStoreError, type ConformanceStore, type StoredObservationRow } from './sqlite-conformance-store.js';
+import { ConformanceStoreError, type ConformanceStore, type StoredObservationRow, type StoredValidator } from './sqlite-conformance-store.js';
 import { verifyConformanceSignature } from './signing.js';
 
 /**
@@ -173,48 +174,10 @@ export function createEvidenceService(deps: {
       const signature = outer.record['validatorSignature'];
       meta = { eventId: observation.eventId, validatorId: observation.validatorId, challengeId: observation.challengeId };
 
-      // 2 — known validator.
-      const validator = store.getValidator(observation.validatorId);
-      if (validator === undefined) return reject('UNKNOWN_VALIDATOR');
-      // 3 — status and key validity (the key is the enrolled one; a submitted key id is only a claim).
-      if (validator.keyRevokedAtMs !== null && validator.keyRevokedAtMs <= nowMs) return reject('VALIDATOR_REVOKED');
-      if (validator.quarantinedAtMs !== null && validator.quarantinedAtMs <= nowMs) return reject('VALIDATOR_QUARANTINED');
-      const observedMs = toMs(observation.observedAt);
-      const keyFrom = toMs(validator.record.keyValidFrom);
-      const keyUntil = toMs(validator.record.keyValidUntil);
-      if (observation.validatorKeyId !== validator.record.keyId || observedMs < keyFrom || observedMs > keyUntil || nowMs > keyUntil) return reject('KEY_NOT_VALID');
-      // 4 — signature under the pinned key, in the observation domain.
-      if (!verifyConformanceSignature('observation', observation, signature, validator.record.publicKeyPem).ok) return reject('SIGNATURE_MISMATCH');
-
-      // 5 — challenge exists (and is the coordinator's), nonce echoed, validator assigned.
-      const signedChallenge = store.getChallenge(observation.challengeId);
-      if (signedChallenge === undefined || !verifyChallenge(signedChallenge, coordinatorPublicKeyPem)) return reject('CHALLENGE_UNKNOWN');
-      const challenge = signedChallenge.challenge;
-      if (challenge.nonce !== observation.challengeNonce) return reject('CHALLENGE_BINDING_MISMATCH');
-      if (!challenge.assignedValidatorIds.includes(observation.validatorId)) return reject('NOT_ASSIGNED');
-
-      // 6 — exact subject binding.
-      const subjectOk =
-        observation.organizationId === challenge.organizationId &&
-        observation.platformId === challenge.platformId &&
-        observation.integrationId === challenge.integrationId &&
-        observation.integrationVersion === challenge.integrationVersion &&
-        observation.integrationDigest === challenge.integrationDigest &&
-        observation.controlId === challenge.controlId &&
-        observation.operation === challenge.operation &&
-        observation.expectedOutcome === challenge.expectedOutcome;
-      if (!subjectOk) return reject('SUBJECT_BINDING_MISMATCH');
-
-      // 7 — profile: equal to the challenge's, supported, never lower.
-      if (observation.profileId !== challenge.profileId) return reject('UNSUPPORTED_PROFILE');
-      if (observation.profileVersion !== challenge.profileVersion) return reject(compareSemver(observation.profileVersion, challenge.profileVersion) < 0 ? 'PROFILE_DOWNGRADE' : 'UNSUPPORTED_PROFILE');
-      if (!profiles.resolve(challenge.profileId, challenge.profileVersion, challenge.profileDigest).ok) return reject('UNSUPPORTED_PROFILE');
-
-      // 8 — time.
-      const submittedMs = toMs(observation.submittedAt);
-      if (observedMs > nowMs + CLOCK_SKEW_MS || submittedMs > nowMs + CLOCK_SKEW_MS) return reject('FUTURE_DATED');
-      const deadlineMs = toMs(challenge.deadline) + CLOCK_SKEW_MS;
-      if (observedMs < toMs(challenge.issuedAt) || submittedMs < observedMs || submittedMs > deadlineMs || nowMs > deadlineMs) return reject('CHALLENGE_EXPIRED');
+      // 2–8 — the one authoritative contract, shared with re-authentication of stored rows.
+      const authority = checkObservationAuthority(store, profiles, observation, signature, nowMs, coordinatorPublicKeyPem);
+      if (!authority.ok) return reject(authority.reason);
+      const { validator, challenge } = authority;
 
       // 9 — replay and per-validator uniqueness. A second, different observation is retained as a conflict and quarantines the validator.
       if (store.getObservation(observation.eventId) !== undefined) return reject('REPLAYED');
@@ -223,14 +186,10 @@ export function createEvidenceService(deps: {
         return reject('VALIDATOR_CONFLICT', prior.eventId, () => store.appendValidatorEvent(observation.validatorId, 'QUARANTINED', nowMs, 'VALIDATOR_CONFLICT'));
       }
 
-      // 10 — evidence package in custody for this organization.
-      // The package must be this validator's, for this challenge: another validator's package cannot be cited.
-      const pkg = store.getEvidencePackage(observation.organizationId, observation.evidenceDigest);
-      if (pkg === undefined || pkg.challengeId !== observation.challengeId || pkg.validatorId !== observation.validatorId) return reject('EVIDENCE_MISSING');
-
-      const integration = store.getIntegrationByDigest(challenge.organizationId, challenge.integrationDigest);
-      if (integration === undefined) return reject('SUBJECT_BINDING_MISMATCH');
-      const outcomeClass = classifyOutcome(challenge.expectedOutcome, observation.observedOutcome, observation.observedDeploymentDigest, integration.record.deploymentDigest);
+      // 10 — evidence package in custody, and the classification the engine computes (never the validator's).
+      const custody = checkObservationCustody(store, observation, challenge);
+      if (!custody.ok) return reject(custody.reason);
+      const { outcomeClass } = custody;
       const row: StoredObservationRow = Object.freeze({
         eventId: observation.eventId,
         challengeId: observation.challengeId,
@@ -241,11 +200,14 @@ export function createEvidenceService(deps: {
         profileId: observation.profileId,
         profileVersion: observation.profileVersion,
         controlId: observation.controlId,
+        operation: observation.operation,
         evidenceDigest: observation.evidenceDigest,
         outcomeClass,
         claimMatches: outcomeClass === observation.outcomeClass,
         observedAt: observation.observedAt,
+        observedAtMs: toMs(observation.observedAt),
         acceptedAt: receivedAt,
+        acceptedAtMs: nowMs,
         observationDigest: conformanceDigest({ observation, validatorSignature: signature }),
         submissionJson: canonicalizeConformance({ observation, validatorSignature: signature }),
       });
@@ -262,24 +224,112 @@ export function createEvidenceService(deps: {
   });
 }
 
+/**
+ * Steps 2–8 of `VALIDATOR_PROTOCOL.md` §3 — validator, status and key validity, signature under the
+ * enrolled key, challenge authenticity and binding, exact subject, profile, and time — evaluated **as of
+ * `atMs`**, the acceptance instant. This is the one evidence-validation contract (finding 5): the
+ * acceptance boundary calls it with the trusted clock; every re-authentication of a stored row calls it
+ * with that row's recorded acceptance time, so a row inserted outside the boundary passes only if the
+ * boundary itself would have accepted it then.
+ *
+ * Retrospective policy: the checks are historical (key validity interval, challenge deadline, status at
+ * acceptance). Later events do not make valid evidence invalid here; instead, a validator whose key is
+ * revoked or who is quarantined **at evaluation time** is excluded from every later evaluation, including
+ * for evidence accepted before the revocation (`loadEngineInput`). Compromise therefore withdraws a
+ * validator's past evidence without rewriting it.
+ */
+export function checkObservationAuthority(
+  store: ConformanceStore,
+  profiles: ConformanceProfileRegistry,
+  observation: ObservationPayload,
+  signature: unknown,
+  atMs: number,
+  coordinatorPublicKeyPem: string,
+): { readonly ok: true; readonly validator: StoredValidator; readonly challenge: ChallengePayload } | { readonly ok: false; readonly reason: EvidenceRejection } {
+  const no = (reason: EvidenceRejection) => ({ ok: false, reason }) as const;
+  // 2 — known validator.
+  const validator = store.getValidator(observation.validatorId);
+  if (validator === undefined) return no('UNKNOWN_VALIDATOR');
+  // 3 — status and key validity (the key is the enrolled one; a submitted key id is only a claim).
+  if (validator.keyRevokedAtMs !== null && validator.keyRevokedAtMs <= atMs) return no('VALIDATOR_REVOKED');
+  if (validator.quarantinedAtMs !== null && validator.quarantinedAtMs <= atMs) return no('VALIDATOR_QUARANTINED');
+  const observedMs = toMs(observation.observedAt);
+  const keyFrom = toMs(validator.record.keyValidFrom);
+  const keyUntil = toMs(validator.record.keyValidUntil);
+  if (observation.validatorKeyId !== validator.record.keyId || observedMs < keyFrom || observedMs > keyUntil || atMs > keyUntil) return no('KEY_NOT_VALID');
+  // 4 — signature under the pinned key, in the observation domain.
+  if (!verifyConformanceSignature('observation', observation, signature, validator.record.publicKeyPem).ok) return no('SIGNATURE_MISMATCH');
+
+  // 5 — challenge exists (and is the coordinator's), nonce echoed, validator assigned.
+  const signedChallenge = store.getChallenge(observation.challengeId);
+  if (signedChallenge === undefined || !verifyChallenge(signedChallenge, coordinatorPublicKeyPem)) return no('CHALLENGE_UNKNOWN');
+  const challenge = signedChallenge.challenge;
+  if (challenge.challengeId !== observation.challengeId || challenge.nonce !== observation.challengeNonce) return no('CHALLENGE_BINDING_MISMATCH');
+  if (!challenge.assignedValidatorIds.includes(observation.validatorId)) return no('NOT_ASSIGNED');
+
+  // 6 — exact subject binding.
+  const subjectOk =
+    observation.organizationId === challenge.organizationId &&
+    observation.platformId === challenge.platformId &&
+    observation.integrationId === challenge.integrationId &&
+    observation.integrationVersion === challenge.integrationVersion &&
+    observation.integrationDigest === challenge.integrationDigest &&
+    observation.controlId === challenge.controlId &&
+    observation.operation === challenge.operation &&
+    observation.expectedOutcome === challenge.expectedOutcome;
+  if (!subjectOk) return no('SUBJECT_BINDING_MISMATCH');
+
+  // 7 — profile: equal to the challenge's, supported, never lower.
+  if (observation.profileId !== challenge.profileId) return no('UNSUPPORTED_PROFILE');
+  if (observation.profileVersion !== challenge.profileVersion) return no(compareSemver(observation.profileVersion, challenge.profileVersion) < 0 ? 'PROFILE_DOWNGRADE' : 'UNSUPPORTED_PROFILE');
+  if (!profiles.resolve(challenge.profileId, challenge.profileVersion, challenge.profileDigest).ok) return no('UNSUPPORTED_PROFILE');
+
+  // 8 — time: observed after issuance, submitted after observation and before the deadline, accepted before the deadline, nothing in the future.
+  const submittedMs = toMs(observation.submittedAt);
+  if (observedMs > atMs + CLOCK_SKEW_MS || submittedMs > atMs + CLOCK_SKEW_MS) return no('FUTURE_DATED');
+  const deadlineMs = toMs(challenge.deadline) + CLOCK_SKEW_MS;
+  if (observedMs < toMs(challenge.issuedAt) || submittedMs < observedMs || submittedMs > deadlineMs || atMs > deadlineMs) return no('CHALLENGE_EXPIRED');
+  return { ok: true, validator, challenge };
+}
+
+/** Step 10 — the evidence package is in custody for this organization and is this validator's, for this challenge — and the engine's classification. */
+export function checkObservationCustody(
+  store: ConformanceStore,
+  observation: ObservationPayload,
+  challenge: ChallengePayload,
+): { readonly ok: true; readonly outcomeClass: AcceptedObservation['outcomeClass'] } | { readonly ok: false; readonly reason: EvidenceRejection } {
+  // Another validator's package, or a package for another challenge, cannot be cited.
+  const pkg = store.getEvidencePackage(observation.organizationId, observation.evidenceDigest);
+  if (pkg === undefined || pkg.challengeId !== observation.challengeId || pkg.validatorId !== observation.validatorId) return { ok: false, reason: 'EVIDENCE_MISSING' };
+  const integration = store.getIntegrationByDigest(challenge.organizationId, challenge.integrationDigest);
+  if (integration === undefined) return { ok: false, reason: 'SUBJECT_BINDING_MISMATCH' };
+  return { ok: true, outcomeClass: classifyOutcome(challenge.expectedOutcome, observation.observedOutcome, observation.observedDeploymentDigest, integration.record.deploymentDigest) };
+}
+
+/** A stored row that does not re-authenticate: either a structural defect of the row, or the acceptance rejection the boundary would have given. */
 export type StoredObservationDefect =
   | 'SUBMISSION_UNREADABLE'
   | 'DIGEST_MISMATCH'
-  | 'UNKNOWN_VALIDATOR'
-  | 'SIGNATURE_INVALID'
   | 'COLUMN_MISMATCH'
-  | 'CHALLENGE_INVALID'
   | 'CLASSIFICATION_MISMATCH'
-  | 'EVIDENCE_PACKAGE_MISMATCH';
+  | EvidenceRejection;
 
 /**
  * Re-authenticates a **stored** observation row from its signed submission, so a row written or
- * rewritten outside the acceptance boundary (a raw SQL writer) never reaches evaluation: the
- * validator's signature under its enrolled key, the stored digest, every column against the signed
- * payload, the operator, the coordinator's challenge signature, nonce and assignment, the engine's own
- * classification, and the evidence package's attribution. Returns `null` when the row is authentic.
+ * rewritten outside the acceptance boundary (a raw SQL writer) never reaches evaluation. It applies
+ * the same contract as acceptance (`checkObservationAuthority`, `checkObservationCustody`) as of the
+ * row's recorded acceptance time, then checks the stored digest, every column against the signed
+ * payload and the engine's own classification. Returns `null` when the row is authentic.
+ *
+ * A row's recorded acceptance time is not signed; it only ever narrows what passes: whatever it says,
+ * the signed observation must lie inside the signed challenge's window and the enrolled key's validity.
  */
-export function authenticateStoredObservation(store: ConformanceStore, row: StoredObservationRow, coordinatorPublicKeyPem: string): StoredObservationDefect | null {
+export function authenticateStoredObservation(
+  store: ConformanceStore,
+  profiles: ConformanceProfileRegistry,
+  row: StoredObservationRow,
+  coordinatorPublicKeyPem: string,
+): StoredObservationDefect | null {
   let submission: { observation: ObservationPayload; validatorSignature: unknown };
   try {
     const parsed = snapshotPlainJson(JSON.parse(row.submissionJson));
@@ -292,30 +342,18 @@ export function authenticateStoredObservation(store: ConformanceStore, row: Stor
   } catch {
     return 'SUBMISSION_UNREADABLE';
   }
+  if (!isTimestamp(row.acceptedAt) || row.acceptedAtMs !== toMs(row.acceptedAt)) return 'COLUMN_MISMATCH';
   const o = submission.observation;
-  const validator = store.getValidator(o.validatorId);
-  if (validator === undefined) return 'UNKNOWN_VALIDATOR';
-  if (o.validatorKeyId !== validator.record.keyId || !verifyConformanceSignature('observation', o, submission.validatorSignature, validator.record.publicKeyPem).ok) return 'SIGNATURE_INVALID';
+  const authority = checkObservationAuthority(store, profiles, o, submission.validatorSignature, row.acceptedAtMs, coordinatorPublicKeyPem);
+  if (!authority.ok) return authority.reason;
   const columnsMatch =
-    row.eventId === o.eventId && row.challengeId === o.challengeId && row.validatorId === o.validatorId && row.operatorId === validator.record.operatorId &&
+    row.eventId === o.eventId && row.challengeId === o.challengeId && row.validatorId === o.validatorId && row.operatorId === authority.validator.record.operatorId &&
     row.organizationId === o.organizationId && row.integrationDigest === o.integrationDigest && row.profileId === o.profileId && row.profileVersion === o.profileVersion &&
-    row.controlId === o.controlId && row.evidenceDigest === o.evidenceDigest && row.observedAt === o.observedAt;
+    row.controlId === o.controlId && row.operation === o.operation && row.evidenceDigest === o.evidenceDigest && row.observedAt === o.observedAt && row.observedAtMs === toMs(o.observedAt);
   if (!columnsMatch) return 'COLUMN_MISMATCH';
-  const signedChallenge = store.getChallenge(o.challengeId);
-  if (signedChallenge === undefined || !verifyChallenge(signedChallenge, coordinatorPublicKeyPem)) return 'CHALLENGE_INVALID';
-  const ch = signedChallenge.challenge;
-  if (
-    ch.nonce !== o.challengeNonce || !ch.assignedValidatorIds.includes(o.validatorId) || ch.organizationId !== o.organizationId || ch.integrationDigest !== o.integrationDigest ||
-    ch.controlId !== o.controlId || ch.profileId !== o.profileId || ch.profileVersion !== o.profileVersion || ch.expectedOutcome !== o.expectedOutcome
-  ) {
-    return 'CHALLENGE_INVALID';
-  }
-  const integration = store.getIntegrationByDigest(ch.organizationId, ch.integrationDigest);
-  if (integration === undefined) return 'CHALLENGE_INVALID';
-  const cls = classifyOutcome(ch.expectedOutcome, o.observedOutcome, o.observedDeploymentDigest, integration.record.deploymentDigest);
-  if (cls !== row.outcomeClass || (cls === o.outcomeClass) !== row.claimMatches) return 'CLASSIFICATION_MISMATCH';
-  const pkg = store.getEvidencePackage(o.organizationId, o.evidenceDigest);
-  if (pkg === undefined || pkg.challengeId !== o.challengeId || pkg.validatorId !== o.validatorId) return 'EVIDENCE_PACKAGE_MISMATCH';
+  const custody = checkObservationCustody(store, o, authority.challenge);
+  if (!custody.ok) return custody.reason;
+  if (custody.outcomeClass !== row.outcomeClass || (custody.outcomeClass === o.outcomeClass) !== row.claimMatches) return 'CLASSIFICATION_MISMATCH';
   return null;
 }
 
@@ -326,6 +364,7 @@ export function toAccepted(row: StoredObservationRow): AcceptedObservation {
     validatorId: row.validatorId,
     operatorId: row.operatorId,
     controlId: row.controlId,
+    operation: row.operation,
     integrationDigest: row.integrationDigest,
     profileId: row.profileId,
     profileVersion: row.profileVersion,
