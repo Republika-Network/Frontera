@@ -3,6 +3,7 @@ import { createPrivateKey, generateKeyPairSync, randomBytes, randomUUID, sign } 
 import { AUTHORITY_ARTIFACT_VERSION } from '../authority-authenticity/signature-envelope.js';
 import { EXECUTION_CAPABILITY_FORMAT, executionCapabilityActionBindingDigest, executionCapabilitySigningBytes, serializeExecutionCapability, type ExecutionCapability } from '../execution-capability/index.js';
 import { FV_IDENTITY_REGISTRATION_ACTIONS, fvIdentityRegistrationBinding, fvIdentityRegistrationResource, type FvIdentityRegistrationBindingValue, type FvIdentityRegistrationOperation } from '../sovereign-status-history/identity-registration.js';
+import { FV_FIRST_ADMINISTRATOR_ACTIONS, fvFirstAdministratorBinding, type FvFirstAdministratorBindingValue, type FvFirstAdministratorOperation } from '../sovereign-status-history/identity-registration-first-administrator.js';
 
 /**
  * FV-P4C-2B3C-2A1 — a **TEST-ONLY** registration authority. It signs G-02A capabilities for the FV identity
@@ -68,6 +69,48 @@ export function issueRegistrationCapability(options: IssueOptions): { readonly p
     resource: fvIdentityRegistrationResource(organizationId),
     actionBinding: { format: binding.format, digest: executionCapabilityActionBindingDigest(binding) },
     executionId: options.executionId ?? (options.operation === 'register' ? options.binding.registrationId : `${options.binding.registrationId}:resume:${randomBytes(8).toString('hex')}`),
+    grantReference: `sha256:${randomBytes(32).toString('hex')}`,
+    consumption: 'single-use',
+    statusRequirement: 'offline-permitted',
+    issuedAt: new Date(issuedAt).toISOString(),
+    expiresAt: new Date(issuedAt + (options.lifetimeMs ?? 30_000)).toISOString(),
+    ...(options.overrides ?? {}),
+  } as ExecutionCapability;
+  const text = serializeExecutionCapability(capability);
+  const signature = sign(null, executionCapabilitySigningBytes(capability), createPrivateKey(key.privateKeyPem)).toString('base64url');
+  return { presentation: { capability: text, signature: { algorithm: key.algorithm, keyId: key.keyId, signature, artifactVersion: AUTHORITY_ARTIFACT_VERSION } }, capability };
+}
+
+export const newEnrollmentId = (): string => `fvadm-${randomBytes(16).toString('hex')}`;
+
+export interface FirstAdministratorIssueOptions extends Omit<IssueOptions, 'operation' | 'binding'> {
+  readonly operation: FvFirstAdministratorOperation;
+  readonly binding: Omit<FvFirstAdministratorBindingValue, 'operation'>;
+}
+
+/**
+ * FV-P4C-2B3C-2A2A — TEST-ONLY: signs a first-administrator capability (enrol or resume) as the same test-only
+ * registration authority would. The enrol capability's execution id is the enrolment id; a resume's is its own.
+ */
+export function issueFirstAdministratorCapability(options: FirstAdministratorIssueOptions): { readonly presentation: { readonly capability: string; readonly signature: unknown }; readonly capability: ExecutionCapability } {
+  const issuedAt = options.issuedAtMs ?? Date.now();
+  const key = options.key ?? TEST_REGISTRATION_ISSUER_KEY;
+  const binding = fvFirstAdministratorBinding({ operation: options.operation, ...options.binding });
+  const organizationId = options.organizationId ?? options.binding.organizationId;
+  const capability = {
+    format: EXECUTION_CAPABILITY_FORMAT,
+    capabilityId: randomBytes(32).toString('hex'),
+    issuer: options.issuer ?? TEST_REGISTRATION_ISSUER,
+    issuerKeyId: key.keyId,
+    organizationId,
+    trustDomain: options.trustDomain,
+    audience: options.audience,
+    subjectActorId: 'operator:test-registration-officer',
+    onBehalfOfActorId: null,
+    action: FV_FIRST_ADMINISTRATOR_ACTIONS[options.operation],
+    resource: fvIdentityRegistrationResource(organizationId),
+    actionBinding: { format: binding.format, digest: executionCapabilityActionBindingDigest(binding) },
+    executionId: options.executionId ?? (options.operation === 'enroll' ? options.binding.enrollmentId : `${options.binding.enrollmentId}:resume:${randomBytes(8).toString('hex')}`),
     grantReference: `sha256:${randomBytes(32).toString('hex')}`,
     consumption: 'single-use',
     statusRequirement: 'offline-permitted',
