@@ -6,10 +6,10 @@
 - No production issuer of a registration capability exists; issuance in this repository is test-only.
 - Bootstrap execution stays disabled: there is no trusted status source (B6).
 
-**Split (§15 of the increment prompt).** This increment implements **B3C-2A1** only: durable registration
-authority, genesis, the store-id pin and its verification by the executor. **B3C-2A2** (FV operator
-enrolment) and **B3C-2A3** (operator revocation and governance recovery) are **design only** (§10–§11).
-No FV operator can be enrolled or revoked by anything in this increment.
+**Split (§15 of the increment prompt).** **B3C-2A1** implemented durable registration authority, genesis, the
+store-id pin and its verification by the executor. **B3C-2A2A** (the first FV administrator) is implemented in
+§15. **B3C-2A2B** (further FV operators) and **B3C-2A3** (operator revocation and governance recovery) remain
+**design only** (§10–§11): no further operator can be enrolled, and nobody can be revoked, by anything here.
 
 ## 1. Verified inventory (main `64b3ec7c`, PR #260 merged)
 
@@ -207,7 +207,7 @@ file the ceremony's own crash can leave between `O_EXCL` and recording it.
 Unchanged: fdinfo lock verification, fail-stop, the guarded close, the status/stop IPC, the production entry
 (`compose: undefined`).
 
-## 10. B3C-2A2 — FV operator enrolment (design only; not implemented)
+## 10. B3C-2A2 — FV operator enrolment (first administrator: implemented as 2A2A, §15; further operators: design only)
 
 - **First administrator.** Authorized by a separate G-02A capability,
   `frontera.fv-bootstrap-identity.enroll-first-administrator`, from the **registration** issuer (independent of
@@ -323,7 +323,8 @@ Outcomes, run on the final build (pinned by four e2e tests):
 **Before any activation (each is a blocker):**
 - a production registration issuer (G-02B in custody, from a governed grant), its key pinned out of band;
 - the `registration` composition option made mandatory for the dedicated executor;
-- B3C-2A2 and B3C-2A3;
+- B3C-2A2B (further operators, and refusing Host administration on an FV store) and B3C-2A3;
+- the executor requiring an enrolled FV administrator (2A2A enrols one; nothing requires it yet);
 - B3C-2 backup and restore, covering the registration record and ledger (evidence and replay protection;
   the witness stays the authority) beside the FV stores;
 - a witness running the CORE-07-FV-WITNESS version, outside the stores' restore domain;
@@ -510,5 +511,195 @@ is reopened, consumed twice or created, and no ceremony decision reads the state
 
 This remains internal and non-operational. Nothing new is reachable from the Host, the executor or its
 supervisor; the executor gate is unchanged; `bootstrapExecution` stays `disabled`.
+
+**Production activation: NO-GO.**
+
+## 15. B3C-2A2A: first FV administrator enrolment (implemented; internal and non-operational)
+
+B3C-2A2 was split. **2A2A**, the first administrator, is implemented here. **2A2B** (further operators, by an FV
+administrator's decision) needs its own AUTH-03 challenge domain and stays design only (§10). Revocation is
+still B3C-2A3 (§11).
+
+Code: `sovereign-status-history/identity-registration-first-administrator.ts` (the ceremony) and
+`human-identity/first-administrator.ts` (the AUTH-03 rows). Nothing in the Host, its scripts, its deployment,
+the dedicated executor or its supervisor reaches either, and neither is exported from a module index
+(structure tests pin all of this).
+
+### 15.1 Authority
+
+| | |
+|---|---|
+| Action | `frontera.fv-bootstrap-identity.enroll-first-administrator` (resume: `…resume-first-administrator`) |
+| Binding | `frontera.fv-first-administrator-binding.v1`, recomputed by the ceremony. It covers the enrolment id, the registration (id, store id, path, witness id and key digest, deployment, signing key), the store head **at genesis** (sequence 0 and its digest), the candidate's operator id and display name, the role `fv-administrator`, the relying-party id, and `credentialDigest` (`null` to enrol; exactly the recorded credential for a resume) |
+| Issuer | A pinned **registration** issuer (G-02A verifier: pinned keys, exact audience, organization and trust domain, ≤ 60 s window). Independent of the store and of the Host. No production issuer exists; issuance is test-only |
+| Execution id | The enrolment id (`fvadm-…`). A resume's must differ, whichever pinned issuer signs it: G-02A's ledger is unique only per issuer, so this check is what stops a second pinned issuer reusing it |
+| Window | G-02A's verifier: issued-at/expires-at, ≤ 60 s; checked when presented, and again after the passkey answers |
+| Credential | Not in the enrol capability: the credential does not exist when it is issued. It is bound by the WebAuthn challenge, derived from the capability id and a fresh nonce, and committed in the first row's plan digest. A resume capability names it exactly (`credentialDigest`) |
+| Not interchangeable | The registration, resume-registration, enrol and resume-enrol actions and their binding formats are distinct; a registration capability presented to enrol is refused (tested) |
+| Not accepted | A Host administrator (`identityAdministratorFor`), any operator-plane credential, an AUTH-02 enrolment token, a configuration flag. The administrator never authorizes itself, and the person running the ceremony becomes nothing |
+
+### 15.2 Sequence
+
+1. Lock the registration record exclusively. It must be `registered`, for exactly this configuration, signed over
+   its binding by a pinned issuer, on the file the registration reserved.
+2. Verify the capability against the recomputed binding. Nothing is consumed yet.
+3. Refuse a completed enrolment of this record (`ALREADY_ENROLLED`).
+4. Open the store as its exclusive, pinned, FV-domain owner under CORE-07 freshness, never creating it. It must
+   hold **no row at all**: otherwise `ENROLLMENT_PENDING` when its rows are a recorded intent's, else
+   `STORE_NOT_EMPTY`. An earlier intent whose ceremony never wrote the store is superseded, and its capability
+   claim is settled `failed`.
+5. **Proof of possession, before consumption.** The candidate's authenticator answers a challenge derived from
+   the capability id and a fresh nonce. The attestation is verified the way AUTH-02 verifies an ordinary
+   registration: pinned RP ID and origins, user presence and user verification, supported algorithms, an
+   importable key. A refused, failed, misdirected or unverified passkey consumes nothing.
+6. Verify the capability again (its window may have closed while the human answered).
+7. Consume it in G-02A's ledger, with HF01's claim-intent and refusal events.
+8. Record the whole plan in the registration record (`first-administrator-intent`): the stored capability and
+   signature, the nonce, the raw attestation, and the rows' fields.
+9. Append three rows, each signed, chained and witnessed by the store's ordinary `append`:
+   - `principal_created`, with `role: 'fv-administrator'`, the authorizing capability id and issuer, and
+     **`planDigest`**: a digest of the whole plan (credential, enrolment id, token verifier, time, authorization);
+   - `enrolment_authorized`, **born expired at the epoch** (never a plan-chosen time), its token verifier the
+     digest of a secret that is discarded at once, so it is never an open invitation and can never be presented;
+   - `credential_registered`, which consumes that enrolment.
+10. `enrolled` only when the verified store holds exactly those rows **and** a fresh witness read shows that head
+    committed, with nothing pending.
+
+**The store pins the plan.** Once the first row is signed and witnessed, every later row must be exactly that
+plan's. The ceremony's record — which its host's user can rewrite — never decides what the rows say: a resume
+completes only the recorded intent that the store's own first row is the beginning of.
+
+**AUTH-03 rule (`appendFirstAdministrator`).** Each append's guard admits the row only when the verified history
+is exactly the earlier rows of this same plan. A store holding anything else (another administrator, the Host's
+humans, a decision) is refused, `HUMAN_IDENTITY_FIRST_ADMINISTRATOR_CONFLICT`, with nothing written. The
+record's events, the capability's genesis-head binding and this rule each prevent a second administrator by
+this path.
+
+### 15.3 Crash and recovery
+
+| Interrupted after | Store | Outcome | Recovery |
+|---|---|---|---|
+| Consumption, before the plan was recorded | Empty | Capability spent; nothing recorded | A new capability enrols; the orphan claim is settled `failed` by HF01's rule |
+| The plan was recorded, before the first row | Empty | `pending` in the record only; a resume is refused (`NO_ENROLLMENT: STORE_EMPTY`), consuming nothing | A **new** enrol capability; the earlier claim is settled `failed` |
+| The first or second row | 1 or 2 rows | `pending`; a new enrolment is `ENROLLMENT_PENDING` | A resume capability naming the `credentialDigest` of the plan the first row pins |
+| The last row, before completion was recorded | 3 rows | The record says `pending`; the store is the authority | A resume reports `enrolled` and consumes nothing |
+| A finalize that never reached the witness (last row) | 3 rows locally, the last prepared at the witness | `pending`, never `enrolled` | A resume reopens the store (CORE-07 finalizes it) and reports `enrolled`, consuming nothing |
+| A lost finalize answer before the last row | — | The store finalizes it before its next row; `enrolled` | — |
+| A prepare the witness applied, its answer lost | Prepared at the witness, not committed locally | `pending`; the resume is refused `STORE_REFUSED` (`AUTHORITY_FRESHNESS_PENDING_RECOVERY`), nothing consumed | Needs trusted operational recovery (B3C-2B); an existing CORE-07 limit, failing closed |
+
+Before it consumes anything, a resume opens the store and selects the recorded intent whose plan the first row
+pins; a rewritten intent matches none and is refused (`ENROLLMENT_CONFLICT`). As defence in depth it then
+re-verifies that intent: the stored capability's signature by a pinned issuer over the binding recomputed from
+the record and the plan, and the stored attestation against that capability's challenge, which must prove
+exactly the plan's credential (`RECORD_CORRUPT: AUTHORIZATION_UNVERIFIED` otherwise).
+
+### 15.4 Limits (documented, not fixed here)
+
+- **Same-user writer.** The record's events are not cryptographic evidence; the store's first row is. A same-user
+  writer (without the deployment's signing key) can insert or rewrite an intent, re-creating the trigger:
+  - before the first row, nothing can be resumed: the inserted intent is ignored, and a genuine enrolment
+    supersedes it;
+  - after it, a rewritten intent matches nothing the store pinned and is refused, even with a resume capability
+    a misled issuer signed for the forged credential;
+  - what remains is a denial of service (a rewritten intent makes the genuine resume `ENROLLMENT_CONFLICT` until
+    the record is restored), and the view (`readFvFirstAdministratorEnrollment`) can show a forged digest. The
+    issuer of a resume capability must confirm `credentialDigest` with the candidate's own authenticator out of
+    band.
+
+  As in §12, excluding a same-user attacker is a deployment requirement.
+- **WebAuthn assurance level (exactly what is verified).**
+  - **Verified:** a `webauthn.create` ceremony, for this authorization's challenge; the pinned RP ID hash and an
+    allowed origin, not cross-origin or embedded; user presence **and** user verification; a supported algorithm
+    (Ed25519, ES256, RS256) and an importable public key; the attested credential id equal to the response id.
+  - **Not verified:** attestation is `none`, as in AUTH-02, so there is no authenticator provenance, AAGUID
+    allow-list, certification level or hardware binding. A software authenticator satisfies it; the tests use one.
+    That is **not** a production assurance claim.
+  - The issuer authorizes a *person* (operator id, display name). Binding that person to the device is the
+    out-of-band ceremony's job.
+- **The Host path still exists in code.** AUTH-02's service, composed over the FV store, still accepts a Host
+  `IdentityAdministrator` for `createPrincipal`. Nothing in production does that (the FV composition takes only the
+  settlement pair, and the executor composes nothing), and this ceremony refuses any store that already holds a
+  row. Refusing Host administration on an FV store is part of 2A2B.
+- **The executor does not yet require an administrator.** The `registration` gate is unchanged; requiring an
+  enrolled administrator is an activation blocker, alongside making the gate mandatory.
+- **The witness and the SQLite files are not one atomic transaction.** Each boundary is recoverable from evidence
+  instead, as listed above.
+
+### 15.5 Evidence
+
+- **Tests.**
+  - `tests/fv-p4c2b3c2a2a-first-administrator.e2e.test.mjs`: 22 tests. They use the real 2A1 registration, the G-02A verifier and ledger, a CORE-07 reference witness, AUTH-03 stores, AUTH-02 WebAuthn verification with software passkeys, and child processes that are SIGKILLed or paused.
+  - `fv-p4c2b3c2a2a-first-administrator-structure.test.ts`: 6 tests.
+  - Three existing structure pins gained exact, commented exceptions (the AUTH-02 file list, the AUTH-03 composers, the FV module's import allowlist). No assertion was removed.
+- **Regression** on the exact tree, all passing:
+
+  | Suite | Result |
+  |---|---|
+  | HF01 | 16/16 |
+  | B3C-2A1 | 43/43 |
+  | B3C-3 | 10/10 |
+  | B3B | 31/31 |
+  | B3C-1 | 41/41 |
+  | FV-EXEC-LOCK-01 | 11/11 |
+  | All structure tests | 565/565 |
+  | AUTH-02/03/04 | 197 pass, 2 skipped (pre-existing) |
+  | CORE-07 | 112/112 |
+  | G-02A | 92/92 |
+
+  Gates, all passing: typecheck, lint, `check:aoc-boundaries`, `check:release-coherence`, `check:protocol-consumption`, `validate:publishability` and `legal:check`.
+- **Targeted mutants: 20 of 23 single mutants killed**, plus two combined mutants and a reconstruction of the
+  pre-fix recovery, all killed. They ran on the compiled code in a separate copy, and every file was restored and
+  hash-checked.
+  - **Killed:**
+    - the empty-store check;
+    - the attestation challenge;
+    - the re-check of the capability window after the human answers;
+    - the enrolment's execution id, and the resume's (A13: killed once a second pinned issuer is tested; G-02A's
+      ledger is unique only per issuer, so the check is not redundant);
+    - re-verifying the recorded attestation, and the recorded capability's signature (A08);
+    - the witness confirmation before `enrolled`;
+    - binding the resume to the credential;
+    - settling the enrol claim on resume;
+    - the completed-enrolment check;
+    - the plan pin in the first row;
+    - resuming into an empty store;
+    - trying only the first matching intent;
+    - an enrolment row born open;
+    - the role;
+    - admitting a pending registration;
+    - the registration's signature check;
+    - settling superseded claims.
+  - **Pre-fix reconstruction (killed, 3 of 4 targeted tests fail):** the record selects the latest intent,
+    including over an empty store; no plan pin; expiry taken from the plan's time. So the F1–F3 regression
+    tests catch the vulnerable recovery.
+  - **Surviving: 3.**
+    - **A02 and A03: B, a redundant control pair.** The rows module checks the history twice. The initial prefix
+      check guards the first append; each append's guard re-decides inside the store's transaction. Each one
+      alone catches every sequential case. Removing both (A04) is killed. The guard additionally covers a write
+      landing between the two, which only a second writer could cause, and B3C-3's exclusive lock and fence
+      exclude that.
+    - **A10: C, unreachable under the protocol.** Dropping the recorded capability's binding check survives,
+      even together with the signature check removed (A24, killed only by the signature case). A recorded
+      capability with another binding but a valid issuer signature is a different capability, with another id.
+      The first row records the authorizing capability id, signed and witnessed, so such an intent never
+      matches the store and is refused (`ENROLLMENT_CONFLICT`, tested) before this check runs.
+- **Independent review** (two fresh read-only AI agents of the same model family; **not a human review**):
+  - **First review.** It reproduced two High findings and one Low/Medium. A rewritten ceremony record could:
+    - substitute the administrator's passkey after a crash;
+    - make the enrolment row an open invitation with a known token, through unbound plan fields;
+    - complete an intent whose capability was never consumed.
+
+    **Fixed:** the first row now pins the whole plan, a resume refuses an empty store, and the enrolment row is born expired at the epoch. Each scenario is now a regression test, and the reviewer's probe fails on every one.
+  - **Second review** (after the fix). It confirmed the three findings are closed under the stated model, and reproduced two more:
+    - **Medium-Low:** a passkey with a long, valid credential id passed attestation, then made the ceremony throw *after* consuming the capability. **Fixed:** the plan is built and validated before consumption, and an unrepresentable credential is refused.
+    - **Low:** settling "superseded" intents' claims bypassed HF01's ownership rule, so a forged intent could mark another tenant's claim `failed`. **Fixed:** the ceremony settles only claims it made in that call.
+
+    It also raised a denial-of-service case: a broken copy of the genuine intent recorded first hid it. **Fixed:** every matching intent is tried. Both probes now come out right.
+  - **Info, documented here:**
+    - AUTH-02 ignores `role`, so 2A2B must read it from the signed row.
+    - The view can be misled by a forged record.
+    - The authenticator has no timeout, which is a liveness limit only.
+
+This remains internal and non-operational. Nothing new is reachable from the Host, the executor or its supervisor; the executor gate is unchanged; `bootstrapExecution` stays `disabled`.
 
 **Production activation: NO-GO.**

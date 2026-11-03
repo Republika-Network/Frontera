@@ -172,7 +172,9 @@ export type HumanIdentityErrorCode =
   /** FV-P4C-2B2B: a bootstrap-authority settlement disagrees with the one already recorded, or with the decisions it names. Nothing was recorded. */
   | 'HUMAN_IDENTITY_DECISION_SETTLEMENT_CONFLICT'
   /** FV-P4C-2B2B-F1: a bootstrap settlement was attempted without this service's own live settlement capability. Nothing was read or recorded. */
-  | 'HUMAN_IDENTITY_DECISION_SETTLEMENT_UNAUTHORIZED';
+  | 'HUMAN_IDENTITY_DECISION_SETTLEMENT_UNAUTHORIZED'
+  /** FV-P4C-2B3C-2A2A: the FV store holds something other than this first administrator's rows; nothing was written. */
+  | 'HUMAN_IDENTITY_FIRST_ADMINISTRATOR_CONFLICT';
 
 export class HumanIdentityError extends Error {
   constructor(

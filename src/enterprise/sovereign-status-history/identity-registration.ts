@@ -645,6 +645,9 @@ function settleLedger(ledger: ExecutionCapabilityConsumptionLedger, capabilityId
   }
 }
 
+/** What a claim intent names as its purpose: the registration's own two, and (B3C-2A2A) the first administrator's two. */
+type FvRegistrarClaimOperation = 'register' | 'resume' | 'enroll-first-administrator' | 'resume-first-administrator';
+
 /** The event a ceremony records, under the record's exclusive lock, before it asks the ledger to consume a capability. */
 const CLAIM_INTENT_EVENT = 'capability-claim-intent';
 /** The event a ceremony records when the ledger refused that claim: the capability is not this record's. */
@@ -655,7 +658,7 @@ const CLAIM_REFUSED_EVENT = 'capability-claim-refused';
  * capability the ledger already holds is never this record's to claim: it is refused before any intent is
  * written (`'consumed'`), so an intent names only a capability that was unconsumed when it was written.
  */
-function recordClaimIntent(config: Configuration, record: FvRegistrationRecordFile, ledger: ExecutionCapabilityConsumptionLedger, operation: 'register' | 'resume', capability: { readonly capabilityId: string; readonly executionId: string; readonly actionBinding: { readonly digest: string } }): 'recorded' | 'consumed' | 'unavailable' {
+function recordClaimIntent(config: Configuration, record: FvRegistrationRecordFile, ledger: ExecutionCapabilityConsumptionLedger, operation: FvRegistrarClaimOperation, capability: { readonly capabilityId: string; readonly executionId: string; readonly actionBinding: { readonly digest: string } }): 'recorded' | 'consumed' | 'unavailable' {
   try {
     if (ledger.read(capability.capabilityId).state !== 'absent') return 'consumed';
   } catch {
@@ -1071,6 +1074,31 @@ function registrationAuthorized(record: FvIdentityRegistrationRecord, expected: 
     return false;
   }
 }
+
+/**
+ * FV-P4C-2B3C-2A2A — the registrar's own helpers, for the one other ceremony of this family: the first FV
+ * administrator's enrolment (`identity-registration-first-administrator.ts`), which runs against the same
+ * record, ledger, witness and configuration. A structure test pins that it is the only importer. Nothing here
+ * issues, consumes or decides anything by itself.
+ */
+export const fvRegistrarInternals = Object.freeze({
+  configurationOf,
+  configurationMatches,
+  registrationAuthorized,
+  authenticityRoundTrips,
+  presentationOf,
+  platformOrThrow,
+  openRecord,
+  connectWitness,
+  openLedger,
+  settleOrphans,
+  recordClaimIntent,
+  claimIntentRefusal,
+  recordClaimRefused,
+  freshnessCode,
+  witnessEvidenceCodes: WITNESS_EVIDENCE_CODES,
+});
+export type { Configuration as FvRegistrarConfiguration, FvRegistrarClaimOperation };
 
 export type { FvIdentityRegistrationQuarantineReason, FvIdentityRegistrationState } from './identity-registration-record.js';
 /** The G-02A pin type the executor's `registration` option takes (re-exported so the composition imports nothing of G-02A). */

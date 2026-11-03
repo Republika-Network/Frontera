@@ -69,8 +69,13 @@ describe('AUTH-03 structure — the passkey channel is the only way a human deci
     // never handed AUTH-04A's or any other already opened store).
     // FV-P4C-2B3C-2A1: the FV registration ceremony creates the FV bootstrap identity store (exclusive, FV domain,
     // pinned) and composes no service, decision channel or settlement capability.
+    // FV-P4C-2B3C-2A2A: the FV first-administrator ceremony opens that registered store (exclusive, FV domain, pinned,
+    // never creating it) and composes no service, decision channel or settlement capability either.
     const composers = walk('src/enterprise').filter((file) => /from '[^']*(human-decision|human-identity\/index)\.js'/.test(read(file)));
-    assert.deepEqual(composers.sort(), ['src/enterprise/authority-gateway/gateway.ts', 'src/enterprise/composition/human-authority-composition.ts', 'src/enterprise/sovereign-status-history/identity-registration.ts', 'src/enterprise/sovereign-status-history/protected-host-composition.ts', 'src/enterprise/synthetic-execution-verification/verification.ts']);
+    assert.deepEqual(composers.sort(), ['src/enterprise/authority-gateway/gateway.ts', 'src/enterprise/composition/human-authority-composition.ts', 'src/enterprise/sovereign-status-history/identity-registration-first-administrator.ts', 'src/enterprise/sovereign-status-history/identity-registration.ts', 'src/enterprise/sovereign-status-history/protected-host-composition.ts', 'src/enterprise/synthetic-execution-verification/verification.ts']);
+    const firstAdministrator = read('src/enterprise/sovereign-status-history/identity-registration-first-administrator.ts');
+    assert.match(firstAdministrator, /^import \{ FV_BOOTSTRAP_IDENTITY_STATE_KIND, HumanIdentityError, openSqliteHumanIdentityStore, type HumanIdentityStore, type RegistrationOptionsJSON, type RelyingPartyConfiguration \} from '\.\.\/human-identity\/index\.js';$/m);
+    assert.equal(/createHumanIdentityService|identityAdministratorFor|BootstrapSettlement|createHumanDecisionChannel|approval-authority/.test(firstAdministrator), false, 'the first-administrator ceremony composes no identity service, administrator, decision channel or settlement capability');
     const registrar = read('src/enterprise/sovereign-status-history/identity-registration.ts');
     assert.match(registrar, /^import \{ FV_BOOTSTRAP_IDENTITY_STATE_KIND, HumanIdentityError, openSqliteHumanIdentityStore, type HumanIdentityStore, type SqliteHumanIdentityStoreOptions \} from '\.\.\/human-identity\/index\.js';$/m);
     assert.equal(/createHumanIdentityService|BootstrapSettlement|createHumanDecisionChannel|approval-authority/.test(registrar), false, 'the registrar composes no identity service, decision channel or settlement capability');

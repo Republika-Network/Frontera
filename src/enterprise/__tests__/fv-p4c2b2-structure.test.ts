@@ -50,6 +50,19 @@ describe('FV-P4C-2B2 structure — internal, unreachable, not composed', () => {
         '../human-identity/chain.js',
         '../human-identity/index.js',
       ],
+      // FV-P4C-2B3C-2A2A: the first-administrator ceremony, the same family's second step, verifies its own G-02A
+      // capability, opens the registered store as its exclusive owner under CORE-07, and appends the first
+      // administrator through AUTH-03's first-administrator module (not exported from its index). It executes
+      // nothing and is reached by nothing in the Host (its own structure test).
+      [join(MODULE, 'identity-registration-first-administrator.ts')]: [
+        '../authority-authenticity/signature-verification.js',
+        '../authority-state-freshness/index.js',
+        '../execution-capability/index.js',
+        '../execution-capability/reference/consumption-ledger.js',
+        '../human-identity/chain.js',
+        '../human-identity/first-administrator.js',
+        '../human-identity/index.js',
+      ],
     };
     for (const file of walk(MODULE)) {
       for (const specifier of specifiers(file)) {
