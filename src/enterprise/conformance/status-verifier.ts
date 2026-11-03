@@ -115,7 +115,7 @@ export interface StatusVerifierStore {
     readonly nowMs: number;
     readonly online: boolean;
   }): HighWaterDecision;
-  /** A latched conflict for this credential, if any. Latches are append-only; there is no API that clears one (§10). */
+  /** The latched conflict for this credential, or `undefined`. Latches are append-only; there is no API that clears one (§10). */
   latch(credentialId: string): { readonly kind: string; readonly detail: string } | undefined;
   close(): void;
 }
@@ -151,7 +151,7 @@ CREATE TRIGGER vs_latches_no_delete BEFORE DELETE ON vs_latches BEGIN SELECT RAI
 `;
 const VERIFIER_SCHEMA_VERSION = 'rn.conformance.status-verifier-store/1';
 
-/** Opens (or with `create`, creates) a verifier's own durable state. Independent of the issuer and of any platform-controlled cache. */
+/** Opens (or with `create`, creates) a verifier's own durable state. Independent of the issuer and of every platform-controlled cache. */
 export function openStatusVerifierStore(path: string, options: { readonly create?: boolean; readonly busyTimeoutMs?: number } = {}): StatusVerifierStore {
   const file = resolve(path);
   const create = options.create === true;
