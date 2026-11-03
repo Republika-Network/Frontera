@@ -50,8 +50,12 @@ describe('RN-CONFORM-02 scope and isolation', () => {
   });
 
   it('is imported by nothing outside its own module and tests: no Host composition, no public export', () => {
+    // RN-CONFORM-03: the one exception is its loopback-only, disabled-by-default test listener (and that listener's own test),
+    // which carries the read-only status binding and is itself imported by nothing (rn-conform-03-local-status-server.test.ts).
+    const LOCAL_LISTENER = join(ROOT, 'src', 'enterprise', 'conformance-status-local');
+    const LISTENER_TEST = join(ROOT, 'src', 'enterprise', '__tests__', 'rn-conform-03-local-status-server.test.ts');
     const offenders = walk(join(ROOT, 'src'))
-      .filter((f) => !f.startsWith(MODULE) && !conformanceTests.includes(f))
+      .filter((f) => !f.startsWith(MODULE) && !conformanceTests.includes(f) && !f.startsWith(LOCAL_LISTENER) && f !== LISTENER_TEST)
       .filter((f) => importsOf(read(f)).some((s) => intoModule(f, s)));
     assert.deepEqual(offenders.map((f) => relative(ROOT, f)), []);
     const pkg = JSON.parse(read(join(ROOT, 'package.json'))) as { exports: Record<string, unknown> };
