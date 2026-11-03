@@ -107,7 +107,8 @@ executor ever opens the store; startup never creates anything (structure test).
    (test: "a full local wipe").
 
 A crash between the claim and the intent spends the capability with nothing contacted (the intent precedes
-every witness call); the next ceremony marks that orphaned claim `failed`.
+every witness call); the next ceremony on the same record marks that orphaned claim `failed`, but only a claim
+that record proves it made (§14.2).
 
 ## 6. Genesis sequence and evidence
 
@@ -347,5 +348,167 @@ Outcomes, run on the final build (pinned by four e2e tests):
 - The executor gate is opt-in until activation; without it the composition opens a pinned store whose
   registration it has not verified (as before this increment).
 - AI review is not human security approval.
+
+## 14. HF01: witness evidence classification and ledger claim isolation (post-merge, PR #262)
+
+The final Codex review of PR #262 reported two P2 findings, both after merge. Both were reproduced on the
+merged code (`2f91c287`) and fixed in `identity-registration.ts` alone. CORE-07, G-02A and every other
+consumer are unchanged.
+
+### 14.1 Finding 1: an authentic receipt about another slot quarantined a healthy registration
+
+**Root cause.** CORE-07 raises one code, `AUTHORITY_FRESHNESS_BINDING_MISMATCH`, for two different things:
+- **About this slot.** The witness's verified state for *this* slot binds a different store (`session.ts`
+  `reconcile`), or the local store changed identity (three local sites).
+- **About another slot.** The pinned witness signed a receipt, with this request's challenge, about
+  *another* organization, state kind or namespace (`witness-client.ts`). That receipt is authentic but has
+  nothing to say about this registration.
+
+The registrar listed the code among its evidence codes, so a misrouted read during store creation or the
+readback permanently quarantined a registration whose real slot still held its genesis.
+
+**Reproduction (merged code).** A shares a witness with B, whose slot is bound. A's FV-slot reads were answered,
+from `store-file-reserved` or `store-genesis-committed`, with the witness's own signed receipt about:
+- B's slot;
+- A's Host slot;
+- a namespaced slot.
+
+All six runs ended `quarantined` (`STORE_NOT_GENESIS`), with resume refused for good. A's real FV slot still held
+`(S, sequence 0)`. Answers signed by another key, or replayed for another challenge, were already `pending`
+(`WITNESS_UNAUTHENTIC`).
+
+**Fix.** A `BINDING_MISMATCH` is now treated as evidence only after a confirming read. The confirming read is
+of this registration's own slot, and verified as bound to exactly that slot.
+
+| Confirming read | Classification | Outcome |
+|---|---|---|
+| Unreadable: any refusal, including another misrouted answer | B: unverifiable or misrouted | `pending` (`WITNESS_UNAVAILABLE`) |
+| This slot still holds S's genesis | B: the mismatch was not about this slot (a misrouted receipt, or one of the local "store changed identity while opening" sites, which need the exclusively held file tampered with mid-open) | `pending`. Resume re-checks the file identity, the store pin (which quarantines a substituted store as `STORE_NOT_GENESIS` before the witness is asked), the genesis readback and the witness. |
+| This slot binds another store, has advanced, or is unbound | A: authoritative contradiction | Quarantined (`WITNESS_BOUND_TO_ANOTHER_STORE` / `WITNESS_ADVANCED_UNEXPECTEDLY`) |
+
+**Unchanged:**
+- Rollback, fork, pending recovery, unbound and already-enrolled still quarantine. CORE-07 raises them only
+  after verifying the receipt's binding against the request.
+- Every other code stays `pending`.
+- `pending` never completes, and never makes the executor ready (`REGISTRATION_PENDING`).
+- Completion still needs a resume capability, the readback under freshness, and a verified read showing
+  genesis (class C).
+
+Authenticity of a receipt is not relevance to the slot that was asked about.
+
+### 14.2 Finding 2: one registration settled another's ledger claim
+
+**Root cause.** The orphan cleanup marked `failed` every `claimed` entry in the ledger that its own record
+didn't name. A ledger is scoped by audience, not by organization or record. So any other registration on the
+same ledger file, whether another organization's or another deployment's of the same organization, had its
+in-flight claim, or its claim from just before a crash, marked `failed`. `failed` is terminal (the ledger only
+moves forward), so it stayed wrong after that registration completed.
+
+**Reproduction (merged code).** With A paused or killed right after recording its intent, B registered on the
+shared ledger. A's claim became `failed`, A then completed, and its claim stayed `failed`.
+
+This was **bookkeeping only**. Single use is the ledger's UNIQUE claim, which never reopens. No ceremony
+decision reads a claim's state. The witness still enforces one genesis.
+
+**Fix: ownership is proven, never inferred.**
+- Before each claim, register and resume first check the ledger. A capability it already holds is refused
+  (`CAPABILITY_CONSUMED`) with no intent written. Otherwise they append a `capability-claim-intent` event to
+  their own record, under its exclusive lock, naming the capability id, execution id, binding digest and
+  organization. A claim the ledger then refuses, or that throws (unknown outcome), appends
+  `capability-claim-refused`, which fails closed: at worst one of this record's own orphans is left `claimed`.
+- A claim is this record's orphan, and is marked `failed`, only when all of these hold:
+  - the record logged that intent;
+  - the record has no refusal for it;
+  - no intent row, `intent-recorded` event or resume event names it;
+  - the ledger still shows it `claimed` for the same organization, execution and binding.
+- Holding the record's lock proves that none of this record's ceremonies is in flight.
+- Left as they are:
+  - other organizations' claims;
+  - other deployments' claims (another binding means another capability, so no intent);
+  - refused claims;
+  - orphans in records written before HF01, which have no intent events.
+- Every page of unresolved claims is examined, so other registrations' entries never push this record's
+  orphans out of view.
+- Settling now also runs before a resume's claim.
+- A resume that ends `registered` or `quarantined` also settles the register claim its record's row holds.
+  Before, a crash left that claim `claimed`. A refused or pending resume leaves it unsettled, because a later
+  resume may still complete it.
+
+**Allowed transitions (all by the owning record):**
+- `claimed` → `failed`: an orphan, proven as above;
+- `claimed` or `outcome-unknown` → `completed`, `failed` or `outcome-unknown`: the ceremony's own outcome.
+
+Nothing else. In particular, nothing is ever deleted or reopened.
+
+**Residual window (independent review, Low).** The ledger and the record are separate files, so the intent
+and the claim aren't atomic, and the ownership rule can't be stronger than this. An intent is written only
+for a capability the ledger didn't hold at that moment. Mis-settling a claim therefore needs all of these:
+- another record that verifies the *same* capability, which is the same deployment, store path, witness and
+  signing key under another record path (a misconfiguration);
+- that record claiming it between this record's check and this record's claim;
+- this record failing to record the refusal: it dies first, or the append itself fails. A claim that throws
+  is recorded as refused too.
+
+Only then may this record later settle the other record's claim `failed`. That is bookkeeping only: nothing
+is reopened, consumed twice or created, and no ceremony decision reads the state.
+
+### 14.3 Evidence
+
+- **Tests:** `tests/fv-p4c2b3c2a1-hf01-witness-ledger-isolation.e2e.test.mjs` (16 tests), using real witnesses,
+  stores, verifier and ledger, and real child processes paused or killed at durable steps. They cover:
+  - each misrouting, from both steps, including a persistent misrouting during resume;
+  - another key and a replayed answer;
+  - an authoritative contradiction, using a witness of the same identity and key whose slot binds another
+    store: quarantined;
+  - each organization in flight while the other registers, in both orders;
+  - the same organization's other deployment;
+  - a crash after the intent;
+  - a resume refused partway (an unsafe store file), which leaves the register claim unsettled until the
+    completing resume;
+  - both organizations orphaned, then retrying concurrently in separate processes;
+  - a refused claim;
+  - a cross-organization capability.
+
+  On the merged code, 14 of the 16 fail. The two that pass (another key or a replayed answer; a cross-organization
+  capability) pin behavior that was already correct.
+- **Targeted mutants:** run on the final code, on the compiled code in a separate copy, with every file restored
+  and hash-checked. Eleven of twelve single mutants are killed, and the remaining one is killed in combination
+  (below). Killed:
+  - removing the confirmation;
+  - treating a confirmed conflict as pending;
+  - accepting a receipt with the wrong binding (in `witness-client`);
+  - ignoring the state kind (in `sameBinding`);
+  - the pre-fix cleanup rule;
+  - assuming ownership while keeping the organization check;
+  - not settling the register claim on resume;
+  - settling it on every resume outcome, including a refusal (H12);
+  - no orphan settlement;
+  - quarantining when the confirming read is unreadable.
+- **Redundant layers:** not recording a refused claim (H07) and removing the pre-claim ledger check (H11) each
+  survive alone, because each covers the other for a consumed capability. Removing both is killed by the
+  refused-claim test.
+- **Not exercised:** a refusal is also recorded when the claim *throws*. No test forces the ledger to throw
+  mid-claim. That path only ever fails closed.
+- **Equivalent mutants:** dropping the execution-id, binding-digest or organization cross-checks from the
+  ownership rule doesn't change behavior. A capability id is unique in the ledger, and the intent is recorded
+  from the same verified capability, so those checks are defence in depth.
+- **Unchanged code, already covered:** reopening a consumed claim and treating a lost acknowledgment as success
+  are code this increment doesn't touch. They are covered by the earlier M04 and M12 mutants.
+
+- **Independent review** (a fresh read-only AI agent; **not a human review**). It found no Medium or higher
+  issue. It confirmed:
+  - the confirming read cannot be steered: it uses a fresh challenge and the pinned key, has an exact binding,
+    and `atGenesis` checks this store id and digest;
+  - no genuine contradiction is downgraded;
+  - no misrouted receipt can quarantine or complete a registration.
+
+  It also raised:
+  - **Low, reproduced:** the "lost refusal fails closed" claim was wrong. The comment and §14.2 were corrected,
+    and a pre-claim ledger check narrows the window.
+  - **Info:** only the first page of unresolved claims was read. Fixed; every page is read now.
+  - **Info:** the §14.1 table placed the local sites in the wrong row. Corrected.
+
+This remains internal and non-operational. Nothing new is reachable from the Host, the executor or its
+supervisor; the executor gate is unchanged; `bootstrapExecution` stays `disabled`.
 
 **Production activation: NO-GO.**
