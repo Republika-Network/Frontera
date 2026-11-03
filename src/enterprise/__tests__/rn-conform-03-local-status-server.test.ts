@@ -179,7 +179,12 @@ describe('RN-CONFORM-03 scope and exposure (INV-12, §17 Scope)', () => {
     assert.deepEqual(offenders.map((f) => relative(ROOT, f)).filter((f) => !f.endsWith('pay07-core-source-manifest.ts') && !f.endsWith('conformance-structure.test.ts')), []);
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { exports?: unknown; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
     assert.ok(!JSON.stringify(pkg.exports ?? {}).includes('conformance'), 'no package export');
-    assert.ok(!Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) }).some((d) => /xrpl|ripple|fileverse/i.test(d)), 'no ledger or Fileverse client dependency');
+    // The repository depends on a ledger client for its payment rails (PAY-03); RN-CONFORM-03 code never imports one, nor a Fileverse client.
+    const conformanceCode = [...walk(join(ROOT, 'src', 'enterprise', 'conformance')), ...walk(join(ROOT, 'src', 'enterprise', 'conformance-status-local'))];
+    for (const f of conformanceCode) {
+      const specifiers = [...readFileSync(f, 'utf8').matchAll(/\bfrom\s+'([^']+)'/g)].map((m) => m[1]!);
+      assert.ok(!specifiers.some((spec) => /xrpl|ripple|fileverse|ethers|web3/i.test(spec)), `${relative(ROOT, f)} imports a ledger or Fileverse client`);
+    }
     const freeze = readFileSync(join(ROOT, 'release', 'api-surface.v1.json'), 'utf8');
     assert.ok(!freeze.includes('/conformance/'), 'not part of the frozen v1 Host API');
     assert.ok(!readFileSync(join(ROOT, 'src', 'enterprise', 'adapters', 'node-http-adapter.ts'), 'utf8').includes('/conformance/'), 'not routed by the Enterprise Host adapter');
