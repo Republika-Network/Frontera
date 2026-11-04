@@ -88,12 +88,45 @@ original file; a second run is `ALREADY_CURRENT`.
 | Lifecycle (`lifecycle.ts`) | engine input contains only `CONFORMANCE`-purpose observations; validator exclusion is still computed from every authenticated row. |
 | Federation | `TestingAuthorization` is now the authoritative record; `prepareTestingAuthorization`/`authorizeTesting` delegate to the conformance registry and the federation store keeps a mirror; the scheduler refuses a mirror that differs from, or whose authoritative record is revoked, and a worker cancels a job whose already-issued challenge belongs to a revoked or expired authorization instead of redelivering it; conformance scheduling (routine and follow-up planning) counts CONFORMANCE-purpose evidence only; `revokeTesting` revokes the authoritative record. The requalification purpose is renamed `VALIDATOR_REQUALIFICATION` (the job purpose stays `REQUALIFICATION`). A pre-RN-07 federation mirror (`/1` record) has no authoritative record and is therefore refused (fail closed). |
 
-**Revocation semantics (documented decision).** Revocation stops all **new** execution at once: no challenge, no
-dispatch (the scheduler refuses the authorization), no new observation for any of its challenges, even ones already
-issued. Evidence accepted **before** the revocation commit stays authentic and remains eligible evidence (revocation
-withdraws consent to test, it does not retroactively declare past observations false). Open federation jobs under a
-revoked authorization are cancelled at their next dispatch or redelivery attempt (`AUTHORIZATION_REVOKED`); nothing is
-delivered to a validator after the revocation commits.
+**Revocation semantics (founder policy B, RN-CONFORM-07A).** Revocation is prospective for testing consent: from the
+revocation commit there is no challenge, no dispatch, no redelivery (an already-bound job is cancelled,
+`AUTHORIZATION_REVOKED`) and no new observation for any of its challenges. What happens to evidence accepted
+**before** the revocation commit is decided per decision, by three distinct predicates (`lifecycle.ts`):
+
+| Predicate | Meaning | Rule |
+|---|---|---|
+| **Historical authenticity** | Was the observation genuinely accepted under the authorization in force at acceptance? | `authenticateStoredObservation`: acceptance sequence < revocation sequence (durable order), checked at acceptance time. **Permanent**: no later revocation, expiry or replacement rewrites, deletes or marks it tampered. |
+| **Protective eligibility** | May an authenticated failure still drive investigation, corroboration or suspension? | Authenticated + CONFORMANCE purpose. Violations keep their force under the unchanged engine rules (freshness, ≥ 2 distinct operators, window, identity, integration binding): a fresh, corroborated pre-revocation violation still suspends under SR-1. |
+| **Positive eligibility** | May a conformant observation support issuance, reinstatement or a positive determination now? | Additionally, the observation's **own** authorization is unrevoked and unexpired at the evaluation (`positivelyEligible`). LEGACY evidence never is. A replacement authorization never re-qualifies evidence accepted under its revoked predecessor: evidence is bound to the authorization it was accepted under. |
+
+Where it applies: a CANDIDATE or SUSPENDED credential is evaluated for a positive decision, so conformant evidence that
+is not positively eligible is withheld (violations and inconclusive observations are kept — withholding can only make
+the result more protective). Every path to ACTIVE (`prepare('issue'|'reinstate')`, `commit`, the in-transaction
+recheck, `reinstateAutomatically`) re-evaluates through this loader at commit time, so evidence revoked between
+preparation, human approval and commit refuses the transition (`NO_LONGER_ELIGIBLE`). Revocation never creates a
+violation record, a failure category or a protective transition by itself.
+
+### 3.1 ACTIVE credentials — decision pending (unchanged behaviour)
+
+An ACTIVE credential still evaluates with all authenticated CONFORMANCE evidence, exactly as RN-CONFORM-07 shipped:
+after a revocation it keeps its standing until that evidence's normal freshness + grace lapses, then the existing SR-2
+(`EVIDENCE_STALE`) suspends it, unless new evidence under a valid authorization arrives. Withholding the evidence at
+revocation instead would make every critical requirement INSUFFICIENT_EVIDENCE and trigger an immediate SR-2 (T4)
+suspension recorded as "evidence stale" — a protective transition caused by lost consent alone, which policy B forbids
+(invariants 6, 7). Changing this needs a new lifecycle rule (see the RN-CONFORM-07A PR for the decision proposal); until
+the founder decides, the residual is: **an ACTIVE credential's status can remain CONFORMANT for up to the freshness +
+grace period after its testing authorization is revoked.**
+
+### 3.2 Validator reinstatement (K-2)
+
+`completeReinstatement` re-verifies the **authoritative** requalification authorization (never only the federation
+mirror) at the decision: it exists; purpose `VALIDATOR_REQUALIFICATION`; organization, integration, fixture,
+operation and challenge type match the job; the mirror digest equals the authoritative digest; it is unrevoked and
+unexpired now; its window covers the challenge; the challenge and both observations are bound to it with purpose
+`VALIDATOR_REQUALIFICATION`. The decisive re-check and the federation transition run while holding the conformance
+store's write lock (`underWriteLock`), so a revocation either committed before the check (refused) or commits after the
+reinstatement — never in between. Residual: the two stores are separate files; a crash after the federation commit and
+before the lock is released leaves a reinstatement that preceded any revocation, which is the linearized order.
 
 ## 4. Invariants (WP-11) and where they are tested
 
@@ -118,6 +151,8 @@ delivered to a validator after the revocation commits.
 | AUTH-17 | Engine input is CONFORMANCE-purpose only | AUTH-17; v2 and v3 historical tests |
 | AUTH-18 | No unauthorized issuance path (request without authorization/purpose, or `LEGACY` purpose, is malformed) | AUTH-18 |
 | Review #1–#8 | Redelivery stopped on revocation; one live authorization, one successor; integration-wide ceilings by id; column/digest cross-check; tenant-scoped revocation; strictly fresh sequences | `conformance-testing-authorization.test.ts` "independent review regressions"; `conformance-federation-scheduler.test.ts` "revocation stops redelivery" |
+| 07A K-1 | Positive eligibility needs the observation's own authorization unrevoked and unexpired; protective eligibility unchanged; no fabricated failure; replacement never re-qualifies | `conformance-revocation-eligibility.test.ts` matrix 1–10, 14–18 |
+| 07A K-2 | Validator reinstatement re-verifies the authoritative requalification authorization under the conformance write lock | `conformance-revocation-eligibility.test.ts` matrix 11–13 |
 
 Migration: `conformance-migration-v3-historical.test.ts` on a **real `/3` file generated by the historical code**
 (main `9ddd66bd`, CI job `rn-conform-07-v3-migration`, generator `scripts/conformance/rn-conform-07-v3-fixture.mjs`):
@@ -147,4 +182,5 @@ Demonstration: `conformance-authorization-demo.test.ts`, CI job `rn-conform-07-d
   never reused. Revocation is tenant-scoped.
 - **Evidence cap.** `loadEngineInput` applies the observation cap before the purpose filter: after a migration, LEGACY
   rows can occupy the cap and mark evidence as truncated (fail-safe direction: never more authority).
+- **ACTIVE after revocation** keeps its standing until existing freshness + grace lapse (§3.1, decision pending).
 - **AI review only.** The independent review of this PR is an AI review, not an accredited security audit.
