@@ -10,7 +10,7 @@ import { CONFORMANCE_NETWORK_ORGANIZATION } from '../conformance/registry.js';
 import { RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1 } from '../conformance/profile.js';
 import { ConformanceStoreError, openConformanceStore } from '../conformance/sqlite-conformance-store.js';
 import { verifyCredentialHistory } from '../conformance/verifier.js';
-import { ORG_A, activeCredential, approvals, buildCircuit, cleanupAll, issue, observe, runBaseline, submit, testingAuthorizationFor, verdict, type Circuit } from './conformance-support.js';
+import { BASELINE, ORG_A, activeCredential, approvals, baselineOperations, buildCircuit, cleanupAll, decide, issue, observe, runBaseline, submit, testingAuthorizationFor, verdict, type Circuit } from './conformance-support.js';
 import { REFERENCE_FIXTURE_REF } from './conformance-reference-pep.js';
 import { cleanupReferenceCircuits } from './conformance-reference-support.js';
 import { FED_REQUALIFICATION_AUTHORIZATION, adoptGeneration, drain, enrollGeneration, standardFederation, type Federation } from './conformance-federation-support.js';
@@ -165,7 +165,7 @@ describe('RN-CONFORM-07A K-1 — positive eligibility after revocation (matrix 1
   });
 });
 
-describe('RN-CONFORM-07A K-1 — protective eligibility and no false suspension (matrix 6–8, 17, 18)', () => {
+describe('RN-CONFORM-07A K-1 — protective eligibility; withdrawal is never a violation (matrix 6–8, 17, 18)', () => {
   it('6, 7: a genuine pre-revocation violation stays verifiable and still produces the protective SR-1 suspension', () => {
     const c = buildCircuit();
     const credentialId = activeCredential(c);
@@ -197,55 +197,124 @@ describe('RN-CONFORM-07A K-1 — protective eligibility and no false suspension 
     c.cleanup();
   });
 
-  it('8, 17, 18: revocation alone fabricates no failure, no T4 suspension, and leaves signed history verifiable', () => {
+  it('8, 17, 18: revocation alone fabricates no failure or violation; the explicit SR-6 suspension says why; history stays verifiable', () => {
     const c = buildCircuit();
     const credentialId = activeCredential(c);
     const violationsBefore = confirmedViolations(c);
     const historyBefore = verifyCredentialHistory(c.store, ORG_A, credentialId, { registryPublicKeyPem: c.registryPublicKeyPem, humans: c.humansDirectory });
     revoke(c);
-    for (const step of [0, 60, 600]) {
-      c.clock.advance(step);
-      const out = c.services().lifecycle.evaluate(ORG_A, credentialId);
-      assert.notEqual(out.evaluation.proposal.kind, 'SUSPEND', `+${step}s: no suspension from withdrawn consent`);
-      assert.ok(out.engine.requirementResults.every((r) => r.category !== 'VERIFIED_FAILURE'));
-      assert.equal(out.protectiveTransition, null);
-    }
-    assert.equal(c.store.getHead(ORG_A, credentialId)!.state, 'ACTIVE');
+    // Before any evaluation commits, a live determination is already not CONFORMANT (protective action pending).
+    assert.equal(verdict(c, credentialId).reason, 'PROTECTIVE_ACTION_PENDING');
+    const out = c.services().lifecycle.evaluate(ORG_A, credentialId);
+    assert.deepEqual(out.evaluation.proposal, { kind: 'SUSPEND', ruleId: 'SR-6', reasonCode: 'AUTHORIZATION_WITHDRAWN' });
+    assert.equal(out.engine.criticalFailureConfirmed, false, 'not a violation');
+    assert.ok(out.engine.requirementResults.every((r) => r.category !== 'VERIFIED_FAILURE'), 'no failed requirement is invented');
+    const head = c.store.getHead(ORG_A, credentialId)!;
+    assert.deepEqual([head.state, head.reasonCode], ['SUSPENDED', 'AUTHORIZATION_WITHDRAWN']);
     assert.equal(confirmedViolations(c), violationsBefore, 'no violation record fabricated');
     const history = verifyCredentialHistory(c.store, ORG_A, credentialId, { registryPublicKeyPem: c.registryPublicKeyPem, humans: c.humansDirectory });
     assert.ok(history.valid && historyBefore.valid);
-    assert.deepEqual([history.stateVersion, history.headTransitionDigest], [historyBefore.stateVersion, historyBefore.headTransitionDigest]);
+    assert.equal(history.stateVersion, (historyBefore.valid ? historyBefore.stateVersion : 0) + 1, 'every earlier transition still verifies; one T4 appended');
     c.cleanup();
   });
 });
 
-describe('RN-CONFORM-07A — ACTIVE credentials, interim policy (§3.1, founder decision pending)', () => {
-  it('stays CONFORMANT only until freshness ends, then the existing SR-2 (not a violation); automatic reinstatement needs positively eligible evidence', () => {
+describe('RN-CONFORM-07A — A2: ACTIVE credential after authorization withdrawal or expiry (SR-6)', () => {
+  it('a replacement authorization alone does not reactivate; reinstatement needs fresh, positively eligible evidence through the existing automatic path', () => {
     const c = buildCircuit();
     const credentialId = activeCredential(c);
     const { lifecycle } = c.services();
     revoke(c);
-    // Documented residual: right after revocation an ACTIVE credential is still CONFORMANT on pre-revocation evidence.
     lifecycle.evaluate(ORG_A, credentialId);
-    assert.equal(verdict(c, credentialId).reason, 'CONFORMANT');
-    const profile = c.profiles.resolve(RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileId, RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileVersion);
-    assert.ok(profile.ok);
-    const freshness = Math.max(...profile.definition.requirements.map((r) => r.freshnessSeconds ?? 0));
-    c.clock.advance(freshness + 1);
-    assert.notEqual(verdict(c, credentialId).reason, 'CONFORMANT', 'not CONFORMANT once the evidence is no longer fresh');
-    c.clock.advance(profile.definition.freshnessGraceSeconds);
-    const out = lifecycle.evaluate(ORG_A, credentialId);
-    assert.deepEqual(out.evaluation.proposal, { kind: 'SUSPEND', ruleId: 'SR-2', reasonCode: 'EVIDENCE_STALE' }, 'the ordinary staleness rule, never a violation');
-    assert.ok(out.engine.requirementResults.every((r) => r.category !== 'VERIFIED_FAILURE'));
-    // Revalidation under a replacement that is itself revoked before the automatic reinstatement: refused.
+    assert.equal(c.store.getHead(ORG_A, credentialId)!.reasonCode, 'AUTHORIZATION_WITHDRAWN');
+    // Replacement approved, but no new evidence: not reinstated, and old evidence stays ineligible.
+    testingAuthorizationFor(c);
+    assert.throws(() => lifecycle.reinstateAutomatically(ORG_A, credentialId), refused('NOT_ELIGIBLE'));
+    assert.equal(c.store.getHead(ORG_A, credentialId)!.state, 'SUSPENDED');
+    // Revalidation under a replacement that is itself revoked before reinstatement: refused.
+    c.clock.advance(60);
     runBaseline(c, [c.validators.A, c.validators.B]);
     c.clock.advance(1);
     revoke(c);
     assert.throws(() => lifecycle.reinstateAutomatically(ORG_A, credentialId), refused('NOT_ELIGIBLE'));
-    // Fresh evidence under a valid authorization: the automatic path works again.
+    // Fresh evidence from two operators under a valid authorization: the existing automatic T5 path reinstates.
     runBaseline(c, [c.validators.A, c.validators.B]);
     c.clock.advance(1);
-    assert.equal(lifecycle.reinstateAutomatically(ORG_A, credentialId).state, 'ACTIVE');
+    const head = lifecycle.reinstateAutomatically(ORG_A, credentialId);
+    assert.deepEqual([head.state, head.reasonCode], ['ACTIVE', 'REVALIDATED_AUTOMATIC']);
+    assert.equal(verdict(c, credentialId).reason, 'CONFORMANT');
+    c.cleanup();
+  });
+
+  it('a violation confirmed while suspended for withdrawal still requires the two-person path (no authorization shortcut)', () => {
+    const c = buildCircuit();
+    const credentialId = activeCredential(c);
+    const { lifecycle } = c.services();
+    revoke(c);
+    lifecycle.evaluate(ORG_A, credentialId);
+    c.clock.advance(60);
+    c.platform.bypass = 'unauthorized-operation';
+    const v = issue(c, 'G01', [c.validators.A, c.validators.B]);
+    submit(c, observe(c, c.validators.A, v));
+    submit(c, observe(c, c.validators.B, v));
+    lifecycle.evaluate(ORG_A, credentialId);
+    c.platform.bypass = 'none';
+    c.clock.advance(60);
+    runBaseline(c, [c.validators.A, c.validators.B]);
+    c.clock.advance(1);
+    assert.throws(() => lifecycle.reinstateAutomatically(ORG_A, credentialId), refused('AUTOMATIC_PATH_NOT_APPLICABLE'));
+    const prepared = lifecycle.prepare('reinstate', { organizationId: ORG_A, credentialId, remediation: remediation(c) });
+    assert.equal(lifecycle.commit(prepared, approvals(c, prepared, c.humans.carol, c.humans.alice)).state, 'ACTIVE');
+    c.cleanup();
+  });
+
+  it('a genuine violation keeps precedence: SR-1, never SR-6', () => {
+    const c = buildCircuit();
+    const credentialId = activeCredential(c);
+    c.platform.bypass = 'unauthorized-operation';
+    const v = issue(c, 'G01', [c.validators.A, c.validators.B]);
+    submit(c, observe(c, c.validators.A, v));
+    submit(c, observe(c, c.validators.B, v));
+    revoke(c);
+    assert.equal(c.services().lifecycle.evaluate(ORG_A, credentialId).evaluation.proposal.ruleId, 'SR-1');
+    c.cleanup();
+  });
+
+  it('expiry with fresh evidence suspends AUTHORIZATION_EXPIRED (not a violation, not SR-2), and survives a restart', () => {
+    const c = buildCircuit();
+    const { lifecycle } = c.services();
+    const credentialId = lifecycle.registerCandidate({ organizationId: ORG_A, integrationDigest: c.integration.integrationDigest }).credentialId;
+    // Replace the harness authorization by one that ends in 2 hours, then gather all evidence under it and issue.
+    revoke(c);
+    const predecessor = testingAuthorizationFor(c);
+    c.services().registry.revokeTestingAuthorization(ORG_A, predecessor, 'make room (test)');
+    const now = c.clock.ms();
+    const profile = c.profiles.resolve(RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileId, RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileVersion);
+    assert.ok(profile.ok);
+    const integration = c.store.getIntegrationByDigest(ORG_A, c.integration.integrationDigest)!;
+    const { record, prepared } = c.services().registry.prepareTestingAuthorization({
+      authorizationId: 'auth-short-life', supersedes: predecessor, organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, purpose: 'CONFORMANCE',
+      fixtureRefs: ['fixture-synthetic-pep-v1'], operations: [...integration.record.coveredOperations, 'deployment.read-attested-manifest'],
+      challengeTypes: [...new Set(profile.definition.requirements.map((r) => r.challengeType).filter((t): t is 'G01' => t !== null && /^G0[1-8]$/.test(t)))],
+      notBefore: c.clock.now(), notAfter: new Date(now + 2 * 3_600_000).toISOString(), maxChallengesPerHour: 1000, maxConcurrentChallenges: 1000, maxTotalChallenges: null,
+    });
+    c.services().registry.authorizeTesting(record, [decide(c.humans.alice, 'attest', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, c.clock.now()), decide(c.humans.bob, 'approve', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, c.clock.now())]);
+    for (const type of BASELINE) {
+      for (const operation of baselineOperations(type)) {
+        const ch = c.services().coordinator.issue({ idempotencyKey: `short-${type}-${operation}`, organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, challengeType: type, operation: type === 'G08' ? 'deployment.read-attested-manifest' : operation, fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: [c.validators.A.validatorId, c.validators.B.validatorId], deadlineSeconds: 600, authorizationId: 'auth-short-life', purpose: 'CONFORMANCE' });
+        submit(c, observe(c, c.validators.A, ch));
+        submit(c, observe(c, c.validators.B, ch));
+      }
+    }
+    c.clock.advance(1);
+    const issue1 = lifecycle.prepare('issue', { organizationId: ORG_A, credentialId });
+    lifecycle.commit(issue1, approvals(c, issue1));
+    c.clock.advance(2 * 3600 + 1);
+    c.reopen();
+    const out = c.services().lifecycle.evaluate(ORG_A, credentialId);
+    assert.deepEqual(out.evaluation.proposal, { kind: 'SUSPEND', ruleId: 'SR-6', reasonCode: 'AUTHORIZATION_EXPIRED' });
+    assert.equal(out.engine.criticalFailureConfirmed, false);
+    assert.equal(c.store.getHead(ORG_A, credentialId)!.reasonCode, 'AUTHORIZATION_EXPIRED');
     c.cleanup();
   });
 });
