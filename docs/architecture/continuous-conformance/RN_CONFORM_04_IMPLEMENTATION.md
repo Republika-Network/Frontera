@@ -249,4 +249,41 @@ This writes `rn.conformance.reference-demo-report/1` plus `.summary.md`. Every s
 
 ## 15. CI evidence and independent review
 
-Filled from the actual CI runs and the review of the PR head.
+**CI at `2919930f` (GitHub Actions, PR #270).** All 15 checks are green: `validate` (typecheck, build, lint, all tests, release coherence), `protocol-tarball-consumption`, `publishability`, `clean-room-consumer`, the pilot jobs, `demo-evidence`, `rn-conform-04-demo`, and CodeQL (default setup: actions, javascript-typescript).
+
+- **Main suite:** 14,975 tests; 14,957 pass, **0 fail**, 11 skipped and 7 todo. The skips and todos are pre-existing.
+- **RN-CONFORM-04 tests:** 58, including the 4 real-pipeline e2e tests.
+- **Demonstration artifact:** `rn-conformance-reference-demo-report.json`, sha256 `4e9c12cf28a203734381dd9b0fb1ffc716bf964f14d02920de33de93ced6a9b5`.
+
+No code was executed on the Windows-mounted checkout. One audit sub-agent ran a single read-only `node -e` there to list a fixture's JSON keys; it wrote nothing.
+
+**CI history, all fixed in test code; no production change was needed:**
+
+1. 4 type errors.
+2. The status `sequence` was mistaken for the credential state version.
+3. An expired online assertion is `EXPIRED_ASSERTION` before the nonce is checked.
+
+**Independent review.** This was an AI reviewer working read-only on the diff with the mission's 16 questions. It is **not** an accredited audit. It found no P0 and no P1.
+
+Resolved in `2919930f`, each with a regression where testable:
+
+| Finding | Was | Fix |
+| --- | --- | --- |
+| P2-1, P2-2 | Check-then-use on caller objects (a forged-decision substitution and a cross-tenant organization flip via getters) | Inputs are snapshotted once and only the snapshot is used |
+| P2-3 | The docs overclaimed detection | §1 limits added |
+| P2-4 | A real-time 25 ms deadline could time out the real pipeline | Injectable deadline |
+| P3-1 | A throwing, hanging or non-promise dependency escaped the PEP | Now a denial |
+| P3-2 | G04 counted any non-200 as enforcement | Only 403 with no body counts |
+| P3-8 | Test names overclaimed | Renamed; modify scoping added |
+
+Accepted and documented, all limited to the test-only fixture or to an open decision:
+
+| Finding | Note |
+| --- | --- |
+| P3-3 | Clock rollback is guarded only against `issuedAt > now`, with no monotonic floor |
+| P3-4 | Revocation means terms withdrawal; role loss is not revocation; `newTermsDigest` is not decision-bound |
+| P3-5 | Distinct UNKNOWN_DOCUMENT and CROSS_ORGANIZATION reasons (CR-11, human review, not covered) |
+| P3-6 | Coverage records show the latest issued challenge's variant; categories are the engine's over accepted evidence |
+| P3-7 | The coordinator admits a requirement without checking its evaluation kind; unreachable, because the draft profile admits no integration (`supportedSdk: null`) |
+| P3-9 | The synthetic profile is admitted by every registry, following the synthetic-circuit precedent |
+| P3-10 | The e2e revocation check uses the access action's status ceiling |
