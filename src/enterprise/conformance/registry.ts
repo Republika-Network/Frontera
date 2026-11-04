@@ -104,12 +104,14 @@ function checkIntegrationInput(input: unknown): IntegrationVersionInput {
   const ops = r['coveredOperations'];
   if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_COVERED_OPERATIONS || !ops.every((o) => typeof o === 'string' && OPERATION.test(o)) || new Set(ops).size !== ops.length) throw new ConformanceRegistryError('MALFORMED_INPUT', 'coveredOperations');
   const exclusions = r['declaredExclusions'];
-  if (!Array.isArray(exclusions) || exclusions.length > MAX_DECLARED_EXCLUSIONS) throw new ConformanceRegistryError('MALFORMED_INPUT', 'declaredExclusions');
+  // The bound is on distinct excluded operations — what a status states (Codex C-3); the raw list is bounded too, against padding.
+  if (!Array.isArray(exclusions) || exclusions.length > 4 * MAX_DECLARED_EXCLUSIONS) throw new ConformanceRegistryError('MALFORMED_INPUT', 'declaredExclusions');
   for (const e of exclusions) {
     const x = readClosed(e, ['operation', 'reason']);
     if (!x.ok || typeof x.record['operation'] !== 'string' || !OPERATION.test(x.record['operation']) || typeof x.record['reason'] !== 'string' || (x.record['reason'] as string).length === 0) throw new ConformanceRegistryError('MALFORMED_INPUT', 'declaredExclusions');
     if ((ops as string[]).includes(x.record['operation'] as string)) throw new ConformanceRegistryError('MALFORMED_INPUT', 'an operation cannot be both covered and excluded');
   }
+  if (new Set(exclusions.map((e) => (e as { operation: string }).operation)).size > MAX_DECLARED_EXCLUSIONS) throw new ConformanceRegistryError('MALFORMED_INPUT', 'declaredExclusions');
   const endpoints = r['testEndpoints'];
   if (!Array.isArray(endpoints) || endpoints.length === 0) throw new ConformanceRegistryError('MALFORMED_INPUT', 'testEndpoints');
   for (const e of endpoints) {

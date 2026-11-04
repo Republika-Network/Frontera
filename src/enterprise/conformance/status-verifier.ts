@@ -277,7 +277,8 @@ export function openStatusVerifierStore(path: string, options: { readonly create
         if (input.stateVersion === hw.state_version && input.transitionDigest !== hw.transition_digest) return conflict(`stateVersion ${input.stateVersion} names two transitions`);
         // Floors: an older state, or an older better-looking view of the floor state, refuses (never latches).
         if (input.stateVersion < hw.floor_state_version) return { kind: 'refused', result: 'ROLLBACK_DETECTED', detail: `stateVersion ${input.stateVersion} < ${hw.floor_state_version}` };
-        if (input.stateVersion === hw.floor_state_version && input.fresh && input.sequence < hw.freshness_floor_sequence) {
+        // `<=`: the artifact at the floor sequence is non-FRESH by definition, so a FRESH one there can only be equivocation.
+        if (input.stateVersion === hw.floor_state_version && input.fresh && input.sequence <= hw.freshness_floor_sequence) {
           return { kind: 'refused', result: 'ROLLBACK_DETECTED', detail: `fresh view (sequence ${input.sequence}) older than a signed degradation (sequence ${hw.freshness_floor_sequence})` };
         }
         // Raise the floors from this authentic artifact (whatever its continuity).

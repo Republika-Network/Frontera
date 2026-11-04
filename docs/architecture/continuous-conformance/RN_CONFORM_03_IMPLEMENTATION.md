@@ -100,7 +100,7 @@ sequence used to detect equivocation (§13, review P1-A/P2-A/P2-B):
 | Presented, relative to the mark | Result | Latched |
 |---|---|---|
 | Below the **state floor** (highest `stateVersion` from any authentic artifact, raised even when continuity is unproven) | `ROLLBACK_DETECTED` | no — a genuine stale artifact is not tampering; latching would let anyone deny service |
-| A FRESH view of the floor state issued before the newest signed non-FRESH view of it (**freshness floor**) | `ROLLBACK_DETECTED` | no |
+| A FRESH view of the floor state with an issuer sequence at or below that of the newest signed non-FRESH view of it (**freshness floor**, ordered by sequence, not time) | `ROLLBACK_DETECTED` | no |
 | Same sequence, other digest; next sequence not linking; same `stateVersion` naming another transition; another issuer | `CONFLICT_DETECTED` | **yes** (append-only, persisted; no API clears it — recovery is an explicitly provisioned new verifier store) |
 | Next sequence, linked | accepted (`NEXT`) | — |
 | Older or non-adjacent sequence of the **same** state | accepted (`OLDER_SAME_STATE`, `GAP_SAME_STATE`) — online and stapled share one chain, so honest gaps are normal | — |
@@ -268,6 +268,9 @@ clauses), P2-E (cache) and the fixed P3s closed, and predicted no CI failures (c
 | C-1 | `status-verifier.ts` freshness floor | The floor compared `issuedAt` strictly; two assertions may share a millisecond, so an earlier FRESH view replayed after a later degraded one | The floor is the **issuer sequence** of the newest non-FRESH view of the floor state (durable, trigger-monotonic, schema `status-verifier-store/3`); a FRESH view with a lower sequence is `ROLLBACK_DETECTED`; a higher-sequence FRESH view is a genuine recovery | `Codex C-1 …` (same-millisecond pair, restart, recovery, no latch, no rollback past SUSPENDED) |
 | C-2 | `status-registry.ts` stapled cache | The cache never checked whether its signing key was still usable | A cached staple is served only if its key is `USABLE` under the trusted key set (default: the signer's published keys); otherwise it is reissued under the current key, or `UNAVAILABLE` | `Codex C-2 …` (expired and scheduled-revoked key; old staple rejected; replacement under the new key; signer down → fail closed; racing issuers → one sequence) |
 | C-3 | `status-contracts.ts` scope lists | The status schema capped exclusions at 16 while admission had no bound | One bound, `MAX_DECLARED_EXCLUSIONS = 64`, enforced at admission (`registry.ts`) and by the parser; a stored scope beyond the bounds is never stated partially (`SCOPE_NOT_REPRESENTABLE`, fail closed). No integration record format or digest changed | `Codex C-3 …` (0, 16, 17, 64 stated completely; 65 refused; parser agrees; no substitution; stored oversize → fail closed) |
+
+The verifier store schema is now `rn.conformance.status-verifier-store/3`; a store created by an earlier version is
+refused at open ("not intact") and must be re-provisioned — synthetic verifier stores are never migrated.
 
 **Gate A hardening.** The RN-CONFORM-02 structure suite compared paths by string prefix, so any sibling
 `src/enterprise/conformance-*` directory counted as the module (and could import it unnoticed). It now uses a

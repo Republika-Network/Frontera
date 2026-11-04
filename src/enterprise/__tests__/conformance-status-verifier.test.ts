@@ -229,7 +229,7 @@ describe('RN-CONFORM-03 verifier: durable continuity judged on committed state (
     assert.throws(() => db.prepare('UPDATE vs_clock SET max_trusted_ms = 0').run(), /vs:clock moved backwards/);
     assert.throws(
       () =>
-        db.prepare("INSERT OR REPLACE INTO vs_high_water (issuer, credential_id, sequence, assertion_digest, state_version, transition_digest, state, floor_state_version, floor_transition_digest, freshness_floor_ms, observed_at_ms) VALUES (?, ?, 0, 'x', 0, 'x', 'ACTIVE', 0, 'x', 0, 0)").run(ISSUER, credentialId),
+        db.prepare("INSERT OR REPLACE INTO vs_high_water (issuer, credential_id, sequence, assertion_digest, state_version, transition_digest, state, floor_state_version, floor_transition_digest, freshness_floor_sequence, observed_at_ms) VALUES (?, ?, 0, 'x', 0, 'x', 'ACTIVE', 0, 'x', 0, 0)").run(ISSUER, credentialId),
       /vs:duplicate/,
     );
     assert.throws(() => db.prepare('INSERT OR REPLACE INTO vs_clock (id, max_trusted_ms) VALUES (1, 0)').run(), /vs:duplicate/);
@@ -257,7 +257,7 @@ describe('RN-CONFORM-03 verifier: re-review regressions (N-1, N-3)', () => {
     s.c.clock.set(toTimestamp(toMs(payloadOf(fresh).validUntil) - 1000));
     const older = s.verify(fresh, credentialId, { kind: 'stapled' }, { store });
     assert.equal(older.result, 'ROLLBACK_DETECTED');
-    assert.match(older.detail ?? '', /fresh view issued before a signed degradation/);
+    assert.match(older.detail ?? '', /older than a signed degradation/);
     assert.equal(s.verify(fresh, credentialId, { kind: 'stapled' }).result, 'CONFORMANT', 'a stateless verifier has no such memory (bounded by the 15-minute window)');
     s.cleanup();
   });
