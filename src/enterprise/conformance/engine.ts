@@ -101,6 +101,11 @@ export interface EngineInput {
    * other states, where reinstatement already requires humans for them.
    */
   readonly recordedConfirmedViolations?: readonly { readonly eventId: string; readonly controlId: string; readonly operation: string; readonly observedAt: string }[];
+  /**
+   * RN-CONFORM-07A (SR-6): conformant observations that are NOT positively eligible now (their own testing authorization
+   * was revoked or has ended), and why. Used only for an ACTIVE credential; absent means none.
+   */
+  readonly positivelyIneligible?: { readonly eventIds: readonly string[]; readonly revoked: boolean };
 }
 
 export interface EngineOutput {
@@ -290,7 +295,31 @@ function deterministic(requirement: ConformanceRequirementDefinition, category: 
   });
 }
 
+/**
+ * RN-CONFORM-07A — SR-6. For an ACTIVE credential the existing rules run first on all authenticated evidence (the
+ * protective view): SR-1, SR-4 and SR-2 keep absolute precedence. If none of them suspends, the same rules run again
+ * without the positively ineligible conformant observations (the positive view). If any critical requirement is weaker
+ * there — its success or grace rested on evidence from a revoked or ended authorization — current authorized
+ * conformance can no longer be established: SUSPEND under SR-6, reason AUTHORIZATION_WITHDRAWN (any revoked) or
+ * AUTHORIZATION_EXPIRED. The recorded requirement results stay the protective view's: no failure is invented.
+ */
 export function evaluateConformance(input: EngineInput): EngineOutput {
+  const protective = evaluateConformanceRules(input);
+  const withheld = input.positivelyIneligible;
+  if (input.credentialState !== 'ACTIVE' || withheld === undefined || withheld.eventIds.length === 0 || protective.proposal.kind === 'SUSPEND') return protective;
+  const ineligible = new Set(withheld.eventIds);
+  const positive = evaluateConformanceRules({ ...input, observations: input.observations.filter((o) => !ineligible.has(o.eventId)) });
+  const strength = (category: string) => (category === 'VERIFIED_SUCCESS' ? 2 : category === 'STALE_EVIDENCE' ? 1 : 0);
+  const positiveById = new Map(positive.requirementResults.map((r) => [r.requirementId, r]));
+  const weaker = protective.requirementResults.some((r) => r.severity === 'critical' && strength(positiveById.get(r.requirementId)?.category ?? '') < strength(r.category));
+  if (!weaker) return protective;
+  return Object.freeze({
+    ...protective,
+    proposal: Object.freeze({ kind: 'SUSPEND' as const, ruleId: 'SR-6' as const, reasonCode: withheld.revoked ? ('AUTHORIZATION_WITHDRAWN' as const) : ('AUTHORIZATION_EXPIRED' as const) }),
+  });
+}
+
+function evaluateConformanceRules(input: EngineInput): EngineOutput {
   const { profile } = input;
   const nowMs = toMs(input.evaluatedAt);
   if (!Number.isFinite(nowMs)) throw new TypeError('evaluatedAt must be a timestamp.');

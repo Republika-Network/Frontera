@@ -47,7 +47,8 @@ import { signConformancePayload } from './signing.js';
  * eligible evaluation computed on the immediately preceding head.
  */
 
-export const AUTO_REINSTATABLE_REASONS = Object.freeze(['EVIDENCE_STALE', 'CORROBORATION_UNAVAILABLE'] as const);
+/** RN-CONFORM-07A: the SR-6 reasons are non-violation suspensions and follow the existing automatic path (full revalidation with positively eligible, post-suspension evidence; humans still required whenever a critical failure or confirmed violation intervened). */
+export const AUTO_REINSTATABLE_REASONS = Object.freeze(['EVIDENCE_STALE', 'CORROBORATION_UNAVAILABLE', 'AUTHORIZATION_WITHDRAWN', 'AUTHORIZATION_EXPIRED'] as const);
 export const HUMAN_REINSTATEMENT_REASONS = Object.freeze(['CRITICAL_VIOLATION_CONFIRMED', 'CONFLICTING_EVIDENCE'] as const);
 export const REVOCATION_REASONS = Object.freeze(['PLATFORM_REQUEST', 'CONTRACT_TERMINATION', 'EVIDENCE_FORGERY_CONFIRMED', 'INTENTIONAL_BYPASS_CONFIRMED'] as const);
 /** A prepared action older than this must be prepared again. */
@@ -160,14 +161,21 @@ export function loadEngineInput(
   //    unexpired. A replacement authorization never re-qualifies evidence accepted under its revoked predecessor.
   // A CANDIDATE or SUSPENDED credential is evaluated for a positive decision (issuance, reinstatement), so a conformant
   // observation that is not positively eligible is withheld from it; violations and inconclusive observations are kept,
-  // which can only make the outcome more protective. An ACTIVE credential keeps the RN-CONFORM-07 behaviour (founder
-  // decision pending, RN_CONFORM_07_IMPLEMENTATION.md §3.1): withholding its evidence would turn withdrawn consent into an
-  // SR-2 suspension, i.e. a false protective transition.
+  // which can only make the outcome more protective. An ACTIVE credential is not given a withheld view (that would turn
+  // withdrawn consent into a false SR-2 "evidence stale"); instead the engine's SR-6 suspends it with the explicit,
+  // non-violation reason AUTHORIZATION_WITHDRAWN / AUTHORIZATION_EXPIRED (founder decision A2, §3.1).
   const conformanceRows = rows.filter((row) => store.getObservationPurpose(row.eventId)?.purpose === 'CONFORMANCE');
   const positiveDecision = head.state !== 'ACTIVE';
   const positivelyIneligible = conformanceRows.filter((row) => row.outcomeClass === 'conformant' && !positivelyEligible(store, row.eventId, nowMs)).map((row) => row.eventId);
   const withheld = new Set(positiveDecision ? positivelyIneligible : []);
   const engineRows = conformanceRows.filter((row) => !withheld.has(row.eventId));
+  // RN-CONFORM-07A (SR-6): for an ACTIVE credential nothing is withheld; the engine is told which conformant evidence is
+  // no longer positively eligible, and whether because of a committed revocation (else: the authorization ended).
+  const revokedCause = positivelyIneligible.some((eventId) => {
+    const authorizationId = store.getObservationPurpose(eventId)?.authorizationId;
+    return authorizationId !== null && authorizationId !== undefined && store.getTestingAuthorization(authorizationId)?.revokedSeq !== null;
+  });
+  const sr6 = !positiveDecision && positivelyIneligible.length > 0 ? { positivelyIneligible: Object.freeze({ eventIds: Object.freeze([...positivelyIneligible]), revoked: revokedCause }) } : {};
   return {
     positivelyIneligible,
     loaded: { credential, head, integration: integration.record, profile: profile.definition },
@@ -183,6 +191,7 @@ export function loadEngineInput(
       credentialState: head.state,
       revalidationSince: head.state === 'SUSPENDED' ? head.effectiveAt : null,
       evidenceTruncated,
+      ...sr6,
       // Review P1-A: durable confirmed critical violations since the last activation stand while ACTIVE.
       recordedConfirmedViolations:
         head.state === 'ACTIVE' && activatedAt !== null

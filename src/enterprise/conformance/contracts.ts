@@ -274,12 +274,17 @@ export interface RequirementResult {
   readonly investigationDeadline: string | null;
 }
 
-export const SUSPENSION_REASONS = Object.freeze(['CRITICAL_VIOLATION_CONFIRMED', 'EVIDENCE_STALE', 'CORROBORATION_UNAVAILABLE', 'CONFLICTING_EVIDENCE'] as const);
+/**
+ * `AUTHORIZATION_WITHDRAWN` / `AUTHORIZATION_EXPIRED` (RN-CONFORM-07A, SR-6): current authorized conformance can no longer
+ * be established because the testing authorization behind the evidence was revoked / ended. Never a violation, a failed
+ * requirement or a confirmed bypass. Values of the existing open `reasonCode` string of `rn.conformance.transition/1`.
+ */
+export const SUSPENSION_REASONS = Object.freeze(['CRITICAL_VIOLATION_CONFIRMED', 'EVIDENCE_STALE', 'CORROBORATION_UNAVAILABLE', 'CONFLICTING_EVIDENCE', 'AUTHORIZATION_WITHDRAWN', 'AUTHORIZATION_EXPIRED'] as const);
 export type SuspensionReason = (typeof SUSPENSION_REASONS)[number];
 
 export type EvaluationProposal =
   | { readonly kind: 'NONE'; readonly reasonCode: 'CONFORMANT' | 'UNDER_INVESTIGATION' | 'EVIDENCE_IN_GRACE' | 'NOT_ACTIVE' | 'NOT_ELIGIBLE' }
-  | { readonly kind: 'SUSPEND'; readonly ruleId: 'SR-1' | 'SR-2' | 'SR-4'; readonly reasonCode: SuspensionReason }
+  | { readonly kind: 'SUSPEND'; readonly ruleId: 'SR-1' | 'SR-2' | 'SR-4' | 'SR-6'; readonly reasonCode: SuspensionReason }
   | { readonly kind: 'ELIGIBLE_FOR_ACTIVE'; readonly reasonCode: 'ALL_CRITICAL_VERIFIED' };
 
 export interface EvaluationRecord {
