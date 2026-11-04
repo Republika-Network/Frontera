@@ -63,6 +63,10 @@ export const EVIDENCE_REJECTIONS = Object.freeze([
   'CHALLENGE_UNKNOWN',
   'CHALLENGE_BINDING_MISMATCH',
   'NOT_ASSIGNED',
+  // 5b — RN-CONFORM-07: the challenge's committed testing authorization
+  'AUTHORIZATION_INVALID',
+  'AUTHORIZATION_REVOKED',
+  'AUTHORIZATION_EXPIRED',
   // 6 — subject
   'SUBJECT_BINDING_MISMATCH',
   // 7 — profile
@@ -294,6 +298,35 @@ export function checkObservationAuthority(
   const challenge = signedChallenge.challenge;
   if (challenge.challengeId !== observation.challengeId || challenge.nonce !== observation.challengeNonce) return no('CHALLENGE_BINDING_MISMATCH');
   if (!challenge.assignedValidatorIds.includes(observation.validatorId)) return no('NOT_ASSIGNED');
+
+  // 5b — RN-CONFORM-07 (P2-3, AUTH-02/10): the challenge's server-side authorization association, the committed
+  // authorization itself (digest, purpose, exact scope), its expiry, and its revocation — ordered by the durable order
+  // counter, never by milliseconds. A stored row is checked as of its own acceptance: accepted before the revocation
+  // event means historically valid (AUTH-06). Rows from before the /4 migration carry a LEGACY association: historically
+  // verifiable, never acceptable live (and never eligible for a new evaluation — lifecycle.ts).
+  const association = store.getChallengeAuthorization(challenge.challengeId);
+  if (association === undefined) return no('AUTHORIZATION_INVALID');
+  if (association.purpose === 'LEGACY' || association.authorizationId === null) {
+    if (options.storedRow !== true) return no('AUTHORIZATION_INVALID');
+    if (store.getObservationPurpose(observation.eventId)?.purpose !== 'LEGACY') return no('AUTHORIZATION_INVALID');
+  } else {
+    const authorization = store.getTestingAuthorization(association.authorizationId);
+    if (authorization === undefined || authorization.authorizationDigest !== association.authorizationDigest || authorization.record.purpose !== association.purpose) return no('AUTHORIZATION_INVALID');
+    const a = authorization.record;
+    const inScope =
+      a.organizationId === challenge.organizationId && a.integrationDigest === challenge.integrationDigest && a.profileId === challenge.profileId && a.profileVersion === challenge.profileVersion &&
+      a.operations.includes(challenge.operation) && a.challengeTypes.includes(challenge.challengeType) && a.fixtureRefs.includes(challenge.fixtureRef) &&
+      toMs(challenge.issuedAt) >= authorization.notBeforeMs && toMs(challenge.deadline) <= authorization.notAfterMs;
+    if (!inScope) return no('AUTHORIZATION_INVALID');
+    if (atMs > authorization.notAfterMs) return no('AUTHORIZATION_EXPIRED');
+    if (options.storedRow === true) {
+      const purpose = store.getObservationPurpose(observation.eventId);
+      if (purpose === undefined || purpose.purpose !== association.purpose || purpose.authorizationId !== association.authorizationId) return no('AUTHORIZATION_INVALID');
+      if (authorization.revokedSeq !== null && purpose.acceptedSeq >= authorization.revokedSeq) return no('AUTHORIZATION_REVOKED');
+    } else if (authorization.revokedSeq !== null) {
+      return no('AUTHORIZATION_REVOKED');
+    }
+  }
 
   // 6 — exact subject binding.
   const subjectOk =

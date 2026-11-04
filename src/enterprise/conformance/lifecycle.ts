@@ -156,7 +156,9 @@ export function loadEngineInput(
       profile: profile.definition,
       integration: { integrationDigest: credential.integrationDigest, sdk: integration.record.sdk },
       coveredOperations: credential.coveredOperations,
-      observations: rows.map(toAccepted),
+      // RN-CONFORM-07 (S-1, AUTH-11): only CONFORMANCE-purpose evidence ever reaches the engine. Requalification and
+      // pre-/4 LEGACY observations stay authentic and auditable but are never counted for a credential.
+      observations: rows.filter((row) => store.getObservationPurpose(row.eventId)?.purpose === 'CONFORMANCE').map(toAccepted),
       excludedValidatorIds: [...excluded].sort(),
       evaluatedAt: now,
       credentialState: head.state,

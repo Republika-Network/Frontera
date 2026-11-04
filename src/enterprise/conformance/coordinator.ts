@@ -15,6 +15,7 @@ import {
 import type { ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceClock } from './registry.js';
 import { ConformanceStoreError, operatorEligibleAt, type ConformanceStore } from './sqlite-conformance-store.js';
+import { TESTING_AUTHORIZATION_PURPOSES, type TestingAuthorizationPurpose } from './testing-authorization.js';
 import { signConformancePayload, verifyConformanceSignature } from './signing.js';
 
 /**
@@ -49,7 +50,11 @@ export type ChallengeRefusal =
   | 'CHALLENGE_NOT_IN_PROFILE'
   | 'OPERATION_NOT_COVERED'
   | 'VALIDATOR_NOT_ELIGIBLE'
-  | 'IDEMPOTENCY_CONFLICT';
+  | 'IDEMPOTENCY_CONFLICT'
+  | 'AUTHORIZATION_INVALID'
+  | 'AUTHORIZATION_REVOKED'
+  | 'AUTHORIZATION_WINDOW'
+  | 'QUOTA_EXHAUSTED';
 
 export class ChallengeCoordinatorError extends Error {
   readonly code: ChallengeRefusal;
@@ -69,6 +74,12 @@ export interface ChallengeRequest {
   readonly fixtureRef: string;
   readonly assignedValidatorIds: readonly string[];
   readonly deadlineSeconds: number;
+  /**
+   * RN-CONFORM-07: the committed testing authorization this challenge is issued under, and the purpose the caller
+   * intends. Both are re-verified against the store on every call — there is no unauthorized or "trusted caller" path.
+   */
+  readonly authorizationId: string;
+  readonly purpose: TestingAuthorizationPurpose;
 }
 
 export interface ChallengeCoordinator {
@@ -98,6 +109,11 @@ export function createChallengeCoordinator(deps: {
     canonicalizeConformance([...existing.assignedValidatorIds]) === canonicalizeConformance([...request.assignedValidatorIds].sort()) &&
     toMs(existing.deadline) - toMs(existing.issuedAt) === deadlineSeconds * 1000;
 
+  const sameAuthorization = (challengeId: string, request: ChallengeRequest) => {
+    const association = store.getChallengeAuthorization(challengeId);
+    return association !== undefined && association.authorizationId === request.authorizationId && association.purpose === request.purpose;
+  };
+
   return Object.freeze({
     issue(request: ChallengeRequest): SignedChallenge {
       if (
@@ -105,14 +121,16 @@ export function createChallengeCoordinator(deps: {
         typeof request.integrationDigest !== 'string' || !(CHALLENGE_TYPES as readonly string[]).includes(request.challengeType) ||
         typeof request.operation !== 'string' || !isIdentifier(request.fixtureRef) || !Array.isArray(request.assignedValidatorIds) ||
         request.assignedValidatorIds.length === 0 || !request.assignedValidatorIds.every(isIdentifier) || new Set(request.assignedValidatorIds).size !== request.assignedValidatorIds.length ||
-        !Number.isSafeInteger(request.deadlineSeconds) || request.deadlineSeconds < 1 || request.deadlineSeconds > MAX_CHALLENGE_DEADLINE_SECONDS
+        !Number.isSafeInteger(request.deadlineSeconds) || request.deadlineSeconds < 1 || request.deadlineSeconds > MAX_CHALLENGE_DEADLINE_SECONDS ||
+        !isIdentifier(request.authorizationId) || !(TESTING_AUTHORIZATION_PURPOSES as readonly string[]).includes(request.purpose)
       ) {
         throw new ChallengeCoordinatorError('MALFORMED_REQUEST');
       }
       // Idempotent re-dispatch: the same key returns the same challenge, never a new one.
       const existing = store.getChallengeByIdempotencyKey(request.idempotencyKey);
       if (existing !== undefined) {
-        if (sameRequest(existing.challenge, request, request.deadlineSeconds)) return existing;
+        // An idempotent redispatch consumes no quota and never extends the window: the stored challenge is returned as is.
+        if (sameRequest(existing.challenge, request, request.deadlineSeconds) && sameAuthorization(existing.challenge.challengeId, request)) return existing;
         throw new ChallengeCoordinatorError('IDEMPOTENCY_CONFLICT');
       }
 
@@ -142,6 +160,23 @@ export function createChallengeCoordinator(deps: {
         if (!usable) throw new ChallengeCoordinatorError('VALIDATOR_NOT_ELIGIBLE', validatorId);
       }
 
+      // RN-CONFORM-07 (P2-3): the committed authorization must cover this exact subject, purpose, scope and window, and
+      // have quota left. The store's trigger re-checks all of it inside the insert transaction (concurrent coordinators).
+      const authorization = store.getTestingAuthorization(request.authorizationId);
+      if (authorization === undefined) throw new ChallengeCoordinatorError('AUTHORIZATION_INVALID', 'unknown authorization');
+      const a = authorization.record;
+      const inScope =
+        a.purpose === request.purpose && a.organizationId === request.organizationId && a.integrationDigest === request.integrationDigest && a.environment === 'synthetic' &&
+        a.profileId === profile.definition.profileId && a.profileVersion === profile.definition.profileVersion && a.operations.includes(request.operation) &&
+        a.challengeTypes.includes(request.challengeType) && a.fixtureRefs.includes(request.fixtureRef);
+      if (!inScope) throw new ChallengeCoordinatorError('AUTHORIZATION_INVALID', 'outside the authorized scope');
+      if (authorization.revokedSeq !== null) throw new ChallengeCoordinatorError('AUTHORIZATION_REVOKED');
+      if (nowMs < authorization.notBeforeMs || deadlineMs > authorization.notAfterMs) throw new ChallengeCoordinatorError('AUTHORIZATION_WINDOW');
+      const usage = store.authorizationUsage(request.authorizationId, nowMs);
+      if ((a.maxTotalChallenges !== null && usage.total >= a.maxTotalChallenges) || usage.lastHour >= a.maxChallengesPerHour || usage.open >= a.maxConcurrentChallenges) {
+        throw new ChallengeCoordinatorError('QUOTA_EXHAUSTED');
+      }
+
       const challenge: ChallengePayload = Object.freeze({
         schema: 'rn.conformance.challenge/1',
         challengeId: newIdentifier(random, 'chl'),
@@ -167,12 +202,18 @@ export function createChallengeCoordinator(deps: {
       });
       const signed: SignedChallenge = Object.freeze({ challenge, coordinatorSignature: signConformancePayload('challenge', challenge, coordinatorKey) });
       try {
-        store.insertChallenge(signed);
+        store.insertChallenge(signed, { authorizationId: request.authorizationId, authorizationDigest: authorization.authorizationDigest, purpose: request.purpose });
       } catch (error) {
         if (error instanceof ConformanceStoreError && error.code === 'CONFLICT') {
           const raced = store.getChallengeByIdempotencyKey(request.idempotencyKey);
-          if (raced !== undefined && sameRequest(raced.challenge, request, request.deadlineSeconds)) return raced;
+          if (raced !== undefined && sameRequest(raced.challenge, request, request.deadlineSeconds) && sameAuthorization(raced.challenge.challengeId, request)) return raced;
           throw new ChallengeCoordinatorError('IDEMPOTENCY_CONFLICT');
+        }
+        // Another coordinator won the race for the last quota unit, or the authorization was revoked meanwhile.
+        if (error instanceof ConformanceStoreError && error.code === 'INVARIANT_REFUSED') {
+          if (/quota|rate limit/.test(error.detail)) throw new ChallengeCoordinatorError('QUOTA_EXHAUSTED');
+          if (/revoked/.test(error.detail)) throw new ChallengeCoordinatorError('AUTHORIZATION_REVOKED');
+          if (/authorization/.test(error.detail)) throw new ChallengeCoordinatorError('AUTHORIZATION_INVALID', 'refused by the store');
         }
         throw error;
       }

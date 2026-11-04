@@ -1,4 +1,5 @@
 import type { ChallengeType } from './contracts.js';
+import type { TestingAuthorizationRecord } from './testing-authorization.js';
 
 /**
  * RN-CONFORM-05 — federated validator operations: contracts.
@@ -201,24 +202,12 @@ export const TERMINAL_JOB_STATES: readonly JobState[] = Object.freeze(['COMPLETE
 export const JOB_PURPOSES = Object.freeze(['ROUTINE', 'INVESTIGATION', 'DISPUTE', 'REQUALIFICATION'] as const);
 export type JobPurpose = (typeof JOB_PURPOSES)[number];
 
-/** A signed-off, time-boxed authorization to challenge one synthetic integration. Without one, nothing is scheduled. */
-export interface TestingAuthorization {
-  readonly schema: 'rn.conformance.testing-authorization/1';
-  readonly authorizationId: string;
-  readonly organizationId: string;
-  readonly integrationDigest: string;
-  /**
-   * `CONFORMANCE`: challenges whose evidence counts for the integration's credential. `REQUALIFICATION`: probation
-   * challenges for a reinstating validator, allowed only against a fixture integration that has NO credential, so a
-   * still-untrusted generation's observation can never become a vote on a real credential (review P1-2).
-   */
-  readonly purpose: 'CONFORMANCE' | 'REQUALIFICATION';
-  readonly environment: 'synthetic';
-  readonly fixtureRefs: readonly string[];
-  readonly notBefore: string;
-  readonly notAfter: string;
-  readonly synthetic: true;
-}
+/**
+ * RN-CONFORM-07: the federation no longer keeps its own authorization model. A federation testing authorization IS the
+ * authoritative conformance-store record (`rn.conformance.testing-authorization/2`), approved and stored there; the
+ * federation store keeps only a mirror for scheduling. `VALIDATOR_REQUALIFICATION` is the probation purpose.
+ */
+export type TestingAuthorization = TestingAuthorizationRecord;
 
 export interface JobAssignment {
   readonly validatorId: string;

@@ -8,6 +8,7 @@ import type { FederationRegistry } from './federation-registry.js';
 import { FederationStoreError, type FederationStore } from './federation-store.js';
 import type { ConformanceProfileRegistry } from './profile.js';
 import { operatorEligibleAt, type ConformanceStore } from './sqlite-conformance-store.js';
+import type { TestingAuthorizationPurpose } from './testing-authorization.js';
 
 /**
  * RN-CONFORM-05 — the durable challenge scheduler, the dispatch worker and operational metrics.
@@ -103,13 +104,16 @@ export function createFederationScheduler(deps: {
     return Object.freeze(out);
   };
 
-  const authorizationFor = (authorizationId: string, fixtureRef: string, deadlineSeconds: number, at: number, purpose: 'CONFORMANCE' | 'REQUALIFICATION') => {
+  const authorizationFor = (authorizationId: string, fixtureRef: string, deadlineSeconds: number, at: number, purpose: TestingAuthorizationPurpose) => {
     const auth = fed.getAuthorization(authorizationId);
     if (auth === undefined) return undefined;
     const r = auth.record;
+    // RN-CONFORM-07: the mirror must match the AUTHORITATIVE record, which must not be revoked.
+    const authoritative = store.getTestingAuthorization(authorizationId);
+    if (authoritative === undefined || authoritative.revokedSeq !== null || authoritative.authorizationDigest !== auth.recordDigest) return undefined;
     // Review P1-2: probation work only on a credential-free requalification target; credentialed work never there.
     if (r.purpose !== purpose) return undefined;
-    if (purpose === 'REQUALIFICATION' && store.hasCredentialForIntegration(r.organizationId, r.integrationDigest)) return undefined;
+    if (purpose === 'VALIDATOR_REQUALIFICATION' && store.hasCredentialForIntegration(r.organizationId, r.integrationDigest)) return undefined;
     // No scheduling outside the signed testing window: the whole challenge must fit inside it.
     if (at < toMs(r.notBefore) || at + deadlineSeconds * 1000 > toMs(r.notAfter) || !r.fixtureRefs.includes(fixtureRef)) return undefined;
     const integration = store.getIntegrationByDigest(r.organizationId, r.integrationDigest);
@@ -195,7 +199,7 @@ export function createFederationScheduler(deps: {
 
     scheduleRequalification(input) {
       const at = nowMs();
-      const target = authorizationFor(input.authorizationId, input.fixtureRef, DEADLINE_OF.REQUALIFICATION, at, 'REQUALIFICATION');
+      const target = authorizationFor(input.authorizationId, input.fixtureRef, DEADLINE_OF.REQUALIFICATION, at, 'VALIDATOR_REQUALIFICATION');
       if (target === undefined) return { scheduled: false, reason: 'AUTHORIZATION_INVALID', availableOperators: 0 };
       const record = fed.getValidator(input.validatorId);
       const row = fed.listGenerations(input.validatorId).find((g) => g.generation === input.generation);
@@ -433,7 +437,7 @@ export function createDispatchWorker(deps: {
   const requalificationTargetCredentialed = (job: ScheduledJob): boolean => {
     if (job.purpose !== 'REQUALIFICATION') return false;
     const auth = fed.getAuthorization(job.authorizationId);
-    return auth === undefined || auth.record.purpose !== 'REQUALIFICATION' || store.hasCredentialForIntegration(job.organizationId, job.integrationDigest);
+    return auth === undefined || auth.record.purpose !== 'VALIDATOR_REQUALIFICATION' || store.hasCredentialForIntegration(job.organizationId, job.integrationDigest);
   };
   const committedFor = (job: ScheduledJob) => job.assignments.filter((a) => job.challengeId !== null && store.getObservationForChallengeValidator(job.challengeId, a.conformanceValidatorId) !== undefined);
   const assignmentEligible = (job: ScheduledJob, a: JobAssignment, at: number, untilMs: number): boolean => {
@@ -485,6 +489,8 @@ export function createDispatchWorker(deps: {
             fixtureRef: job.fixtureRef,
             assignedValidatorIds: job.assignments.map((a) => a.conformanceValidatorId),
             deadlineSeconds: job.deadlineSeconds,
+            authorizationId: job.authorizationId,
+            purpose: job.purpose === 'REQUALIFICATION' ? 'VALIDATOR_REQUALIFICATION' : 'CONFORMANCE',
           });
         } catch (error) {
           if (error instanceof ChallengeCoordinatorError) {
