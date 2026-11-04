@@ -110,21 +110,43 @@ conformant evidence can leave a genuine earlier violation unremediated (VERIFIED
 unresolved (CONFLICTING) in that evaluation; such an evaluation records `criticalFailureConfirmed`, so the suspension
 then needs the two-person reinstatement path even after fresh evidence arrives under a replacement authorization.
 
-### 3.1 ACTIVE credentials — decision pending (unchanged behaviour)
+### 3.1 ACTIVE credentials — SR-6, founder decision A2
 
-An ACTIVE credential still evaluates with all authenticated CONFORMANCE evidence, exactly as RN-CONFORM-07 shipped:
-after a revocation it keeps its standing until that evidence's normal freshness + grace lapses, then the existing SR-2
-(`EVIDENCE_STALE`) suspends it, unless new evidence under a valid authorization arrives. Withholding the evidence at
-revocation instead would make every critical requirement INSUFFICIENT_EVIDENCE and trigger an immediate SR-2 (T4)
-suspension recorded as "evidence stale" — a protective transition caused by lost consent alone, which policy B forbids
-(invariants 6, 7). Changing this needs a new lifecycle rule (see the RN-CONFORM-07A PR for the decision proposal); until
-the founder decides, the residual is precise: after its testing authorization is revoked, an ACTIVE credential
-(a) is verified **CONFORMANT until its evidence's freshness ends** (during grace the verifier answers
-`EVIDENCE_NOT_FRESH`), (b) stays in the ACTIVE **state** until freshness + grace, then SR-2 suspends it, and (c) each
-evaluation in that period records VERIFIED_SUCCESS, so the status field `lastSuccessfulVerificationAt` keeps advancing on
-revoked evidence. (a) and (c) are positive determinations after revocation and conflict with policy B invariant 4; they
-are the subject of the pending ACTIVE decision. Tested in `conformance-revocation-eligibility.test.ts` ("ACTIVE
-credentials, interim policy").
+For an ACTIVE credential the existing rules run first on all authenticated evidence (protective view); SR-1, SR-4 and
+SR-2 keep absolute precedence (a genuine violation always suspends as `CRITICAL_VIOLATION_CONFIRMED`). If none fires, the
+rules run again without the conformant evidence that is not positively eligible (positive view). If any critical
+requirement is weaker there, current **authorized** conformance can no longer be established and the engine proposes
+**SR-6**: `ACTIVE → SUSPENDED` (T4, automatic, atomic with its evaluation) with reason
+
+| Reason | Cause | Meaning |
+|---|---|---|
+| `AUTHORIZATION_WITHDRAWN` | the authorization behind that evidence has a committed revocation event | consent to test was withdrawn |
+| `AUTHORIZATION_EXPIRED` | it ended (`notAfter`) without revocation | the consent period ended |
+
+Neither is a violation: no failed requirement or violation record is created (the evaluation records the protective
+view's results and `criticalFailureConfirmed = false`), and live determinations say `PROTECTIVE_ACTION_PENDING`, never
+CONFORMANT, from the revocation commit on — even before the next evaluation commits the T4. The cause is read from the
+conformance store's committed revocation rows, never from the federation mirror or clock order alone.
+
+**Reinstatement** uses the existing automatic T5 path (both reasons join `EVIDENCE_STALE` / `CORROBORATION_UNAVAILABLE`
+as non-violation reasons): full revalidation with post-suspension, **positively eligible** evidence from ≥ 2 distinct
+operators. A replacement authorization alone changes nothing (old evidence stays ineligible, and pre-suspension
+evidence never counts while SUSPENDED). Whenever a critical failure was confirmed while suspended, or a confirmed
+violation was recorded since the last activation, the existing two-person path is still required — no shortcut.
+
+**Compatibility.** No wire format changes: `reasonCode` (and `ruleId`) are open strings in `rn.conformance.transition/1`
+and the status assertion (INTEGRATION_CONTRACTS.md); signing domains, digests, schemas and the store schema `/4` are
+unchanged. `SR-5` stays reserved for `PROFILE_RETIRED` (CONFORMANCE_PROFILE_DRAFT.md). CI job `rn-conform-07a-compat`
+proves the existing verifier's behaviour instead of claiming it: the **historical** code (main `56a4dc62`) verifies a
+store written by this code — the signed history with the SR-6 T4 and the automatic T5 is valid, the withdrawn credential
+is never CONFORMANT, and the reinstated one verifies. An existing relying-party status verifier reports any non-ACTIVE
+state as `NOT_CONFORMANT` with the reason as detail (the same answer as for `EVIDENCE_STALE`): it fails safe and never
+says "violation". An already-issued ACTIVE status assertion stays valid only until its own `validUntil` (≤ 15 min
+stapled, 5 min online); no new ACTIVE/FRESH assertion is issued after the revocation commits.
+
+**Residuals.** The T4 is committed by the next `evaluate` (not by the revocation itself: the registry holds no signing
+key); until then only the live answer protects. Evidence-freshness wording in the status assertion stays
+`PROTECTIVE_ACTION_PENDING` (no new enum value).
 
 ### 3.2 Validator reinstatement (K-2)
 
@@ -162,6 +184,7 @@ before the lock is released leaves a reinstatement that preceded any revocation,
 | AUTH-17 | Engine input is CONFORMANCE-purpose only | AUTH-17; v2 and v3 historical tests |
 | AUTH-18 | No unauthorized issuance path (request without authorization/purpose, or `LEGACY` purpose, is malformed) | AUTH-18 |
 | Review #1–#8 | Redelivery stopped on revocation; one live authorization, one successor; integration-wide ceilings by id; column/digest cross-check; tenant-scoped revocation; strictly fresh sequences | `conformance-testing-authorization.test.ts` "independent review regressions"; `conformance-federation-scheduler.test.ts` "revocation stops redelivery" |
+| 07A A2 | ACTIVE + revoked/ended authorization → SR-6 `AUTHORIZATION_WITHDRAWN`/`AUTHORIZATION_EXPIRED`, never a violation; existing reinstatement controls; historical verifier compatible | `conformance-revocation-eligibility.test.ts` "A2"; CI `rn-conform-07a-compat` |
 | 07A K-1 | Positive eligibility needs the observation's own authorization unrevoked and unexpired; protective eligibility unchanged; no fabricated failure; replacement never re-qualifies | `conformance-revocation-eligibility.test.ts` matrix 1–10, 14–18 |
 | 07A K-2 | Validator reinstatement re-verifies the authoritative requalification authorization under the conformance write lock | `conformance-revocation-eligibility.test.ts` matrix 11–13 |
 
@@ -193,5 +216,5 @@ Demonstration: `conformance-authorization-demo.test.ts`, CI job `rn-conform-07-d
   never reused. Revocation is tenant-scoped.
 - **Evidence cap.** `loadEngineInput` applies the observation cap before the purpose filter: after a migration, LEGACY
   rows can occupy the cap and mark evidence as truncated (fail-safe direction: never more authority).
-- **ACTIVE after revocation** keeps its standing until existing freshness + grace lapse (§3.1, decision pending).
+- **SR-6 is committed by the next evaluation**, not by the revocation transaction (§3.1); live answers are protective at once.
 - **AI review only.** The independent review of this PR is an AI review, not an accredited security audit.

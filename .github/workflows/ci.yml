@@ -504,3 +504,47 @@ jobs:
           path: ${{ runner.temp }}/rn-conform-07-demo/
           if-no-files-found: error
           retention-days: 90
+
+  rn-conform-07a-compat:
+    # RN-CONFORM-07A: compatibility proof for the new SR-6 suspension reason (AUTHORIZATION_WITHDRAWN). The CURRENT code
+    # writes a synthetic store with an SR-6 T4 suspension and a later automatic T5 reinstatement; the HISTORICAL code
+    # (main 56a4dc62, checked out and built separately, which predates SR-6) must still verify the signed history under the
+    # original signing contract and must never report the withdrawn credential CONFORMANT. Synthetic, no network beyond
+    # npm ci, no secret, no write permission.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      HIST_COMMIT: 56a4dc62d5c35e62557d3b7281e66aab84484497
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Write the SR-6 fixture with the current code
+        env:
+          OUT_DIR: ${{ runner.temp }}/compat
+        run: node scripts/conformance/rn-conform-07a-compat-fixture.mjs
+      - name: Check out and build the historical verifier
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/hist" "$HIST_COMMIT"
+          cd "$RUNNER_TEMP/hist"
+          npm ci
+          npm run build
+      - name: Verify with the historical code
+        env:
+          HIST_ROOT: ${{ runner.temp }}/hist
+          FIXTURE_DIR: ${{ runner.temp }}/compat
+        run: node scripts/conformance/rn-conform-07a-compat-verify.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rn-conform-07a-compat-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/compat/
+          if-no-files-found: error
+          retention-days: 90
