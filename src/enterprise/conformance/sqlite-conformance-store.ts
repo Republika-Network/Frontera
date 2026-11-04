@@ -668,11 +668,6 @@ CREATE TABLE cc_testing_authorizations (
 );
 ${IMMUTABLE('cc_testing_authorizations')}
 ${duplicateGuard('cc_testing_authorizations', [['authorization_id'], ['authorization_digest']])}
-CREATE INDEX cc_testing_authorizations_subject ON cc_testing_authorizations (organization_id, integration_digest, purpose);
-CREATE INDEX cc_testing_authorizations_supersedes ON cc_testing_authorizations (supersedes);
-CREATE INDEX cc_challenge_authorizations_by_authorization ON cc_challenge_authorizations (authorization_id);
-CREATE INDEX cc_challenge_authorizations_seq ON cc_challenge_authorizations (issued_seq);
-CREATE INDEX cc_observation_purposes_seq ON cc_observation_purposes (accepted_seq);
 CREATE TABLE cc_authorization_events (
   authorization_id TEXT PRIMARY KEY REFERENCES cc_testing_authorizations (authorization_id),
   seq INTEGER NOT NULL,
@@ -758,6 +753,11 @@ CREATE TRIGGER cc_credentials_purpose_reserved BEFORE INSERT ON cc_credentials B
   SELECT RAISE(ABORT, 'cc:integration reserved for validator requalification') WHERE EXISTS (SELECT 1 FROM cc_testing_authorizations t JOIN cc_integrations i ON i.integration_id = t.integration_id AND i.organization_id = t.organization_id
     WHERE i.integration_digest = NEW.integration_digest AND t.purpose = 'VALIDATOR_REQUALIFICATION');
 END;
+CREATE INDEX cc_testing_authorizations_subject ON cc_testing_authorizations (organization_id, integration_digest, purpose);
+CREATE INDEX cc_testing_authorizations_supersedes ON cc_testing_authorizations (supersedes);
+CREATE INDEX cc_challenge_authorizations_by_authorization ON cc_challenge_authorizations (authorization_id);
+CREATE INDEX cc_challenge_authorizations_seq ON cc_challenge_authorizations (issued_seq);
+CREATE INDEX cc_observation_purposes_seq ON cc_observation_purposes (accepted_seq);
 `;
 const SCHEMA = `${SCHEMA_V3.replace(ATTRIBUTED_TRIGGER_V3, () => ATTRIBUTED_TRIGGER_V4).replace(RECORD_VIOLATION_TRIGGER_V2, () => RECORD_VIOLATION_TRIGGER_V4)}${AUTHORIZATION_SCHEMA_V4}`;
 
