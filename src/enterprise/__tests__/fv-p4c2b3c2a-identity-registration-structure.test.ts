@@ -96,9 +96,22 @@ describe('FV-P4C-2B3C-2A1 structure — the registration ceremony is internal, u
 
   it('the record is written only through fenced transactions of its exclusive owner, and its rules live in the database too', () => {
     const record = source('identity-registration-record.ts');
-    assert.match(record, /db\.pragma\('locking_mode = EXCLUSIVE'\);\n\s+db\.pragma\('busy_timeout = 0'\);\n\s+db\.exec\('BEGIN EXCLUSIVE'\);/);
+    // FV-P4C-2B3C-2A1-RACE-INV-01 (D2): the lock is acquired in normal mode with a bounded wait, and exclusive mode is set
+    // while it is held (it is kept for the whole ceremony). The former order (exclusive mode first, no wait) let two
+    // openers both be refused.
+    assert.match(record, /db\.pragma\(`busy_timeout = \$\{RECORD_LOCK_WAIT_MS\}`\);\n\s+db\.exec\('BEGIN EXCLUSIVE'\);\n\s+db\.pragma\('locking_mode = EXCLUSIVE'\);\n\s+db\.exec\('COMMIT'\);\n\s+db\.pragma\('busy_timeout = 0'\);/);
+    assert.match(record, /const RECORD_LOCK_WAIT_MS = 500;/);
     assert.match(record, /const close = exclusiveCloser\(file, db\);/);
-    assert.equal((record.match(/\.transaction\(\(\) => \{\n\s+fence\(\);/g) ?? []).length, 3, 'initialization, every state write and every event: fenced first');
+    assert.equal((record.match(/\.transaction\(\(\) => \{\n\s+fence\(\);/g) ?? []).length, 2, 'every state write and every event: fenced first');
+    // RACE-INV-01 (D1): a record is initialized only under its private name, then published with `link` (never `rename`,
+    // which would replace a record); nothing at the record path is ever initialized in place.
+    const publish = record.slice(record.indexOf('async function publishInitializedRecord('), record.indexOf('export async function openFvRegistrationRecord('));
+    assert.equal((record.match(/db\.exec\(SCHEMA\)/g) ?? []).length, 1, 'one initialization');
+    assert.match(publish, /db\.exec\(SCHEMA\)/);
+    assert.match(publish, /closeSync\(openSync\(temporary, 'wx', 0o600\)\);/);
+    assert.match(publish, /linkSync\(temporary, file\);/);
+    assert.equal(/renameSync|\brename\(/.test(record), false, 'never rename over the record path');
+    assert.equal(/openSync\(file, 'wx'/.test(record), false, 'nothing is created at the record path itself');
     for (const trigger of ['fv_registration_never_deleted', 'fv_registration_forward_only', 'fv_registration_events_append_only_update', 'fv_registration_events_append_only_delete']) assert.match(record, new RegExp(`CREATE TRIGGER ${trigger}`));
     assert.match(record, /readonly: true, fileMustExist: true/, 'the executor reads it read-only');
   });

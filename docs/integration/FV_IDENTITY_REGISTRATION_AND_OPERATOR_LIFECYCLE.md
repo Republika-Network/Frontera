@@ -1195,3 +1195,71 @@ FV store:   EMPTY ─(2A2A, issuer)→ ADMINISTERED ─(2A2B, admin)→ ADMINIST
 - **Review:** independent review, then human security review of the new issuer powers.
 
 **Dependencies:** B3C-2B/2C (backup and restore of the store, record and ledger), FV-P4D (continuity independent of the witness's restore domain), and a production issuer in custody (G-02B). None is implemented here.
+
+## 19. B3C-2A1-RACE-INV-01: registration record publication and lock acquisition (post-merge investigation)
+
+**Incident.** CI on main `cded5c80` (`protocol-tarball-consumption`) failed the B3C-2A1 test "one capability, two processes at once". One process got `REGISTRAR_BUSY`, the other `RECORD_CORRUPT`, and neither registered. The same test passed on the PR head and locally. This was not caused by PR #269, which touches no registration code.
+
+**Root cause: two implementation defects in opening the registration record** (`identity-registration-record.ts`). Both reproduced against the real code.
+
+- **D1: the record was visible before it existed.** A new record was created with `O_EXCL` *at its final path*, and only then locked and initialized. Another ceremony that started in that window saw an existing file and could:
+  - take the lock first and find no record in it (`RECORD_CORRUPT`; the CI pair, with the creator then refused `REGISTRAR_BUSY`);
+  - or tie with the creator (D2).
+
+  Either way, and equally after a crash in that window, the uninitialized file stayed at the record path. Every later registration then refused it as `RECORD_CORRUPT`, because a file at the record path is never initialized in place. Nothing was consumed (no ledger, no store, an unbound witness slot), but the deployment could not register again without operator action.
+- **D2: a lock with no single winner.** The lock was taken with exclusive locking mode already set and `busy_timeout = 0`. Two openers both took SQLite's SHARED lock, neither could escalate, and both were refused.
+
+**Evidence before the fix** (real processes, bounded):
+- Deterministic reproductions:
+  - an empty record file (what the creator's `O_EXCL` leaves) makes a real registrar refuse `RECORD_CORRUPT`, as does every retry;
+  - the real opener creates the file, loses the lock in its window to another holder (`BUSY`), and leaves the file behind.
+- Unmodified two-process races: both refused in 2 of 20 runs on a new record, each leaving a 0-byte file, and in 5 of 20 on an existing one.
+
+**Fix** (narrow; authorization, ledger, witness and store logic unchanged):
+- **D1.** A new record is initialized in full under a private, owner-only, `O_EXCL` name beside the record path (`<record>.init-<random>`), made durable, and published with `link`, which never replaces anything. The private name is then removed. A ceremony that publishes second simply opens the first one's record. The record path therefore only ever holds a complete record.
+  - An interrupted publication leaves at most an unused private file, which is not at the record path, or, if killed between `link` and the removal, a second name of the record (`LINKED`). The registrar and the opener release exactly such a name: the publication pattern, and the same file. No content changes, and the record is verified as always.
+  - Anything else at the record path stays refused, never adopted: an empty or table-less file (`RECORD_CORRUPT`), or another second name (`PATH_REFUSED`).
+- **D2.** The lock is acquired in normal locking mode with a bounded wait (500 ms), so a failed attempt releases what it took and one contender acquires. Exclusive mode is then set while the lock is held, so it is kept for the whole ceremony. A record held by a running ceremony is still refused (`REGISTRAR_BUSY`) once the wait ends. Every opener of the record (registration, its resume, the FV ceremonies and the verification) may wait up to 500 ms before that refusal.
+
+**Evidence after the fix:**
+- The same unmodified races ran 40 + 40 times with a single winner every time; the loser got `REGISTRAR_BUSY` or `ALREADY_REGISTERED`. No ties, no corrupt record.
+- `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (6 tests, all with real, separate processes, since POSIX locks belong to a whole process):
+  - publication is complete, with nothing at the record path meanwhile;
+  - two contenders, started together while a third process holds the record, give exactly one prompt winner;
+  - an opener waiting for the lock holds nothing, so a writer holding RESERVED can still commit. This test is timing-dependent: it assumes the opener entered its wait within 100 ms;
+  - the wait is bounded;
+  - both interrupted-publication states recover;
+  - everything else stays refused.
+- On the pre-fix implementation (the `cded5c80` sources, rebuilt), 5 of the 6 fail. The sixth pins the never-adopt guard and passes on both, by design.
+- **Targeted mutants:**
+  - killed deterministically by the new e2e tests: no wait; release disabled; the registrar's release removed;
+  - exclusive mode set before acquiring (the second half of D2): killed in 6 of 6 runs by the lock-order test (timing-dependent, see above), and every time by the structure pin. The two-contender test catches it only in about two runs of three (6 of 9), because the real tie needs both openers to take SHARED before either escalates, which can't be forced from outside SQLite.
+- **Independent review** (a fresh AI agent, not human): conditional go. It confirmed both D2 halves are needed (both refused in 17–21 of 25 runs for each half alone, 0 of 25 with both) and that SIGKILL during publication is recoverable (60 of 60 on the fix; 14 of 30 kills left a permanently corrupt record on the pre-fix code). Its three Lows were addressed:
+  - the mutant wording above;
+  - a start-skew flake risk in the contention test: contenders now start on one signal, and the winner's promptness is measured from the reader's release;
+  - the registrar's release helper could throw: it now never throws, and the file policy refuses whatever it could not release.
+
+**Limits:**
+- **Existing deployments that already hit D1** keep a schema-less file at the record path and stay `RECORD_CORRUPT`. The fix never adopts, deletes or resets it, and the product has no recovery mechanism for it.
+
+  Removing such a file is an operator decision, reviewed by a second person, and only on independent evidence of **all** of:
+  - the deployment and organization the path belongs to (its exact registered scope, from the registrar's configuration);
+  - the file holds no tables and no authority state;
+  - no capability was consumed: no ledger file, or no claim for that registration in it;
+  - the witness's FV slot for that organization is unbound (read from the witness, not inferred);
+  - no live registrar or other process holds or uses the path;
+  - no signed identity history (FV store) exists for that organization anywhere.
+
+  If any of these cannot be established, the file stays and the deployment stays refused.
+- **Unused private files** left by a crash before publication are inert and are not removed automatically.
+- **Durability against power loss is not proven by these tests.** They prove consistency under process death (SIGKILL). For power loss, the design relies on the operating system and filesystem honouring `fsync`:
+  - the private file is fsynced before `link`;
+  - the directory is fsynced after publication.
+
+  A lost `link` leaves no record (a later registration publishes anew), and a lost removal leaves the second name that is released. The order was checked by reading the code, not tested, and a filesystem that ignores `fsync` voids it.
+- **Publication review (PR #271; a fresh AI agent, not human): GO.** Findings:
+  - **L1, Low, fixed:** an opener or the registrar that saw `LINKED` during a live publication's `link`→removal instant was refused `PATH_REFUSED` if the publisher removed its name first. Both now re-check after any `LINKED`.
+  - **Wording:** the lock-order test is timing-dependent, not deterministic. Now stated.
+  - **L2, Low, pre-existing, not fixed here:** two ceremonies in **one process** can drop each other's POSIX lock. `walHeader`'s raw open and close on a record held in the same process is enough. It fails closed (fence, exit guard). It belongs in a follow-up, for example a module-level in-process mutex.
+- **`link` is required:** on a filesystem without hard links, creating a record is refused (`RECORD_UNAVAILABLE`).
+- **Liveness, not mutual exclusion,** still depends on the bounded wait. Under extreme scheduling delay, both contenders can still be refused `REGISTRAR_BUSY`. That outcome is recoverable: the record is complete and a retry registers.
