@@ -409,7 +409,7 @@ No P0. Dispositions:
 | C-4 (P2) | a follow-up whose job expired/cancelled/failed was suppressed forever by its deterministic key | **Fixed**: bounded re-scheduling under an attempt suffix (max 8). Regression test |
 | C-5 (P3) | while an operator is quarantined, a contradicting second observation is refused without the VALIDATOR_CONFLICT quarantine | **Accepted, documented**: its evidence stays excluded while the operator is ineligible; reinstating an operator is a two-person decision that should review its validators |
 | C-6 (P3) | same-millisecond prefix orderings could still look tampered | **Fixed** (every same-millisecond prefix is tested). Unit regression |
-| C-7 (P3) | the LEGACY marker could predate a /2 row accepted later than the migration clock | **Fixed** (`at = max(now, max accepted_at_ms)`); `busy_timeout` set. The migration test has no historical rows: **residual test gap** |
+| C-7 (P3) | the LEGACY marker could predate a /2 row accepted later than the migration clock | **Fixed** (`at = max(now, max accepted_at_ms)`); `busy_timeout` set. Historical-data regression added (below) |
 | C-8 (P3) | planner chronology omits `revalidationSince` and the engine's period-start read | **Accepted** (liveness only; can only under-schedule relative to the engine, never grant) |
 | C-9 (P3) | a TEST-ONLY migration fixture is exported from the store module | **Accepted** (named and documented TEST-ONLY; the module is not exported outside itself) |
 | S-1 (P2, speculative) | a credential created later on the probation fixture would count finished probation evidence | **Residual, pre-activation gate**: needs a lifecycle-level reservation of requalification integrations (RN-CONFORM-02 change); today the fixture belongs to the validator network organization and is never credentialed by the federation |
@@ -422,3 +422,29 @@ enforce testing authorization and eligible-operator policy at their authoritativ
 coordinator is reachable only inside `src/enterprise/conformance/` and its tests (structure test; no package export,
 no Host route; `conformance-status-local/server.ts` imports only `status-http.js`). This remediation adds no new
 import path.
+
+### Historical migration regression (real `/2` data)
+
+CI job `rn-conform-05-v2-migration` checks out and builds the **historical** code (RN-CONFORM-04 merge
+`e47582dd`, schema `rn.conformance.store/2`) and generates the fixture through its own insertion paths
+(`scripts/conformance/rn-conform-05-v2-fixture.mjs`: the historical RN-CONFORM-02 circuit — three synthetic operators,
+two-person validator enrollment, signed challenges, evidence custody, 22 signed observations from two operators
+(11 each), two committed evaluations, a two-person issuance, then a key revocation of `validator-b` after acceptance).
+The historical code itself verified the fixture before migration (history valid at state version 2, head
+`sha256:81988ebe…f136`; every observation re-authenticated). The current code
+(`conformance-migration-historical.test.ts`) then shows:
+- an interrupted migration leaves the file byte-identical (every table digest and the schema), still refused as `/2`;
+- the explicit migration changes no row of any `/2` table and no `/2` schema object except the two replaced
+  operator-gated triggers; a second run is refused (`ALREADY_CURRENT`);
+- every historical observation keeps its digest, attribution, challenge and acceptance time and re-authenticates
+  (not treated as tampered); the signed history verifies with identical transition and evaluation digests; the
+  protective key revocation is preserved;
+- LEGACY operators get no new validator (`OPERATOR_NOT_ELIGIBLE`), no challenge (`VALIDATOR_NOT_ELIGIBLE`) and no
+  accepted observation (`OPERATOR_NOT_ELIGIBLE`); in a new evaluation every historical validator is excluded, nothing
+  is reported as tampered and no validator-backed critical requirement is VERIFIED_SUCCESS;
+- historical decision ids remain single-use after the migration (a new approval reusing them is `ALREADY_CONSUMED`);
+- a later operator approval and quarantine change neither historical verification nor attribution;
+- all of it again after closing and reopening the store.
+
+The suite is skipped in `validate` (no historical fixture there) and is never faked from `/3` code.
+
