@@ -12,7 +12,7 @@ import { establishStatusHistory, verifySovereignStatus } from '@aoc-enterprise/s
 
 import { createHumanIdentityService, identityAdministratorFor, openSqliteHumanIdentityStore } from '../dist/src/enterprise/human-identity/index.js';
 import { firstAdministratorCredentialDigest } from '../dist/src/enterprise/human-identity/first-administrator.js';
-import { verifyFvOperatorRoles } from '../dist/src/enterprise/human-identity/fv-operator.js';
+import { chainDigestAt, verifyFvOperatorRoles } from '../dist/src/enterprise/human-identity/fv-operator.js';
 import { FV_REVOCATION_ACTION, FV_REVOCATION_AUTHORIZATION_FORMAT, appendFvRevocation, fvRevocationAdministratorOptions, fvRevocationAuthorizationCommitment, verifyFvCurrentOperators, verifyFvRevocationEvidence, verifyFvRevocations } from '../dist/src/enterprise/human-identity/fv-revocation.js';
 import { openExecutionCapabilityConsumptionLedger } from '../dist/src/enterprise/execution-capability/reference/consumption-ledger.js';
 import { captureHistoryContinuity, openSqliteStatusHighWaterMarkStore } from '../dist/src/enterprise/sovereign-status-history/index.js';
@@ -62,9 +62,34 @@ const adopt = (w, state) => {
   w.admin = new SoftwareAuthenticator({ origin: ORIGIN, restore: state });
 };
 const bump = (w, by = 100) => adopt(w, { ...w.admin.exportState(), counter: w.admin.exportState().counter + by });
-const contextOf = (w, witness, overrides = {}) => ({ relyingParty: RP, expected: { deploymentId: w.registration.deploymentId, stateKind: FV_DOMAIN, witnessId: witness.witnessId, witnessKeyDigest: witnessKeyDigestOf(witness.publicKeyPem), ...overrides }, get now() {
+const contextOf = (w, witness, overrides = {}) => ({ relyingParty: RP, expected: { storeId: w.registration.storeId, deploymentId: w.registration.deploymentId, stateKind: FV_DOMAIN, witnessId: witness.witnessId, witnessKeyDigest: witnessKeyDigestOf(witness.publicKeyPem), ...overrides }, get now() {
   return new Date();
 } });
+const canonicalOf = (v) => (v === null || typeof v !== 'object' ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map(canonicalOf).join(',')}]` : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalOf(v[k])}`).join(',')}}`);
+/**
+ * AUDIT-HF01 — the exact row AUTH-03 would write for `evidence`, built WITHOUT AUTH-03's checks: what a holder of the
+ * store's signing key could append raw. (The positive controls below prove it is byte-for-byte AUTH-03's row.)
+ */
+async function rawRevocationRow(evidence, recordedBy = 'fv-operator-revocation-ceremony') {
+  const { challengeDigestOf } = await import('../dist/src/enterprise/human-identity/decision-challenge.js');
+  const { webAuthnChallengeOf } = await import('../dist/src/enterprise/human-identity/index.js');
+  const { signatureCounterOf } = await import('../dist/src/enterprise/human-identity/webauthn.js');
+  const { authorization, administratorAssertion: a } = evidence;
+  const commitment = fvRevocationAuthorizationCommitment(authorization);
+  return {
+    kind: 'credential_revoked',
+    operatorId: authorization.target.operatorId,
+    objectId: authorization.target.credentialId,
+    payload: canonicalOf({ reason: authorization.reason, revokedBy: 'fv-administrator', assertedWith: authorization.administrator.credentialId, counter: signatureCounterOf(a.response.authenticatorData), backedUp: false, challengeDigest: challengeDigestOf(webAuthnChallengeOf(commitment)), authorizationCommitment: commitment, authorization, assertion: { clientDataJSON: a.response.clientDataJSON, authenticatorData: a.response.authenticatorData, signature: a.response.signature } }),
+    recordedBy,
+    recordedAt: authorization.notBefore,
+  };
+}
+/** The audit's verdict on one credential: 'authorized', 'unauthorized' or 'absent'. */
+async function auditOf(w, witness, history, credentialId, expected = contextOf(w, witness).expected) {
+  const { authorized, unauthorized } = await verifyFvRevocations(history, w.world.org, RP, expected);
+  return authorized.has(credentialId) ? 'authorized' : unauthorized.has(credentialId) ? 'unauthorized' : 'absent';
+}
 /** Authenticates `device` through AUTH-02 over the FV store: the recognized operator id, or the refusal code. */
 async function authenticate(w, witness, device) {
   return withStore(w, witness, async (store) => {
@@ -119,7 +144,7 @@ describe('FV-P4C-2B3C-2A3A — the FV administrator revokes an FV operator crede
       assert.deepEqual([row.kind, row.objectId, row.recordedBy], ['credential_revoked', w.operators['fv-operator-a'].credentialId, 'fv-operator-revocation-ceremony']);
       assert.deepEqual([...(await verifyFvOperatorRoles(history, w.world.org, RP))], ['fv-operator-a'], 'historical membership still verifies');
       assert.deepEqual([...(await verifyFvCurrentOperators(history, w.world.org, RP))], [], 'no current authority');
-      const revocations = await verifyFvRevocations(history, w.world.org, RP);
+      const revocations = await verifyFvRevocations(history, w.world.org, RP, contextOf(w, witness).expected);
       assert.deepEqual([[...revocations.authorized], [...revocations.unauthorized]], [[w.operators['fv-operator-a'].credentialId], []]);
     });
   });
@@ -182,7 +207,7 @@ describe('FV-P4C-2B3C-2A3A — only the current FV administrator revokes, and on
     await withStore(w, witness, async (store) => {
       // A holder of the store's signing key revokes the administrator's credential with a raw row.
       await store.append({ kind: 'credential_revoked', operatorId: ADMIN, objectId: w.adminCredentialId, payload: JSON.stringify({ reason: 'forged', revokedBy: 'fv-administrator' }), recordedBy: 'fv-operator-revocation-ceremony', recordedAt: new Date().toISOString() }, () => undefined);
-      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP);
+      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP, contextOf(w, witness).expected);
       assert.deepEqual([[...revocations.authorized], [...revocations.unauthorized]], [[], [w.adminCredentialId]]);
     });
     assert.deepEqual(await revoke(w, witness, revocationRequest(w).request), { outcome: 'refused', reason: 'ADMINISTRATOR_CREDENTIAL_UNUSABLE' });
@@ -212,7 +237,7 @@ describe('FV-P4C-2B3C-2A3A — only the current FV administrator revokes, and on
       payload.assertion.signature = `${sig.slice(0, -4)}${sig.endsWith('AAAA') ? 'BBBB' : 'AAAA'}`;
       const canonical = (v) => (v === null || typeof v !== 'object' ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map(canonical).join(',')}]` : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`);
       await store.append({ ...forgedRow, payload: canonical(payload) }, () => undefined);
-      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP);
+      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP, contextOf(w, witness).expected);
       assert.deepEqual([[...revocations.authorized], [...revocations.unauthorized].sort()], [[], [w.operators['fv-operator-b'].credentialId, w.operators['fv-operator-c'].credentialId].sort()]);
     });
   });
@@ -249,7 +274,7 @@ describe('FV-P4C-2B3C-2A3A — only the current FV administrator revokes, and on
       await store.append({ kind: 'credential_registered', operatorId: 'not-an-operator', objectId: credentialId, payload: canonical({ ...JSON.parse(sample.payload), enrolmentId, challengeDigest: `sha256:${randomBytes(32).toString('hex')}` }), recordedBy: 'test:forger', recordedAt: now }, () => undefined);
       w.operators['not-an-operator'] = { credentialId };
       await store.append(rowFor(evidenceFor(w, witness, store, { operatorId: 'not-an-operator', adminOverrides: { counter: 40_000 } }), 'fv-operator-revocation-ceremony'), () => undefined);
-      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP);
+      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP, contextOf(w, witness).expected);
       assert.deepEqual([[...revocations.authorized], [...revocations.unauthorized].sort()], [[], [w.operators['fv-operator-a'].credentialId, credentialId].sort()]);
     });
   });
@@ -264,9 +289,106 @@ describe('FV-P4C-2B3C-2A3A — only the current FV administrator revokes, and on
       const canonical = (v) => (v === null || typeof v !== 'object' ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map(canonical).join(',')}]` : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`);
       // A signing-key holder appends it at its exact position, crediting the use (and its counter) to operator B's credential.
       await store.append({ ...row, payload: canonical({ ...payload, assertedWith: w.operators['fv-operator-b'].credentialId }) }, () => undefined);
-      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP);
+      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP, contextOf(w, witness).expected);
       assert.deepEqual([[...revocations.authorized], [...revocations.unauthorized]], [[], [w.operators['fv-operator-a'].credentialId]]);
     });
+  });
+
+  it('AUDIT-HF01: an administrator-signed but off-contract revocation (over-long window, another store, deployment, state kind, witness or witness key) is refused by AUTH-03 and reported unauthorized; under its own scope the same row is authorized (the scope check is what refuses it)', async () => {
+    const otherKey = `sha256:${randomBytes(32).toString('hex')}`;
+    const cases = [
+      { name: 'lifetime 30 days', options: { lifetimeMs: 30 * 24 * 3600_000 }, refusal: 'MALFORMED' },
+      { name: 'notAfter before notBefore', options: { lifetimeMs: -60_000 }, refusal: 'MALFORMED' },
+      // The prior chain digest recomputed under the claimed store id's genesis: only the explicit store-id comparison refuses it.
+      { name: 'storeId', options: (store, w) => ({ patch: (a) => ({ ...a, storeId: 'other-store-id', priorHead: { ...a.priorHead, chainDigest: chainDigestAt(store.history(), 'other-store-id', w.world.org, a.priorHead.sequence) } }) }), refusal: 'SCOPE_MISMATCH', own: { storeId: 'other-store-id' } },
+      { name: 'deploymentId', options: { patch: (a) => ({ ...a, deploymentId: 'other-deployment' }) }, refusal: 'SCOPE_MISMATCH', own: { deploymentId: 'other-deployment' } },
+      { name: 'stateKind', options: { patch: (a) => ({ ...a, stateKind: 'frontera.other-state' }) }, refusal: 'SCOPE_MISMATCH', own: { stateKind: 'frontera.other-state' } },
+      { name: 'witnessId', options: { patch: (a) => ({ ...a, witnessId: 'other-witness' }) }, refusal: 'SCOPE_MISMATCH', own: { witnessId: 'other-witness' } },
+      { name: 'witnessKeyDigest', options: { patch: (a) => ({ ...a, witnessKeyDigest: otherKey }) }, refusal: 'SCOPE_MISMATCH', own: { witnessKeyDigest: otherKey } },
+      { name: 'target key digest', options: { patch: (a) => ({ ...a, target: { ...a.target, credentialDigest: otherKey } }) }, refusal: 'TARGET_MISMATCH' },
+      // AUTH-02's projection revokes whatever credential a row names, whoever owns it: only the audit's ownership check refuses this.
+      { name: 'target credential owned by another principal', options: { credentialId: 'ADMIN_CREDENTIAL' }, refusal: 'TARGET_CREDENTIAL_UNKNOWN', target: 'admin' },
+    ];
+    const verdicts = [];
+    for (const { name, options, refusal, own, target } of cases) {
+      const { witness, w } = await world();
+      await withStore(w, witness, async (store) => {
+        const credentialId = target === 'admin' ? w.adminCredentialId : w.operators['fv-operator-a'].credentialId;
+        const evidence = evidenceFor(w, witness, store, { ...(typeof options === 'function' ? options(store, w) : options), ...(target === 'admin' ? { credentialId } : {}) });
+        const refused = (await verifyFvRevocationEvidence(store.history(), store, evidence, contextOf(w, witness))).reason;
+        await store.append(await rawRevocationRow(evidence), () => undefined);
+        const history = store.history();
+        verdicts.push([name, refused, await auditOf(w, witness, history, credentialId), own === undefined ? '-' : await auditOf(w, witness, history, credentialId, contextOf(w, witness, own).expected)]);
+      });
+    }
+    assert.deepEqual(verdicts, cases.map(({ name, refusal, own }) => [name, refusal, 'unauthorized', own === undefined ? '-' : 'authorized']));
+  });
+
+  it('AUDIT-HF01 controls: the raw row equals AUTH-03’s (an in-scope one, and one at exactly the 300 s cap, are authorized); without a complete authenticated scope nothing is authorized', async () => {
+    const { witness, w } = await world();
+    w.operators['fv-operator-b'] = await enrolOperator(w, witness, 'fv-operator-b');
+    await withStore(w, witness, async (store) => {
+      const evidence = evidenceFor(w, witness, store);
+      const raw = await rawRevocationRow(evidence);
+      const auth03 = (await verifyFvRevocationEvidence(store.history(), store, evidence, contextOf(w, witness))).row;
+      assert.deepEqual(raw, { ...auth03 });
+      await store.append(raw, () => undefined);
+      const capped = evidenceFor(w, witness, store, { operatorId: 'fv-operator-b', lifetimeMs: 300_000, adminOverrides: { counter: 40_000 } });
+      assert.equal((await verifyFvRevocationEvidence(store.history(), store, capped, contextOf(w, witness))).verified, true);
+      await store.append(await rawRevocationRow(capped), () => undefined);
+      const history = store.history();
+      const [a, b] = [w.operators['fv-operator-a'].credentialId, w.operators['fv-operator-b'].credentialId];
+      assert.deepEqual([await auditOf(w, witness, history, a), await auditOf(w, witness, history, b)], ['authorized', 'authorized']);
+      const { deploymentId: _omitted, ...incomplete } = contextOf(w, witness).expected;
+      for (const expected of [undefined, null, incomplete, { ...contextOf(w, witness).expected, witnessId: '' }]) {
+        const { authorized, unauthorized } = await verifyFvRevocations(history, w.world.org, RP, expected);
+        assert.deepEqual([[...authorized], [...unauthorized].sort()], [[], [a, b].sort()]);
+      }
+    });
+  });
+
+  it('AUDIT-HF01 retained limit (F2): a genuine in-scope authorization the ceremony refused as expired, appended later at its unchanged head by a key holder, is still labelled authorized — the audit cannot prove append time', async () => {
+    const { witness, w } = await world();
+    await withStore(w, witness, async (store) => {
+      const evidence = evidenceFor(w, witness, store, { now: Date.now() - 20 * 60_000, lifetimeMs: 60_000 });
+      assert.equal((await verifyFvRevocationEvidence(store.history(), store, evidence, contextOf(w, witness))).reason, 'WINDOW_CLOSED');
+      await store.append(await rawRevocationRow(evidence), () => undefined);
+      assert.equal(await auditOf(w, witness, store.history(), w.operators['fv-operator-a'].credentialId), 'authorized');
+    });
+    // It only removes authority: the credential no longer authenticates.
+    assert.equal(await authenticate(w, witness, w.operators['fv-operator-a'].device), 'HUMAN_IDENTITY_CREDENTIAL_UNUSABLE');
+  });
+
+  it('AUDIT-HF01 (F-D): the append guard refuses a revocation whose verified head was advanced by a write of the same owner before the append (CONFLICT); nothing revoked, history and witness consistent', async () => {
+    const { witness, w } = await world();
+    const credentialId = w.operators['fv-operator-a'].credentialId;
+    await withStore(w, witness, async (store) => {
+      const evidence = evidenceFor(w, witness, store);
+      const before = store.history().length;
+      // The same exclusive owner (one process, one store instance) authenticates operator A through AUTH-02 while the
+      // revocation's verification has already run: the write lands between AUTH-03's check and its guarded append.
+      const identity = createHumanIdentityService({ store, relyingParty: RP, operatorIds: [ADMIN, 'fv-operator-a'] });
+      const raced = new Proxy(store, {
+        get(target, property) {
+          if (property === 'append') {
+            return async (row, guard) => {
+              await identity.finishAuthentication(w.operators['fv-operator-a'].device.assert(identity.beginAuthentication(), { counter: 60_000 }));
+              return target.append(row, guard);
+            };
+          }
+          const value = Reflect.get(target, property);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      await assert.rejects(appendFvRevocation(raced, evidence, contextOf(w, witness)), (error) => error.reason === 'CONFLICT');
+      const history = store.history();
+      assert.deepEqual([history.length, history.at(-1).kind, history.some((row) => row.kind === 'credential_revoked')], [before + 1, 'credential_used', false]);
+    });
+    // Reopened (signed chain and CORE-07 freshness re-verified): the witness holds exactly the store's head, nothing pending; A is still a current operator.
+    const head = await withStore(w, witness, async (store) => ({ sequence: store.head().sequence, current: await verifyFvCurrentOperators(store.history(), w.world.org, RP) }));
+    assert.deepEqual(await fvSlot(witness, w.world.org), [[head.sequence, null]]);
+    assert.equal(head.current.has('fv-operator-a'), true);
+    assert.equal(await auditOf(w, witness, (await withStore(w, witness, (store) => store.history())), credentialId), 'absent');
   });
 
   it('a revocation row a store-signing-key holder forged only removes authority, and is reported unauthorized', async () => {
@@ -280,7 +402,7 @@ describe('FV-P4C-2B3C-2A3A — only the current FV administrator revokes, and on
       const payload = JSON.parse(genuineRow.payload);
       await store.append({ kind: 'credential_revoked', operatorId: 'fv-operator-a', objectId: w.operators['fv-operator-a'].credentialId, payload: JSON.stringify({ ...payload, challengeDigest: `sha256:${randomBytes(32).toString('hex')}`, counter: payload.counter + 5 }), recordedBy: 'fv-operator-revocation-ceremony', recordedAt: new Date().toISOString() }, () => undefined);
       const history = store.history();
-      const revocations = await verifyFvRevocations(history, w.world.org, RP);
+      const revocations = await verifyFvRevocations(history, w.world.org, RP, contextOf(w, witness).expected);
       assert.deepEqual([[...revocations.authorized], [...revocations.unauthorized]], [[w.operators['fv-operator-b'].credentialId], [w.operators['fv-operator-a'].credentialId]]);
       assert.deepEqual([...(await verifyFvCurrentOperators(history, w.world.org, RP))], [], 'fail closed: a revoked credential never counts');
     });
@@ -291,7 +413,7 @@ describe('FV-P4C-2B3C-2A3A — only the current FV administrator revokes, and on
     })();
     await withStore(w, witness, async (store) => {
       await store.append({ kind: 'credential_revoked', operatorId: 'fv-operator-c', objectId: w.operators['fv-operator-c'].credentialId, payload: JSON.stringify({ reason: 'forged', revokedBy: 'administrator' }), recordedBy: 'operator-plane:ops-admin', recordedAt: new Date().toISOString() }, () => undefined);
-      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP);
+      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP, contextOf(w, witness).expected);
       assert.ok(revocations.unauthorized.has(w.operators['fv-operator-c'].credentialId));
       assert.ok(!revocations.authorized.has(w.operators['fv-operator-c'].credentialId));
     });

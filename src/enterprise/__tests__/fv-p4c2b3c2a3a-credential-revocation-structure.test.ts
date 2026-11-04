@@ -67,6 +67,12 @@ describe('FV-P4C-2B3C-2A3A structure — the revocation is internal, unique and 
     assert.match(revocations, /row\.recordedBy === FV_REVOCATION_RECORDER &&/);
     assert.match(revocations, /\(await verifyFvOperatorRoles\(prefix, organizationId, relyingParty\)\)\.has\(authorization\.target\.operatorId\)/);
     assert.match(revocations, /const verified = await verifyAssertion\(response, challenge,/);
+    // AUDIT-HF01: parity with AUTH-03's scope and lifetime checks, against the caller's authenticated expectation; fail closed without one.
+    assert.match(revocations, /expected: FvRevocationExpectation & \{ readonly storeId: string \},\n\): Promise</);
+    assert.match(revocations, /if \(\n\s+scoped &&\n/);
+    for (const field of ['storeId', 'deploymentId', 'stateKind', 'witnessId', 'witnessKeyDigest']) assert.match(revocations, new RegExp(`authorization\\.${field} === expected\\.${field} &&`), field);
+    assert.match(revocations, /Date\.parse\(authorization\.notAfter\) - Date\.parse\(authorization\.notBefore\) <= FV_REVOCATION_AUTHORIZATION_MAX_LIFETIME_SECONDS \* 1000 &&/);
+    assert.match(revocations, /ok = verified\.counter === counter && row\.payload === rebuilt;/);
   });
 
   it('the ceremony: early refusals, the administrator’s proof, AUTH-03’s verification, progress, then the row; revoked only with the witness confirming the head', () => {
