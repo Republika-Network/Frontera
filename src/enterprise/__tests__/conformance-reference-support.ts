@@ -17,7 +17,7 @@ import { projectCredentialStatus, type StatusProjectionDeps } from '../conforman
 import { createStatusRegistry, type OnlineStatusRequest, type StatusRegistry } from '../conformance/status-registry.js';
 import { createStatusIssuerKeyRegistry, createSyntheticStatusSigner, statusIssuerKeyRecord, type StatusIssuerKeyRegistry, type SyntheticStatusSigner } from '../conformance/status-signer.js';
 import { openStatusVerifierStore, verifyConformanceStatus, type StatusExpectation, type StatusVerdict, type StatusVerifierStore } from '../conformance/status-verifier.js';
-import { ALL_ACTIONS, ORG_A, ORG_B, T0, decide, deterministicRandom, enrollmentDecisions, manualClock, syntheticHuman, syntheticValidator, testKey, type ManualClock, type SyntheticHuman, type SyntheticValidator } from './conformance-support.js';
+import { ALL_ACTIONS, ORG_A, ORG_B, T0, approveSyntheticOperator, decide, deterministicRandom, enrollmentDecisions, manualClock, syntheticHuman, syntheticValidator, testKey, type ManualClock, type SyntheticHuman, type SyntheticValidator } from './conformance-support.js';
 import {
   REFERENCE_ADAPTER,
   REFERENCE_ADAPTER_DIGEST,
@@ -152,7 +152,8 @@ export function buildReferenceCircuit(options: { readonly seed?: string } = {}):
   registry.registerPlatform({ platformId: REFERENCE_PLATFORM_ID, organizationId: ORG_A, displayName: 'Synthetic Alpha Platform (reference PEP fixture)' });
   registry.registerPlatform({ platformId: 'platform-synthetic-beta', organizationId: ORG_B, displayName: 'Synthetic Beta Platform (test fixture)' });
   const integration = registry.registerIntegrationVersion(referenceIntegrationInput(profileDigest));
-  for (const op of ['op-synthetic-a', 'op-synthetic-b', 'op-synthetic-c']) registry.registerSyntheticOperator(op);
+  // RN-CONFORM-05: a registered operator is not eligible until two network humans approve it (synthetic eligibility only).
+  for (const op of ['op-synthetic-a', 'op-synthetic-b', 'op-synthetic-c']) approveSyntheticOperator(registry, { humans }, op, clock.now());
   for (const v of Object.values(validators)) {
     const prepared = registry.prepareValidatorEnrollment({ validatorId: v.validatorId, operatorId: v.operatorId, publicKeyPem: v.publicKeyPem, keyValidFrom: T0, keyValidUntil: '2027-11-02T09:00:00.000Z' });
     registry.enrollValidator(prepared.record, enrollmentDecisions({ humans }, v.validatorId, prepared.bindingDigest, clock.now()));

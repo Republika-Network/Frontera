@@ -20,7 +20,7 @@ import { verifyChallenge } from './coordinator.js';
 import { classifyOutcome } from './engine.js';
 import type { ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceClock } from './registry.js';
-import { ConformanceStoreError, type ConformanceStore, type StoredObservationRow, type StoredValidator } from './sqlite-conformance-store.js';
+import { ConformanceStoreError, type ConformanceStore, type StoredObservationRow, type StoredValidator, operatorEligibleAt, operatorEligibleForStoredRow } from './sqlite-conformance-store.js';
 import { verifyConformanceSignature } from './signing.js';
 
 /**
@@ -55,6 +55,8 @@ export const EVIDENCE_REJECTIONS = Object.freeze([
   'VALIDATOR_REVOKED',
   'VALIDATOR_QUARANTINED',
   'KEY_NOT_VALID',
+  // 3b — RN-CONFORM-05: the validator's operator must be eligible (authoritative operator status)
+  'OPERATOR_NOT_ELIGIBLE',
   // 4 — signature
   'SIGNATURE_MISMATCH',
   // 5 — challenge
@@ -183,7 +185,9 @@ export function createEvidenceService(deps: {
       if (store.getObservation(observation.eventId) !== undefined) return reject('REPLAYED');
       const prior = store.getObservationForChallengeValidator(observation.challengeId, observation.validatorId);
       if (prior !== undefined) {
-        return reject('VALIDATOR_CONFLICT', prior.eventId, () => store.appendValidatorEvent(observation.validatorId, 'QUARANTINED', nowMs, 'VALIDATOR_CONFLICT'));
+        // Review C-2: the quarantine covers every key generation of the logical validator enrolled before now (same
+        // operator), in the same transaction — a successor key cannot keep voting while its predecessor is quarantined.
+        return reject('VALIDATOR_CONFLICT', prior.eventId, () => quarantineLineage(store, observation.validatorId, nowMs, 'VALIDATOR_CONFLICT'));
       }
 
       // 10 — evidence package in custody, and the classification the engine computes (never the validator's).
@@ -238,6 +242,19 @@ export function createEvidenceService(deps: {
  * for evidence accepted before the revocation (`loadEngineInput`). Compromise therefore withdraws a
  * validator's past evidence without rewriting it.
  */
+/**
+ * RN-CONFORM-05 (review C-2): quarantines `validatorId` and every other key generation of the same logical validator
+ * (`<base>.k<n>`, same operator) that was requested at or before `atMs`. A generation requested later (a two-person
+ * REINSTATE successor) is not affected. Idempotent.
+ */
+export function quarantineLineage(store: ConformanceStore, validatorId: string, atMs: number, reason: string): void {
+  for (const v of store.listValidatorLineage(validatorId)) {
+    if (v.quarantinedAtMs !== null) continue;
+    if (v.record.validatorId !== validatorId && toMs(v.record.requestedAt) > atMs) continue;
+    store.appendValidatorEvent(v.record.validatorId, 'QUARANTINED', atMs, reason);
+  }
+}
+
 export function checkObservationAuthority(
   store: ConformanceStore,
   profiles: ConformanceProfileRegistry,
@@ -245,14 +262,25 @@ export function checkObservationAuthority(
   signature: unknown,
   atMs: number,
   coordinatorPublicKeyPem: string,
+  options: { readonly storedRow?: boolean } = {},
 ): { readonly ok: true; readonly validator: StoredValidator; readonly challenge: ChallengePayload } | { readonly ok: false; readonly reason: EvidenceRejection } {
   const no = (reason: EvidenceRejection) => ({ ok: false, reason }) as const;
   // 2 — known validator.
   const validator = store.getValidator(observation.validatorId);
   if (validator === undefined) return no('UNKNOWN_VALIDATOR');
   // 3 — status and key validity (the key is the enrolled one; a submitted key id is only a claim).
-  if (validator.keyRevokedAtMs !== null && validator.keyRevokedAtMs <= atMs) return no('VALIDATOR_REVOKED');
-  if (validator.quarantinedAtMs !== null && validator.quarantinedAtMs <= atMs) return no('VALIDATOR_QUARANTINED');
+  // RN-CONFORM-05 compatibility fix: re-authenticating a STORED row, a status event stamped in the same millisecond as
+  // the row's acceptance happened after it (live acceptance refuses an event at or before the acceptance instant, so a
+  // row with that acceptance time could only have committed before the event). Without this, the automatic
+  // VALIDATOR_CONFLICT quarantine (or another protective quarantine or revocation in the acceptance millisecond) made
+  // already-accepted evidence look tampered and left the credential's status failing closed (EVIDENCE_TAMPERED) for
+  // the whole evaluation horizon. Exclusion of the validator's evidence from later evaluations is unchanged.
+  const statusApplies = (eventMs: number | null) => eventMs !== null && (options.storedRow === true ? eventMs < atMs : eventMs <= atMs);
+  if (statusApplies(validator.keyRevokedAtMs)) return no('VALIDATOR_REVOKED');
+  if (statusApplies(validator.quarantinedAtMs)) return no('VALIDATOR_QUARANTINED');
+  // RN-CONFORM-05 (P2-5): operator authority is enforced here (and by the observation trigger), not only by a scheduler.
+  const operatorEvents = store.listOperatorEvents(validator.record.operatorId);
+  if (!(options.storedRow === true ? operatorEligibleForStoredRow(operatorEvents, atMs) : operatorEligibleAt(operatorEvents, atMs))) return no('OPERATOR_NOT_ELIGIBLE');
   const observedMs = toMs(observation.observedAt);
   const keyFrom = toMs(validator.record.keyValidFrom);
   const keyUntil = toMs(validator.record.keyValidUntil);
@@ -347,7 +375,7 @@ export function authenticateStoredObservation(
   }
   if (!isTimestamp(row.acceptedAt) || row.acceptedAtMs !== toMs(row.acceptedAt)) return 'COLUMN_MISMATCH';
   const o = submission.observation;
-  const authority = checkObservationAuthority(store, profiles, o, submission.validatorSignature, row.acceptedAtMs, coordinatorPublicKeyPem);
+  const authority = checkObservationAuthority(store, profiles, o, submission.validatorSignature, row.acceptedAtMs, coordinatorPublicKeyPem, { storedRow: true });
   if (!authority.ok) return authority.reason;
   const columnsMatch =
     row.eventId === o.eventId && row.challengeId === o.challengeId && row.validatorId === o.validatorId && row.operatorId === authority.validator.record.operatorId &&

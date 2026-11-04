@@ -199,7 +199,23 @@ export interface AcceptedObservation {
 
 export const HUMAN_DECISION_FORMAT = 'frontera.conformance-authority.v1' as const;
 
-export const HUMAN_ACTIONS = Object.freeze(['credential.issue', 'credential.reinstate', 'credential.revoke', 'validator.enroll'] as const);
+/**
+ * RN-CONFORM-05 adds the federation's two-person actions (operator approval / reinstatement / revocation, validator
+ * reinstatement / revocation, testing authorization). Each is a distinct action string inside the signed decision, so a
+ * decision for one can never authorize another.
+ */
+export const HUMAN_ACTIONS = Object.freeze([
+  'credential.issue',
+  'credential.reinstate',
+  'credential.revoke',
+  'validator.enroll',
+  'validator.reinstate',
+  'validator.revoke',
+  'operator.approve',
+  'operator.reinstate',
+  'operator.revoke',
+  'testing.authorize',
+] as const);
 export type HumanAction = (typeof HUMAN_ACTIONS)[number];
 
 export interface HumanDecisionPayload {

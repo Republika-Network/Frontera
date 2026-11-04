@@ -24,7 +24,7 @@ import { authenticateStoredObservation, toAccepted } from './evidence.js';
 import { verifyTwoPersonAuthority, type HumanAuthorityDenial, type SyntheticHumanDirectory } from './human-authority.js';
 import type { ConformanceProfileDefinition, ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceClock } from './registry.js';
-import { ConformanceStoreError, type ConformanceStore, type ConsumedDecision, type EvaluationCommit } from './sqlite-conformance-store.js';
+import { ConformanceStoreError, type ConformanceStore, type ConsumedDecision, type EvaluationCommit, operatorEligibleAt } from './sqlite-conformance-store.js';
 import { signConformancePayload } from './signing.js';
 
 /**
@@ -147,6 +147,8 @@ export function loadEngineInput(
   for (const validatorId of new Set(rows.map((r) => r.validatorId))) {
     const v = store.getValidator(validatorId);
     if (v === undefined || (v.keyRevokedAtMs !== null && v.keyRevokedAtMs <= nowMs) || (v.quarantinedAtMs !== null && v.quarantinedAtMs <= nowMs)) excluded.add(validatorId);
+    // RN-CONFORM-05 (P2-5): a validator whose operator is not eligible now contributes nothing (same withdrawal rule as a quarantine).
+    else if (!operatorEligibleAt(store.listOperatorEvents(v.record.operatorId), nowMs)) excluded.add(validatorId);
   }
   return {
     loaded: { credential, head, integration: integration.record, profile: profile.definition },

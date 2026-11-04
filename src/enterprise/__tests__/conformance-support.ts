@@ -198,6 +198,12 @@ export const ALL_ACTIONS: Record<HumanAction, readonly ('attest' | 'approve')[]>
   'credential.reinstate': ['attest', 'approve'],
   'credential.revoke': ['attest', 'approve'],
   'validator.enroll': ['attest', 'approve'],
+  'validator.reinstate': ['attest', 'approve'],
+  'validator.revoke': ['attest', 'approve'],
+  'operator.approve': ['attest', 'approve'],
+  'operator.reinstate': ['attest', 'approve'],
+  'operator.revoke': ['attest', 'approve'],
+  'testing.authorize': ['attest', 'approve'],
 };
 
 // ---------------------------------------------------------------------------
@@ -241,6 +247,16 @@ export function cleanupAll(): void {
       // Best effort: a temp directory still held by the OS is left to the OS.
     }
   }
+}
+
+/** Registers a synthetic operator and approves it with two network humans (RN-CONFORM-05 authoritative operator status). */
+export function approveSyntheticOperator(registry: ReturnType<typeof createConformanceRegistry>, c: Pick<Circuit, 'humans'>, operatorId: string, at: string): void {
+  registry.registerSyntheticOperator(operatorId);
+  const prepared = registry.prepareOperatorAction(operatorId, 'approve');
+  registry.approveOperator(operatorId, [
+    decide(c.humans.netAlice, 'attest', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, at),
+    decide(c.humans.netBob, 'approve', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, at),
+  ]);
 }
 
 export function enrollmentDecisions(c: Pick<Circuit, 'humans'>, validatorId: string, bindingDigest: string, at: string): SignedHumanDecision[] {
@@ -291,7 +307,8 @@ export function buildCircuit(options: { readonly enroll?: boolean; readonly seed
   registry.registerPlatform({ platformId: 'platform-synthetic-alpha', organizationId: ORG_A, displayName: 'Synthetic Alpha Platform (test fixture)' });
   registry.registerPlatform({ platformId: 'platform-synthetic-beta', organizationId: ORG_B, displayName: 'Synthetic Beta Platform (test fixture)' });
   const integration = registry.registerIntegrationVersion(integrationInput(profile.digest));
-  for (const op of ['op-synthetic-a', 'op-synthetic-b', 'op-synthetic-c']) registry.registerSyntheticOperator(op);
+  // RN-CONFORM-05: a registered operator is not eligible until two network humans approve it (synthetic eligibility only).
+  for (const op of ['op-synthetic-a', 'op-synthetic-b', 'op-synthetic-c']) approveSyntheticOperator(registry, { humans }, op, clock.now());
   if (options.enroll !== false) {
     for (const v of Object.values(validators)) {
       const prepared = registry.prepareValidatorEnrollment({ validatorId: v.validatorId, operatorId: v.operatorId, publicKeyPem: v.publicKeyPem, keyValidFrom: T0, keyValidUntil: '2027-11-02T09:00:00.000Z' });
