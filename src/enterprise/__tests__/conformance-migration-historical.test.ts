@@ -199,7 +199,18 @@ describe('RN-CONFORM-05 — migration of a REAL historical rn.conformance.store/
       const registry = createConformanceRegistry({ store, profiles, clock, humans: directory });
       const op = r.operators[0] as string;
       const prepared = registry.prepareOperatorAction(op, 'approve');
-      registry.approveOperator(op, [decide(humans.netAlice, 'attest', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, clock.now()), decide(humans.netBob, 'approve', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, clock.now())]);
+      // Decision ids consumed by the HISTORICAL store (dec-net-alice-1 / dec-net-bob-2, its two-person validator
+      // enrollment) are still single-use after the migration: a new approval reusing them is refused.
+      const reused = [
+        decide(humans.netAlice, 'attest', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, clock.now(), { decisionId: 'dec-net-alice-1' }),
+        decide(humans.netBob, 'approve', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, clock.now(), { decisionId: 'dec-net-bob-2' }),
+      ];
+      assert.ok(store.isDecisionConsumed('dec-net-alice-1') && store.isDecisionConsumed('dec-net-bob-2'), 'the historical decisions survived the migration');
+      assert.throws(() => registry.approveOperator(op, reused), (e: unknown) => e instanceof ConformanceRegistryError && e.code === 'APPROVAL_REFUSED' && e.detail === 'ALREADY_CONSUMED');
+      registry.approveOperator(op, [
+        decide(humans.netAlice, 'attest', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, clock.now(), { decisionId: 'post-migration-approval-attest' }),
+        decide(humans.netBob, 'approve', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, clock.now(), { decisionId: 'post-migration-approval-approve' }),
+      ]);
       verifyHistorical(store, r);
       clock.advance(60);
       registry.quarantineOperator(op, 'post-migration quarantine (test)');
