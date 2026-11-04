@@ -48,6 +48,14 @@ export const DEPLOYMENT_ATTESTATION_OPERATION = 'deployment.read-attested-manife
 export const MAX_COVERED_OPERATIONS = 16;
 
 /**
+ * At most this many declared exclusions per integration version (Codex C-3). One bound, enforced where an integration is
+ * admitted (`registry.ts`) and where its scope is stated (`status-contracts.ts`), so every admitted credential's
+ * complete scope is representable in a status assertion. 64 operation names (≤ 64 characters each) keep an assertion
+ * well inside the 32 KiB artifact limit and the canonicalization budget.
+ */
+export const MAX_DECLARED_EXCLUSIONS = 64;
+
+/**
  * The operations a requirement served by `challengeType` must be verified for (finding 4).
  * An enforcement challenge (G01, G02, G05, G06, G07) is evaluated for **each** covered operation
  * separately: evidence for one operation never stands in for another. The G08 deployment-digest

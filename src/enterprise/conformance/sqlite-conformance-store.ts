@@ -66,7 +66,8 @@ import { canonicalizeConformance } from './canonical.js';
  * and signature, so such tampering is detected — not prevented.
  */
 
-export const CONFORMANCE_STORE_SCHEMA_VERSION = 'rn.conformance.store/1';
+/** `/2`: RN-CONFORM-03 status assertions and anchor intents. A `/1` file is refused (synthetic stores are never migrated). */
+export const CONFORMANCE_STORE_SCHEMA_VERSION = 'rn.conformance.store/2';
 
 const TWO_HUMANS = (action: string, consumedFor: string, binding: string, subject: string) => `(
   (SELECT COUNT(DISTINCT d.principal_id) FROM cc_consumed_decisions d WHERE d.consumed_for = ${consumedFor} AND d.action = '${action}' AND d.action_binding_digest IS ${binding} AND d.subject_ref = ${subject}) >= 2
@@ -102,6 +103,8 @@ const IDENTITY_KEYS: Readonly<Record<string, readonly (readonly string[])[]>> = 
   cc_credentials: [['credential_id'], ['integration_digest', 'profile_id', 'profile_version']],
   cc_evaluations: [['evaluation_id'], ['evaluation_digest']],
   cc_transitions: [['credential_id', 'state_version'], ['transition_id'], ['transition_digest']],
+  cc_status_assertions: [['credential_id', 'sequence'], ['assertion_digest'], ['request_nonce']],
+  cc_anchor_intents: [['intent_id'], ['transition_id']],
   cc_heads: [['credential_id']],
 });
 
@@ -324,9 +327,39 @@ CREATE TABLE cc_heads (
   reason_code TEXT NOT NULL,
   effective_at_ms INTEGER NOT NULL
 );
+-- RN-CONFORM-03: the issuer's append-only, hash-linked chain of signed status assertions per credential.
+-- It is the status layer's own record; nothing here can change a credential, an evaluation or a head.
+CREATE TABLE cc_status_assertions (
+  credential_id TEXT NOT NULL REFERENCES cc_credentials (credential_id),
+  sequence INTEGER NOT NULL CHECK (sequence >= 1),
+  assertion_digest TEXT NOT NULL UNIQUE,
+  previous_assertion_digest TEXT,
+  state TEXT NOT NULL,
+  state_version INTEGER NOT NULL,
+  transition_digest TEXT NOT NULL,
+  request_nonce TEXT UNIQUE,
+  issued_at_ms INTEGER NOT NULL,
+  valid_until_ms INTEGER NOT NULL,
+  key_id TEXT NOT NULL,
+  assertion_json TEXT NOT NULL,
+  PRIMARY KEY (credential_id, sequence)
+);
+-- RN-CONFORM-03 / WP-11: simulated ledger anchor *intents* (network intent XRPL_TESTNET). Prepared only: there is no column for a ledger hash.
+CREATE TABLE cc_anchor_intents (
+  intent_id TEXT PRIMARY KEY,
+  credential_id TEXT NOT NULL REFERENCES cc_credentials (credential_id),
+  transition_id TEXT NOT NULL UNIQUE,
+  transition_digest TEXT NOT NULL,
+  profile_version TEXT NOT NULL,
+  payload_digest TEXT NOT NULL,
+  network_intent TEXT NOT NULL CHECK (network_intent = 'XRPL_TESTNET'),
+  confirmation_state TEXT NOT NULL CHECK (confirmation_state = 'prepared'),
+  prepared_at_ms INTEGER NOT NULL,
+  record_json TEXT NOT NULL
+);
 
 -- Immutable records: never updated, never deleted.
-${['cc_meta', 'cc_profiles', 'cc_platforms', 'cc_integrations', 'cc_operators', 'cc_consumed_decisions', 'cc_validators', 'cc_validator_events', 'cc_challenges', 'cc_evidence_packages', 'cc_observations', 'cc_confirmed_violations', 'cc_rejections', 'cc_credentials', 'cc_evaluations', 'cc_transitions']
+${['cc_meta', 'cc_profiles', 'cc_platforms', 'cc_integrations', 'cc_operators', 'cc_consumed_decisions', 'cc_validators', 'cc_validator_events', 'cc_challenges', 'cc_evidence_packages', 'cc_observations', 'cc_confirmed_violations', 'cc_rejections', 'cc_credentials', 'cc_evaluations', 'cc_transitions', 'cc_status_assertions', 'cc_anchor_intents']
   .map(
     (table) => `CREATE TRIGGER ${table}_no_update BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:immutable ${table}'); END;
 CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:immutable ${table}'); END;`,
@@ -467,6 +500,31 @@ CREATE TRIGGER cc_transitions_advance_head AFTER INSERT ON cc_transitions BEGIN
   SELECT RAISE(ABORT, 'cc:head not advanced') WHERE NOT EXISTS (SELECT 1 FROM cc_heads h WHERE h.credential_id = NEW.credential_id AND h.state_version = NEW.state_version AND h.head_transition_digest = NEW.transition_digest AND h.state = NEW.to_state);
 END;
 
+-- RN-CONFORM-03: a status assertion is admitted only as the next link of its credential's chain and only for the head that is
+-- committed at the instant of insertion (INV-03): an assertion prepared from an older snapshot cannot be recorded, on any connection.
+CREATE TRIGGER cc_status_assertions_guard BEFORE INSERT ON cc_status_assertions BEGIN
+  SELECT RAISE(ABORT, 'cc:status json mismatch') WHERE json_extract(NEW.assertion_json, '$.credentialId') IS NOT NEW.credential_id
+    OR json_extract(NEW.assertion_json, '$.sequence') IS NOT NEW.sequence
+    OR json_extract(NEW.assertion_json, '$.state') IS NOT NEW.state
+    OR json_extract(NEW.assertion_json, '$.stateVersion') IS NOT NEW.state_version
+    OR json_extract(NEW.assertion_json, '$.historyRef.latestTransitionDigest') IS NOT NEW.transition_digest
+    OR json_extract(NEW.assertion_json, '$.previousAssertionDigest') IS NOT NEW.previous_assertion_digest
+    OR json_extract(NEW.assertion_json, '$.requestNonce') IS NOT NEW.request_nonce
+    OR json_extract(NEW.assertion_json, '$.signature.keyId') IS NOT NEW.key_id
+    OR json_extract(NEW.assertion_json, '$.designation') IS NOT 'SYNTHETIC-NON-PRODUCTION';
+  SELECT RAISE(ABORT, 'cc:status sequence gap') WHERE NEW.sequence <> COALESCE((SELECT MAX(a.sequence) FROM cc_status_assertions a WHERE a.credential_id = NEW.credential_id), 0) + 1;
+  SELECT RAISE(ABORT, 'cc:status chain mismatch') WHERE NEW.previous_assertion_digest IS NOT (SELECT a.assertion_digest FROM cc_status_assertions a WHERE a.credential_id = NEW.credential_id AND a.sequence = NEW.sequence - 1);
+  SELECT RAISE(ABORT, 'cc:status not the committed head') WHERE NOT EXISTS (SELECT 1 FROM cc_heads h WHERE h.credential_id = NEW.credential_id AND h.state = NEW.state AND h.state_version = NEW.state_version AND h.head_transition_digest = NEW.transition_digest);
+  SELECT RAISE(ABORT, 'cc:status lifetime') WHERE NEW.valid_until_ms <= NEW.issued_at_ms OR NEW.valid_until_ms - NEW.issued_at_ms > 900000;
+  SELECT RAISE(ABORT, 'cc:status time went backwards') WHERE NEW.issued_at_ms < COALESCE((SELECT MAX(a.issued_at_ms) FROM cc_status_assertions a WHERE a.credential_id = NEW.credential_id), NEW.issued_at_ms);
+END;
+CREATE TRIGGER cc_anchor_intents_bound BEFORE INSERT ON cc_anchor_intents BEGIN
+  SELECT RAISE(ABORT, 'cc:anchor intent for an unknown transition') WHERE NOT EXISTS (SELECT 1 FROM cc_transitions t WHERE t.credential_id = NEW.credential_id AND t.transition_id = NEW.transition_id AND t.transition_digest = NEW.transition_digest);
+  SELECT RAISE(ABORT, 'cc:anchor intent profile mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_credentials c WHERE c.credential_id = NEW.credential_id AND c.profile_version = NEW.profile_version);
+  SELECT RAISE(ABORT, 'cc:anchor intent json mismatch') WHERE json_extract(NEW.record_json, '$.transitionDigest') IS NOT NEW.transition_digest OR json_extract(NEW.record_json, '$.confirmationState') IS NOT 'prepared'
+    OR json_extract(NEW.record_json, '$.networkIntent') IS NOT 'XRPL_TESTNET' OR json_extract(NEW.record_json, '$.canonicalPayloadDigest') IS NOT NEW.payload_digest;
+END;
+
 -- The head is a projection of the latest committed transition and nothing else.
 CREATE TRIGGER cc_heads_insert_guard BEFORE INSERT ON cc_heads BEGIN
   SELECT RAISE(ABORT, 'cc:head must equal the latest transition') WHERE NEW.state_version <> 1 OR NOT EXISTS (SELECT 1 FROM cc_transitions t WHERE t.credential_id = NEW.credential_id AND t.state_version = 1
@@ -482,6 +540,7 @@ END;
 const TABLES = Object.freeze([
   'cc_meta', 'cc_profiles', 'cc_platforms', 'cc_integrations', 'cc_operators', 'cc_consumed_decisions', 'cc_validators', 'cc_validator_events',
   'cc_challenges', 'cc_evidence_packages', 'cc_observations', 'cc_confirmed_violations', 'cc_rejections', 'cc_credentials', 'cc_evaluations', 'cc_transitions', 'cc_heads',
+  'cc_status_assertions', 'cc_anchor_intents',
 ]);
 
 export type ConformanceStoreErrorCode = 'CAS_CONFLICT' | 'INVARIANT_REFUSED' | 'CONFLICT' | 'NOT_FOUND' | 'CORRUPT' | 'BUSY' | 'OPEN_REFUSED';
@@ -569,6 +628,34 @@ export interface RecordedViolation {
   readonly confirmedAtMs: number;
 }
 
+export interface StoredStatusAssertion {
+  readonly credentialId: string;
+  readonly sequence: number;
+  readonly assertionDigest: string;
+  readonly previousAssertionDigest: string | null;
+  readonly state: CredentialState;
+  readonly stateVersion: number;
+  readonly transitionDigest: string;
+  readonly requestNonce: string | null;
+  readonly issuedAtMs: number;
+  readonly validUntilMs: number;
+  readonly keyId: string;
+  readonly assertionJson: string;
+}
+
+export interface StoredAnchorIntent {
+  readonly intentId: string;
+  readonly credentialId: string;
+  readonly transitionId: string;
+  readonly transitionDigest: string;
+  readonly profileVersion: string;
+  readonly payloadDigest: string;
+  readonly networkIntent: 'XRPL_TESTNET';
+  readonly confirmationState: 'prepared';
+  readonly preparedAtMs: number;
+  readonly recordJson: string;
+}
+
 export interface StoredTransitionRow {
   readonly credentialId: string;
   readonly stateVersion: number;
@@ -634,6 +721,19 @@ export interface ConformanceStore {
    */
   commitTransition(input: { readonly evaluation: EvaluationCommit | null; readonly decisions: readonly ConsumedDecision[]; readonly transition: SignedTransition }, hook?: () => void, precheck?: () => void): void;
   getEvidencePackage(organizationId: string, digest: string): { readonly challengeId: string; readonly validatorId: string } | undefined;
+  /** RN-CONFORM-03: a credential by id alone (status requests name only the credential id). */
+  findCredential(credentialId: string): CredentialRecord | undefined;
+  /** RN-CONFORM-03: the most recent committed evaluations of a credential, newest first, at most `limit`. */
+  listRecentEvaluations(organizationId: string, credentialId: string, limit: number): readonly { record: EvaluationRecord; evaluationDigest: string }[];
+  /** RN-CONFORM-03: the latest link of a credential's status-assertion chain. */
+  latestStatusAssertion(credentialId: string): StoredStatusAssertion | undefined;
+  /** RN-CONFORM-03: the newest stapled (nonce-free) assertion for exactly the committed head that is still valid at `nowMs`. */
+  currentStapledAssertion(credentialId: string, nowMs: number): StoredStatusAssertion | undefined;
+  isStatusNonceUsed(nonce: string): boolean;
+  /** RN-CONFORM-03: runs `fn` in one IMMEDIATE transaction (the linearization point of issuance); `fn` may call `insert` once. */
+  withStatusIssuance<T>(fn: (insert: (row: StoredStatusAssertion) => void) => T): T;
+  insertAnchorIntent(row: StoredAnchorIntent): void;
+  getAnchorIntentByTransition(transitionId: string): StoredAnchorIntent | undefined;
   close(): void;
 }
 
@@ -1054,6 +1154,84 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
           hook?.();
         }).immediate(),
       ),
+    findCredential: (credentialId: string) => {
+      const row = db.prepare('SELECT record_json FROM cc_credentials WHERE credential_id = ?').get(credentialId) as { record_json: string } | undefined;
+      return row === undefined ? undefined : (JSON.parse(row.record_json) as CredentialRecord);
+    },
+    listRecentEvaluations: (organizationId: string, credentialId: string, limit: number) => {
+      if (credentialRow(organizationId, credentialId) === undefined) return [];
+      return (db.prepare('SELECT record_json, evaluation_digest FROM cc_evaluations WHERE credential_id = ? ORDER BY evaluated_at_ms DESC, evaluation_id DESC LIMIT ?').all(credentialId, Math.max(0, Math.floor(limit))) as {
+        record_json: string;
+        evaluation_digest: string;
+      }[]).map((row) => ({ record: JSON.parse(row.record_json) as EvaluationRecord, evaluationDigest: row.evaluation_digest }));
+    },
+    latestStatusAssertion: (credentialId: string) =>
+      parseStatusRow(db.prepare('SELECT * FROM cc_status_assertions WHERE credential_id = ? ORDER BY sequence DESC LIMIT 1').get(credentialId) as Record<string, unknown> | undefined),
+    currentStapledAssertion: (credentialId: string, nowMs: number) =>
+      parseStatusRow(
+        db
+          .prepare(
+            `SELECT a.* FROM cc_status_assertions a, cc_heads h WHERE a.credential_id = ? AND h.credential_id = a.credential_id AND a.request_nonce IS NULL
+               AND a.state = h.state AND a.state_version = h.state_version AND a.transition_digest = h.head_transition_digest AND a.issued_at_ms <= ? AND a.valid_until_ms > ?
+             ORDER BY a.sequence DESC LIMIT 1`,
+          )
+          .get(credentialId, Math.floor(nowMs), Math.floor(nowMs)) as Record<string, unknown> | undefined,
+      ),
+    isStatusNonceUsed: (nonce: string) => db.prepare('SELECT 1 FROM cc_status_assertions WHERE request_nonce = ?').get(nonce) !== undefined,
+    withStatusIssuance: <T>(fn: (insert: (row: StoredStatusAssertion) => void) => T): T =>
+      run(() =>
+        db.transaction((): T => {
+          let inserted = false;
+          return fn((row) => {
+            if (inserted) throw new ConformanceStoreError('INVARIANT_REFUSED', 'one assertion per issuance');
+            inserted = true;
+            db.prepare(
+              'INSERT INTO cc_status_assertions (credential_id, sequence, assertion_digest, previous_assertion_digest, state, state_version, transition_digest, request_nonce, issued_at_ms, valid_until_ms, key_id, assertion_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ).run(row.credentialId, row.sequence, row.assertionDigest, row.previousAssertionDigest, row.state, row.stateVersion, row.transitionDigest, row.requestNonce, row.issuedAtMs, row.validUntilMs, row.keyId, row.assertionJson);
+          });
+        }).immediate(),
+      ),
+    insertAnchorIntent: (row: StoredAnchorIntent) =>
+      run(() => {
+        db.prepare(
+          'INSERT INTO cc_anchor_intents (intent_id, credential_id, transition_id, transition_digest, profile_version, payload_digest, network_intent, confirmation_state, prepared_at_ms, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).run(row.intentId, row.credentialId, row.transitionId, row.transitionDigest, row.profileVersion, row.payloadDigest, row.networkIntent, row.confirmationState, row.preparedAtMs, row.recordJson);
+      }),
+    getAnchorIntentByTransition: (transitionId: string) => {
+      const row = db.prepare('SELECT * FROM cc_anchor_intents WHERE transition_id = ?').get(transitionId) as Record<string, unknown> | undefined;
+      return row === undefined
+        ? undefined
+        : Object.freeze({
+            intentId: String(row['intent_id']),
+            credentialId: String(row['credential_id']),
+            transitionId: String(row['transition_id']),
+            transitionDigest: String(row['transition_digest']),
+            profileVersion: String(row['profile_version']),
+            payloadDigest: String(row['payload_digest']),
+            networkIntent: 'XRPL_TESTNET' as const,
+            confirmationState: 'prepared' as const,
+            preparedAtMs: Number(row['prepared_at_ms']),
+            recordJson: String(row['record_json']),
+          });
+    },
     close: () => db.close(),
+  });
+}
+
+function parseStatusRow(row: Record<string, unknown> | undefined): StoredStatusAssertion | undefined {
+  if (row === undefined) return undefined;
+  return Object.freeze({
+    credentialId: String(row['credential_id']),
+    sequence: Number(row['sequence']),
+    assertionDigest: String(row['assertion_digest']),
+    previousAssertionDigest: row['previous_assertion_digest'] === null ? null : String(row['previous_assertion_digest']),
+    state: String(row['state']) as CredentialState,
+    stateVersion: Number(row['state_version']),
+    transitionDigest: String(row['transition_digest']),
+    requestNonce: row['request_nonce'] === null ? null : String(row['request_nonce']),
+    issuedAtMs: Number(row['issued_at_ms']),
+    validUntilMs: Number(row['valid_until_ms']),
+    keyId: String(row['key_id']),
+    assertionJson: String(row['assertion_json']),
   });
 }

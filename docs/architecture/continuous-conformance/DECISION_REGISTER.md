@@ -35,6 +35,20 @@ The founder approved, for the RN-CONFORM-02 synthetic circuit only:
 How each is implemented: [RN_CONFORM_02_IMPLEMENTATION.md](RN_CONFORM_02_IMPLEMENTATION.md). The table
 above is the RN-CONFORM-01 record and is left as written; every other decision remains open.
 
+## Provisional parameters for RN-CONFORM-03 (synthetic scope only)
+
+The founder authorized, as **synthetic implementation parameters only** (not production approvals):
+
+* **CC-D-05:** 90 d credential term; status assertions valid ≤ 15 min; online responses reflect the
+  committed state when signed. The SLOs remain targets, not achieved guarantees.
+* **CC-D-07:** an isolated status-signer boundary (CORE-02 structured pattern) with synthetic Ed25519 keys
+  held outside the registry's database; HSM/KMS remains a separate production decision.
+* **CC-D-13:** minimal public disclosure (identity, scope, state, freshness, expiry, transition digests;
+  no evidence, validators, humans or keys). The public contract remains subject to legal approval.
+
+How each is implemented: [RN_CONFORM_03_IMPLEMENTATION.md](RN_CONFORM_03_IMPLEMENTATION.md). All three
+decisions remain **OPEN** for production.
+
 ## Constraints confirmed unchanged by RN-CONFORM-01
 
 * `$SOBE`, tokens, staking, slashing, validator rewards: out of scope; absent from all dependencies.
