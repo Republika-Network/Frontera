@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 
 import { CHALLENGE_NONCE_BYTES, ChallengeCoordinatorError, DEPLOYMENT_ATTESTATION_OPERATION, createChallengeCoordinator, secureRandomSource, verifyChallenge } from '../conformance/coordinator.js';
 import { EVIDENCE_REJECTIONS, MAX_SUBMISSION_BYTES, type EvidenceRejection } from '../conformance/evidence.js';
+import { canonicalizeConformance } from '../conformance/canonical.js';
 import { publicKeyPemOf, signConformancePayload } from '../conformance/signing.js';
-import { ORG_A, buildCircuit, cleanupAll, issue, observe, submit, testKey, type Circuit } from './conformance-support.js';
+import Database from 'better-sqlite3';
+import { ORG_A, buildCircuit, cleanupAll, decide, issue, observe, submit, testKey, testingAuthorizationFor, type Circuit } from './conformance-support.js';
 
 /**
  * RN-CONFORM-02 / WP-05, WP-06, WP-07 — signed challenges, signed
@@ -72,9 +74,9 @@ describe('RN-CONFORM-02 challenge coordinator (WP-05)', () => {
     code(() => issue(c, 'G01', [c.validators.C]), 'VALIDATOR_NOT_ELIGIBLE');
     code(() => issue(c, 'G01', [{ ...c.validators.A, validatorId: 'validator-unknown' }]), 'VALIDATOR_NOT_ELIGIBLE');
     const coordinator = c.services().coordinator;
-    code(() => coordinator.issue({ idempotencyKey: 'op-1', organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, challengeType: 'G01', operation: 'document.delete', fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: ['validator-a'], deadlineSeconds: 60 }), 'OPERATION_NOT_COVERED');
-    code(() => coordinator.issue({ idempotencyKey: 'op-2', organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, challengeType: 'G08', operation: 'document.open', fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: ['validator-a'], deadlineSeconds: 60 }), 'OPERATION_NOT_COVERED');
-    assert.ok(coordinator.issue({ idempotencyKey: 'op-3', organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, challengeType: 'G08', operation: DEPLOYMENT_ATTESTATION_OPERATION, fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: ['validator-a'], deadlineSeconds: 60 }));
+    code(() => coordinator.issue({ idempotencyKey: 'op-1', organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, challengeType: 'G01', operation: 'document.delete', fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: ['validator-a'], deadlineSeconds: 60, authorizationId: testingAuthorizationFor(c), purpose: 'CONFORMANCE' }), 'OPERATION_NOT_COVERED');
+    code(() => coordinator.issue({ idempotencyKey: 'op-2', organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, challengeType: 'G08', operation: 'document.open', fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: ['validator-a'], deadlineSeconds: 60, authorizationId: testingAuthorizationFor(c), purpose: 'CONFORMANCE' }), 'OPERATION_NOT_COVERED');
+    assert.ok(coordinator.issue({ idempotencyKey: 'op-3', organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, challengeType: 'G08', operation: DEPLOYMENT_ATTESTATION_OPERATION, fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: ['validator-a'], deadlineSeconds: 60, authorizationId: testingAuthorizationFor(c), purpose: 'CONFORMANCE' }));
     c.cleanup();
   });
 
@@ -83,7 +85,7 @@ describe('RN-CONFORM-02 challenge coordinator (WP-05)', () => {
     const coordinator = createChallengeCoordinator({ store: c.store, profiles: c.profiles, clock: c.clock, random: secureRandomSource, coordinatorKey: c.coordinatorKey });
     const nonces = new Set<string>();
     for (let i = 0; i < 20; i += 1) {
-      nonces.add(coordinator.issue({ idempotencyKey: `csprng-${i}`, organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, challengeType: 'G06', operation: 'document.open', fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: ['validator-a'], deadlineSeconds: 60 }).challenge.nonce);
+      nonces.add(coordinator.issue({ idempotencyKey: `csprng-${i}`, organizationId: ORG_A, integrationDigest: c.integration.integrationDigest, challengeType: 'G06', operation: 'document.open', fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: ['validator-a'], deadlineSeconds: 60, authorizationId: testingAuthorizationFor(c), purpose: 'CONFORMANCE' }).challenge.nonce);
     }
     assert.equal(nonces.size, 20);
     c.cleanup();
@@ -202,6 +204,47 @@ describe('RN-CONFORM-02 evidence acceptance (WP-06, WP-07)', () => {
     c.services().registry.quarantineOperator('op-synthetic-c', 'operator quarantined (test)');
     expect(cRaw, 'OPERATOR_NOT_ELIGIBLE');
 
+    // 5b — RN-CONFORM-07: the challenge's committed testing authorization (a fresh circuit; validators above are spent).
+    const d = buildCircuit();
+    const DA = d.validators.A;
+    const expectD = (raw: string, reason: EvidenceRejection) => {
+      rejected(d, raw, reason);
+      seen.add(reason);
+    };
+    // Revoked after issuance, before submission: the observation is refused.
+    const beforeRevocation = observe(d, DA, issue(d, 'G01', [DA]));
+    d.services().registry.revokeTestingAuthorization(ORG_A, testingAuthorizationFor(d), 'platform withdrew consent (test)');
+    expectD(beforeRevocation, 'AUTHORIZATION_REVOKED');
+    // Expired between issuance and a delayed submission (a short authorization of its own).
+    const now = d.clock.ms();
+    const shortAuth = d.services().registry.prepareTestingAuthorization({
+      authorizationId: 'auth-short-window', supersedes: null, organizationId: ORG_A, integrationDigest: d.integration.integrationDigest, purpose: 'CONFORMANCE',
+      fixtureRefs: ['fixture-synthetic-pep-v1'], operations: ['document.open'], challengeTypes: ['G01'], notBefore: d.clock.now(), notAfter: new Date(now + 120_000).toISOString(),
+      maxChallengesPerHour: 10, maxConcurrentChallenges: 10, maxTotalChallenges: null,
+    });
+    d.services().registry.authorizeTesting(shortAuth.record, approvalsFor(d, shortAuth.prepared));
+    const shortChallenge = d.services().coordinator.issue({ idempotencyKey: 'short-1', organizationId: ORG_A, integrationDigest: d.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: [DA.validatorId], deadlineSeconds: 60, authorizationId: 'auth-short-window', purpose: 'CONFORMANCE' });
+    const lateRaw = observe(d, DA, shortChallenge);
+    d.clock.advance(121);
+    expectD(lateRaw, 'AUTHORIZATION_EXPIRED');
+    // A coordinator-signed challenge planted by a raw database writer, with no authorization association at all.
+    const template = issue(d, 'G01', [DA]).challenge;
+    const planted = { ...template, challengeId: 'chl_planted_without_authorization', idempotencyKey: 'planted-1', nonce: 'p'.repeat(43) };
+    const raw = new Database(d.path);
+    try {
+      const trigger = (raw.prepare("SELECT sql FROM sqlite_master WHERE name = 'cc_challenges_authorized'").get() as { sql: string }).sql;
+      raw.exec('DROP TRIGGER cc_challenges_authorized');
+      raw.prepare('INSERT INTO cc_challenges (challenge_id, idempotency_key, nonce, organization_id, integration_digest, profile_id, profile_version, control_id, operation, issued_at_ms, deadline_ms, challenge_json, signature_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+        planted.challengeId, planted.idempotencyKey, planted.nonce, planted.organizationId, planted.integrationDigest, planted.profileId, planted.profileVersion, planted.controlId, planted.operation,
+        Date.parse(planted.issuedAt), Date.parse(planted.deadline), canonicalizeConformance(planted), canonicalizeConformance(signConformancePayload('challenge', planted, d.coordinatorKey)),
+      );
+      raw.exec(trigger);
+    } finally {
+      raw.close();
+    }
+    expectD(observe(d, DA, d.store.getChallenge(planted.challengeId)!), 'AUTHORIZATION_INVALID');
+    d.cleanup();
+
     for (const reason of EVIDENCE_REJECTIONS) assert.ok(seen.has(reason), `rejection ${reason} has a test`);
 
     // Rejections are retained with safe metadata only.
@@ -222,3 +265,8 @@ describe('RN-CONFORM-02 evidence acceptance (WP-06, WP-07)', () => {
     c.cleanup();
   });
 });
+
+function approvalsFor(c: Circuit, prepared: { readonly action: 'testing.authorize'; readonly subjectRef: string; readonly actionBindingDigest: string }) {
+  const at = c.clock.now();
+  return [decide(c.humans.alice, 'attest', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, at), decide(c.humans.bob, 'approve', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, at)];
+}

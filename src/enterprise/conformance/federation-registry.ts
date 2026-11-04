@@ -25,10 +25,11 @@ import {
 } from './federation-contracts.js';
 import { FederationStoreError, type FederationConsumedDecision, type FederationStore, type GenerationRow } from './federation-store.js';
 import { verifyTwoPersonAuthority, type SyntheticHumanDirectory } from './human-authority.js';
+import type { TestingAuthorizationInput } from './testing-authorization.js';
 import type { ConformanceProfileRegistry } from './profile.js';
 import { CONFORMANCE_NETWORK_ORGANIZATION, ConformanceRegistryError, type ConformanceRegistry } from './registry.js';
 import { deriveConformanceKeyId, verifyConformanceSignature } from './signing.js';
-import { operatorEligibleAt, type ConformanceStore } from './sqlite-conformance-store.js';
+import { operatorEligibleAt, type ConformanceStore, type StoredTestingAuthorization } from './sqlite-conformance-store.js';
 
 /**
  * RN-CONFORM-05 — operator identity, validator enrollment, key generations, quarantine and revocation.
@@ -154,8 +155,11 @@ export interface FederationRegistry {
   revokeKeyGeneration(conformanceValidatorId: string, reason: string): void;
 
   /** Two humans of the integration's own organization, `testing.authorize`; synthetic fixtures only. */
-  prepareTestingAuthorization(input: Omit<TestingAuthorization, 'schema' | 'synthetic' | 'environment'>): { readonly record: TestingAuthorization; readonly prepared: PreparedFederationAction };
+  /** RN-CONFORM-07: delegated to the authoritative conformance registry (explicit scope, purpose, limits). */
+  prepareTestingAuthorization(input: TestingAuthorizationInput): { readonly record: TestingAuthorization; readonly prepared: PreparedFederationAction };
   authorizeTesting(record: TestingAuthorization, decisions: readonly unknown[]): void;
+  /** Protective: revokes the authoritative authorization; the scheduler and coordinator refuse it from now on. */
+  revokeTesting(organizationId: string, authorizationId: string, reason: string): void;
 
   /** Whether `validatorId` may be assigned work now that must stay valid until `untilMs` — re-read from BOTH stores, fail closed. */
   eligibility(validatorId: string, nowMs: number, untilMs: number): GenerationEligibility;
@@ -726,7 +730,7 @@ export function createFederationRegistry(deps: {
       const candidateObs = job?.challengeId === null || job === undefined || candidate === undefined ? undefined : store.getObservationForChallengeValidator(job.challengeId, candidate.conformanceValidatorId);
       const referenceObs = job?.challengeId === null || job === undefined || reference === undefined ? undefined : store.getObservationForChallengeValidator(job.challengeId, reference.conformanceValidatorId);
       const passed =
-        job !== undefined && job.purpose === 'REQUALIFICATION' && job.state === 'COMPLETED' && auth?.record.purpose === 'REQUALIFICATION' && candidate !== undefined && reference !== undefined &&
+        job !== undefined && job.purpose === 'REQUALIFICATION' && job.state === 'COMPLETED' && auth?.record.purpose === 'VALIDATOR_REQUALIFICATION' && candidate !== undefined && reference !== undefined &&
         // Codex P2 / S-08: the probation target must STILL have no credential at the decision point.
         !store.hasCredentialForIntegration(job.organizationId, job.integrationDigest) &&
         auth.record.integrationDigest === job.integrationDigest && auth.record.organizationId === job.organizationId &&
@@ -762,51 +766,35 @@ export function createFederationRegistry(deps: {
     },
 
     prepareTestingAuthorization(input) {
-      const read = readClosed(input, ['authorizationId', 'organizationId', 'integrationDigest', 'purpose', 'fixtureRefs', 'notBefore', 'notAfter']);
-      if (
-        !read.ok || (input.purpose !== 'CONFORMANCE' && input.purpose !== 'REQUALIFICATION') || !isIdentifier(input.authorizationId) || !isIdentifier(input.organizationId) || typeof input.integrationDigest !== 'string' || !Array.isArray(input.fixtureRefs) ||
-        input.fixtureRefs.length === 0 || !input.fixtureRefs.every(isIdentifier) || !isTimestamp(input.notBefore) || !isTimestamp(input.notAfter) || toMs(input.notAfter) <= toMs(input.notBefore)
-      ) {
-        throw new FederationError('MALFORMED_INPUT', 'testing authorization');
+      // RN-CONFORM-07: delegated to the AUTHORITATIVE conformance registry (closed record, explicit scope, purpose).
+      try {
+        const prepared = conformance.prepareTestingAuthorization(input);
+        return Object.freeze({ record: prepared.record, prepared: prepared.prepared });
+      } catch (error) {
+        if (error instanceof ConformanceRegistryError) throw new FederationError(error.code === 'UNKNOWN_INTEGRATION' ? 'UNKNOWN_INTEGRATION' : error.code === 'MALFORMED_INPUT' ? 'MALFORMED_INPUT' : 'AUTHORIZATION_INVALID', error.detail === '' ? error.code : error.detail);
+        throw error;
       }
-      const integration = store.getIntegrationByDigest(input.organizationId, input.integrationDigest);
-      if (integration === undefined) throw new FederationError('UNKNOWN_INTEGRATION');
-      const endpoints = integration.record.testEndpoints;
-      // Only fixtures the integration itself registered, and only synthetic ones (CC-D-12): no URL can be authorized here.
-      for (const ref of input.fixtureRefs) if (!endpoints.some((e) => e.fixtureRef === ref && e.environment === 'synthetic')) throw new FederationError('AUTHORIZATION_INVALID', `fixture ${ref} is not a registered synthetic endpoint`);
-      // Review P1-2: probation evidence may only land on an integration no credential depends on.
-      if (input.purpose === 'REQUALIFICATION' && store.hasCredentialForIntegration(input.organizationId, input.integrationDigest)) throw new FederationError('AUTHORIZATION_INVALID', 'a requalification target must have no credential');
-      const record: TestingAuthorization = Object.freeze({
-        schema: 'rn.conformance.testing-authorization/1',
-        authorizationId: input.authorizationId,
-        organizationId: input.organizationId,
-        integrationDigest: input.integrationDigest,
-        purpose: input.purpose,
-        environment: 'synthetic',
-        fixtureRefs: Object.freeze([...input.fixtureRefs].sort()),
-        notBefore: input.notBefore,
-        notAfter: input.notAfter,
-        synthetic: true,
-      });
-      return Object.freeze({
-        record,
-        prepared: Object.freeze({ action: 'testing.authorize' as const, organizationId: input.organizationId, subjectRef: `authorization:${input.authorizationId}`, actionBindingDigest: conformanceDigest(record) }),
-      });
     },
     authorizeTesting(record, decisions) {
-      const again = registry.prepareTestingAuthorization({
-        authorizationId: record.authorizationId,
-        organizationId: record.organizationId,
-        integrationDigest: record.integrationDigest,
-        purpose: record.purpose,
-        fixtureRefs: record.fixtureRefs,
-        notBefore: record.notBefore,
-        notAfter: record.notAfter,
-      });
-      if (conformanceDigest(again.record) !== conformanceDigest(record)) throw new FederationError('AUTHORIZATION_INVALID', 'record is not in canonical form');
-      const consumed = authorize(again.prepared, decisions);
-      const at = nowMs();
-      translate(() => fed.insertAuthorization(again.record, consumed, at));
+      // Approved and consumed in the conformance store (trigger-checked two humans); the federation keeps a mirror.
+      let stored: StoredTestingAuthorization;
+      try {
+        stored = conformance.authorizeTesting(record, decisions);
+      } catch (error) {
+        if (error instanceof ConformanceRegistryError) throw new FederationError(error.code === 'APPROVAL_REFUSED' ? 'APPROVAL_REFUSED' : 'AUTHORIZATION_INVALID', error.detail === '' ? error.code : error.detail);
+        throw error;
+      }
+      translate(() => fed.insertAuthorization(stored.record, [], nowMs()));
+    },
+    revokeTesting(organizationId, authorizationId, reason) {
+      if (!isIdentifier(reason)) throw new FederationError('MALFORMED_INPUT', 'reason');
+      try {
+        conformance.revokeTestingAuthorization(organizationId, authorizationId, reason);
+      } catch (error) {
+        if (error instanceof ConformanceRegistryError) throw new FederationError('AUTHORIZATION_INVALID', error.code);
+        throw error;
+      }
+      event('JOB_CANCELLED', nowMs(), 'federation', authorizationId, { reason: 'AUTHORIZATION_REVOKED' });
     },
 
     eligibility(validatorId, now, untilMs) {

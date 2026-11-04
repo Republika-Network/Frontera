@@ -2,6 +2,7 @@ import { createPublicKey } from 'node:crypto';
 
 import { conformanceDigest } from './canonical.js';
 import {
+  DEPLOYMENT_ATTESTATION_OPERATION,
   MAX_COVERED_OPERATIONS,
   MAX_DECLARED_EXCLUSIONS,
   SYNTHETIC_OPERATOR_STATEMENT,
@@ -20,7 +21,8 @@ import {
 import { quarantineLineage } from './evidence.js';
 import { verifyTwoPersonAuthority, type SyntheticHumanDirectory } from './human-authority.js';
 import { profileKey, sdkSupported, type ConformanceProfileDefinition, type ConformanceProfileRegistry } from './profile.js';
-import type { ConformanceStore, ConsumedDecision } from './sqlite-conformance-store.js';
+import type { ConformanceStore, ConsumedDecision, StoredTestingAuthorization } from './sqlite-conformance-store.js';
+import { readTestingAuthorizationInput, testingAuthorizationDigest, type TestingAuthorizationRecord } from './testing-authorization.js';
 import { ConformanceStoreError, operatorEligibleAt } from './sqlite-conformance-store.js';
 import { deriveConformanceKeyId } from './signing.js';
 
@@ -60,7 +62,10 @@ export type RegistryRefusal =
   | 'VALIDATOR_CONFLICT'
   | 'APPROVAL_REFUSED'
   | 'OPERATOR_NOT_ELIGIBLE'
-  | 'TRANSITION_NOT_ALLOWED';
+  | 'TRANSITION_NOT_ALLOWED'
+  | 'UNKNOWN_INTEGRATION'
+  | 'AUTHORIZATION_SCOPE'
+  | 'UNKNOWN_AUTHORIZATION';
 
 export class ConformanceRegistryError extends Error {
   readonly code: RegistryRefusal;
@@ -150,6 +155,16 @@ export interface ConformanceRegistry {
   /** Protective, no approval, terminal. */
   revokeOperator(operatorId: string, reason: string): void;
   operatorEligible(operatorId: string): boolean;
+  /**
+   * RN-CONFORM-07: the PROPOSED testing authorization (closed record, explicit scope) and the binding two humans of the
+   * integration's own organization must approve. Nothing is stored.
+   */
+  prepareTestingAuthorization(input: unknown): { readonly record: TestingAuthorizationRecord; readonly authorizationDigest: string; readonly prepared: { readonly action: 'testing.authorize'; readonly organizationId: string; readonly subjectRef: string; readonly actionBindingDigest: string } };
+  /** PROPOSED → ACTIVE: two-person `testing.authorize`, consumed in the store (trigger-checked). */
+  authorizeTesting(record: TestingAuthorizationRecord, decisions: readonly unknown[]): StoredTestingAuthorization;
+  /** Protective, terminal, idempotent: no new challenge or observation from the committed revocation onward. */
+  revokeTestingAuthorization(organizationId: string, authorizationId: string, reason: string): void;
+  getTestingAuthorization(authorizationId: string): StoredTestingAuthorization | undefined;
 }
 
 export function createConformanceRegistry(deps: {
@@ -384,6 +399,109 @@ export function createConformanceRegistry(deps: {
       protectiveOperatorEvent(operatorId, 'REVOKED', reason);
     },
     operatorEligible: (operatorId: string) => operatorEligibleAt(store.listOperatorEvents(operatorId), toMs(clock.now())),
+
+    prepareTestingAuthorization(input: unknown) {
+      const read = readTestingAuthorizationInput(input);
+      if (read === null) throw new ConformanceRegistryError('MALFORMED_INPUT', 'testing authorization');
+      const integration = store.getIntegrationByDigest(read.organizationId, read.integrationDigest);
+      if (integration === undefined) throw new ConformanceRegistryError('UNKNOWN_INTEGRATION');
+      const rec = integration.record;
+      const profile = profiles.resolve(rec.profile.id, rec.profile.version, rec.profile.digest);
+      if (!profile.ok) throw new ConformanceRegistryError('UNKNOWN_PROFILE');
+      // Only what the integration itself registered: its synthetic fixtures, its covered operations, its profile's challenges.
+      const fixtures = new Set(rec.testEndpoints.filter((e) => e.environment === 'synthetic').map((e) => e.fixtureRef));
+      const operations = new Set([...rec.coveredOperations, DEPLOYMENT_ATTESTATION_OPERATION]);
+      const types = new Set<string>(profile.definition.requirements.flatMap((r) => (r.challengeType === null ? [] : [r.challengeType])));
+      if (!read.fixtureRefs.every((f) => fixtures.has(f)) || !read.operations.every((o) => operations.has(o)) || !read.challengeTypes.every((t) => types.has(t))) {
+        throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', 'outside what the integration registered');
+      }
+      let version = 1;
+      if (read.supersedes !== null) {
+        const old = store.getTestingAuthorization(read.supersedes);
+        if (old === undefined || old.record.organizationId !== read.organizationId || old.record.integrationId !== rec.integrationId || old.record.purpose !== read.purpose) {
+          throw new ConformanceRegistryError('UNKNOWN_AUTHORIZATION', 'the superseded authorization does not match');
+        }
+        if (old.revokedSeq === null) throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', 'revoke the superseded authorization first');
+        version = old.record.version + 1;
+      }
+      const record: TestingAuthorizationRecord = Object.freeze({
+        schema: 'rn.conformance.testing-authorization/2',
+        authorizationId: read.authorizationId,
+        version,
+        supersedes: read.supersedes,
+        organizationId: read.organizationId,
+        platformId: rec.platformId,
+        integrationId: rec.integrationId,
+        integrationVersion: rec.integrationVersion,
+        integrationDigest: read.integrationDigest,
+        profileId: rec.profile.id,
+        profileVersion: rec.profile.version,
+        purpose: read.purpose,
+        environment: 'synthetic',
+        fixtureRefs: read.fixtureRefs,
+        operations: read.operations,
+        challengeTypes: read.challengeTypes,
+        notBefore: read.notBefore,
+        notAfter: read.notAfter,
+        maxChallengesPerHour: read.maxChallengesPerHour,
+        maxConcurrentChallenges: read.maxConcurrentChallenges,
+        maxTotalChallenges: read.maxTotalChallenges,
+        synthetic: true,
+      });
+      const authorizationDigest = testingAuthorizationDigest(record);
+      return Object.freeze({
+        record,
+        authorizationDigest,
+        prepared: Object.freeze({ action: 'testing.authorize' as const, organizationId: record.organizationId, subjectRef: `authorization:${record.authorizationId}`, actionBindingDigest: authorizationDigest }),
+      });
+    },
+    authorizeTesting(record: TestingAuthorizationRecord, decisions: readonly unknown[]) {
+      // Rebuilt from its inputs: a record whose derived fields were altered (or widened) is refused before any approval.
+      const again = registry.prepareTestingAuthorization({
+        authorizationId: record.authorizationId,
+        supersedes: record.supersedes,
+        organizationId: record.organizationId,
+        integrationDigest: record.integrationDigest,
+        purpose: record.purpose,
+        fixtureRefs: record.fixtureRefs,
+        operations: record.operations,
+        challengeTypes: record.challengeTypes,
+        notBefore: record.notBefore,
+        notAfter: record.notAfter,
+        maxChallengesPerHour: record.maxChallengesPerHour,
+        maxConcurrentChallenges: record.maxConcurrentChallenges,
+        maxTotalChallenges: record.maxTotalChallenges,
+      });
+      if (again.authorizationDigest !== testingAuthorizationDigest(record)) throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', 'the record is not the prepared record');
+      const authority = verifyTwoPersonAuthority(humans, decisions, { ...again.prepared, now: clock.now() }, store.isDecisionConsumed);
+      if (!authority.authorized) throw new ConformanceRegistryError('APPROVAL_REFUSED', authority.denial);
+      // Review #2: one live authorization per (organization, integration version, purpose); scope changes supersede.
+      if (store.getTestingAuthorization(record.authorizationId) !== undefined) throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', 'authorization id already used');
+      const live = store.liveTestingAuthorizationId(record.organizationId, record.integrationDigest, record.purpose, toMs(record.notBefore));
+      if (live !== undefined) throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', `live authorization ${live} must be revoked and superseded`);
+      if (record.supersedes !== null && store.isTestingAuthorizationSuperseded(record.supersedes)) throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', 'the predecessor already has a successor');
+      const consumed: ConsumedDecision[] = authority.refs.map((ref, index) => ({ ref, signed: authority.signed[index]!, action: 'testing.authorize', organizationId: again.prepared.organizationId, subjectRef: again.prepared.subjectRef }));
+      try {
+        store.insertTestingAuthorization(again.record, again.authorizationDigest, consumed, clock.now());
+      } catch (error) {
+        storeRefusal(error);
+      }
+      return store.getTestingAuthorization(record.authorizationId) as StoredTestingAuthorization;
+    },
+    revokeTestingAuthorization(organizationId: string, authorizationId: string, reason: string) {
+      const current = store.getTestingAuthorization(authorizationId);
+      // Review #5: tenant-scoped — another organization's authorization is indistinguishable from an unknown one.
+      if (current === undefined || current.record.organizationId !== organizationId) throw new ConformanceRegistryError('UNKNOWN_AUTHORIZATION');
+      if (typeof reason !== 'string' || reason.length === 0 || reason.length > 200) throw new ConformanceRegistryError('MALFORMED_INPUT', 'reason');
+      if (current.revokedSeq !== null) return;
+      try {
+        store.revokeTestingAuthorization(authorizationId, toMs(clock.now()), reason);
+      } catch (error) {
+        if (error instanceof ConformanceStoreError && error.code === 'CONFLICT') return; // a concurrent revocation won
+        storeRefusal(error);
+      }
+    },
+    getTestingAuthorization: (authorizationId: string) => store.getTestingAuthorization(authorizationId),
 
     revokeValidatorKey(validatorId: string, reason: string) {
       if (store.getValidator(validatorId) === undefined) throw new ConformanceRegistryError('MALFORMED_INPUT', 'unknown validator');

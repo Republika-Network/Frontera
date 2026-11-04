@@ -8,6 +8,7 @@ import type { FederationRegistry } from './federation-registry.js';
 import { FederationStoreError, type FederationStore } from './federation-store.js';
 import type { ConformanceProfileRegistry } from './profile.js';
 import { operatorEligibleAt, type ConformanceStore } from './sqlite-conformance-store.js';
+import type { TestingAuthorizationPurpose } from './testing-authorization.js';
 
 /**
  * RN-CONFORM-05 — the durable challenge scheduler, the dispatch worker and operational metrics.
@@ -103,13 +104,16 @@ export function createFederationScheduler(deps: {
     return Object.freeze(out);
   };
 
-  const authorizationFor = (authorizationId: string, fixtureRef: string, deadlineSeconds: number, at: number, purpose: 'CONFORMANCE' | 'REQUALIFICATION') => {
+  const authorizationFor = (authorizationId: string, fixtureRef: string, deadlineSeconds: number, at: number, purpose: TestingAuthorizationPurpose) => {
     const auth = fed.getAuthorization(authorizationId);
     if (auth === undefined) return undefined;
     const r = auth.record;
+    // RN-CONFORM-07: the mirror must match the AUTHORITATIVE record, which must not be revoked.
+    const authoritative = store.getTestingAuthorization(authorizationId);
+    if (authoritative === undefined || authoritative.revokedSeq !== null || authoritative.authorizationDigest !== auth.recordDigest) return undefined;
     // Review P1-2: probation work only on a credential-free requalification target; credentialed work never there.
     if (r.purpose !== purpose) return undefined;
-    if (purpose === 'REQUALIFICATION' && store.hasCredentialForIntegration(r.organizationId, r.integrationDigest)) return undefined;
+    if (purpose === 'VALIDATOR_REQUALIFICATION' && store.hasCredentialForIntegration(r.organizationId, r.integrationDigest)) return undefined;
     // No scheduling outside the signed testing window: the whole challenge must fit inside it.
     if (at < toMs(r.notBefore) || at + deadlineSeconds * 1000 > toMs(r.notAfter) || !r.fixtureRefs.includes(fixtureRef)) return undefined;
     const integration = store.getIntegrationByDigest(r.organizationId, r.integrationDigest);
@@ -195,7 +199,7 @@ export function createFederationScheduler(deps: {
 
     scheduleRequalification(input) {
       const at = nowMs();
-      const target = authorizationFor(input.authorizationId, input.fixtureRef, DEADLINE_OF.REQUALIFICATION, at, 'REQUALIFICATION');
+      const target = authorizationFor(input.authorizationId, input.fixtureRef, DEADLINE_OF.REQUALIFICATION, at, 'VALIDATOR_REQUALIFICATION');
       if (target === undefined) return { scheduled: false, reason: 'AUTHORIZATION_INVALID', availableOperators: 0 };
       const record = fed.getValidator(input.validatorId);
       const row = fed.listGenerations(input.validatorId).find((g) => g.generation === input.generation);
@@ -237,7 +241,8 @@ export function createFederationScheduler(deps: {
       if (!resolved.ok) return [{ scheduled: false, reason: 'AUTHORIZATION_INVALID', availableOperators: 0 }];
       const windowMs = FEDERATION_TIMING.routineWindowSeconds * 1000;
       const windowIndex = Math.floor(at / windowMs);
-      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - windowMs, 4096);
+      // RN-CONFORM-07 (review #6): only CONFORMANCE-purpose evidence drives conformance scheduling.
+      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - windowMs, 4096).filter((o) => store.getObservationPurpose(o.eventId)?.purpose === 'CONFORMANCE');
       const results: ScheduleResult[] = [];
       for (const requirement of resolved.definition.requirements) {
         if (requirement.evaluation !== 'validator-corroborated' || requirement.challengeType === null) continue;
@@ -273,7 +278,9 @@ export function createFederationScheduler(deps: {
       const w = corroboration.windowSeconds * 1000;
       const othersToResolve = corroboration.disputeResolutionOperators - 1;
       // Look back far enough to see an unresolved violation still inside T_confirm, plus one window of evidence before it.
-      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - corroboration.investigationTimeoutSeconds * 1000 - w, 4096);
+      const recent = store
+        .listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - corroboration.investigationTimeoutSeconds * 1000 - w, 4096)
+        .filter((o) => store.getObservationPurpose(o.eventId)?.purpose === 'CONFORMANCE');
       // Only evidence the engine would count now: validators not quarantined/revoked, operators eligible (lifecycle rule).
       const counts = new Map<string, boolean>();
       const counted = (validatorId: string): boolean => {
@@ -433,7 +440,7 @@ export function createDispatchWorker(deps: {
   const requalificationTargetCredentialed = (job: ScheduledJob): boolean => {
     if (job.purpose !== 'REQUALIFICATION') return false;
     const auth = fed.getAuthorization(job.authorizationId);
-    return auth === undefined || auth.record.purpose !== 'REQUALIFICATION' || store.hasCredentialForIntegration(job.organizationId, job.integrationDigest);
+    return auth === undefined || auth.record.purpose !== 'VALIDATOR_REQUALIFICATION' || store.hasCredentialForIntegration(job.organizationId, job.integrationDigest);
   };
   const committedFor = (job: ScheduledJob) => job.assignments.filter((a) => job.challengeId !== null && store.getObservationForChallengeValidator(job.challengeId, a.conformanceValidatorId) !== undefined);
   const assignmentEligible = (job: ScheduledJob, a: JobAssignment, at: number, untilMs: number): boolean => {
@@ -485,6 +492,8 @@ export function createDispatchWorker(deps: {
             fixtureRef: job.fixtureRef,
             assignedValidatorIds: job.assignments.map((a) => a.conformanceValidatorId),
             deadlineSeconds: job.deadlineSeconds,
+            authorizationId: job.authorizationId,
+            purpose: job.purpose === 'REQUALIFICATION' ? 'VALIDATOR_REQUALIFICATION' : 'CONFORMANCE',
           });
         } catch (error) {
           if (error instanceof ChallengeCoordinatorError) {
@@ -498,6 +507,15 @@ export function createDispatchWorker(deps: {
       } else {
         signed = store.getChallenge(job.challengeId);
         if (signed === undefined) throw new FederationStoreError('INVARIANT_REFUSED', 'job challenge missing from the conformance store');
+        // RN-CONFORM-07 (review #1): a revoked or expired authorization stops redelivery of an already-issued challenge
+        // too — no validator probes the fixture after consent is withdrawn.
+        const authoritative = store.getTestingAuthorization(job.authorizationId);
+        const stop = authoritative === undefined ? 'AUTHORIZATION_INVALID' : authoritative.revokedSeq !== null ? 'AUTHORIZATION_REVOKED' : at > authoritative.notAfterMs ? 'AUTHORIZATION_EXPIRED' : null;
+        if (stop !== null) {
+          fed.commitWithLease(lease, at, { state: 'CANCELLED', lastError: stop });
+          fed.appendEvent('JOB_CANCELLED', at, 'job', jobId, { reason: stop });
+          return { jobId, outcome: 'CANCELLED', detail: stop };
+        }
       }
       const deadlineMs = toMs(signed.challenge.deadline);
       if (at > deadlineMs) {

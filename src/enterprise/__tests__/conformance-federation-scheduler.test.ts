@@ -11,7 +11,7 @@ import { signConformancePayload } from '../conformance/signing.js';
 import { ORG_A, deterministicRandom } from './conformance-support.js';
 import { REFERENCE_FIXTURE_REF } from './conformance-reference-pep.js';
 import { cleanupReferenceCircuits } from './conformance-reference-support.js';
-import { FED_AUTHORIZATION, FED_OPERATORS, beat, drain, evidencePort, fedDecisions, runtimeFor, scheduleOne, standardFederation, type FederatedValidator, type Federation } from './conformance-federation-support.js';
+import { FED_AUTHORIZATION, FED_OPERATORS, beat, drain, evidencePort, fedDecisions, runtimeFor, scheduleOne, standardFederation, type FederatedValidator, type Federation, REFERENCE_SCOPE } from './conformance-federation-support.js';
 
 /**
  * RN-CONFORM-05 — WP-05/06/07/08/17: heartbeats and health, the durable scheduler, leases and fencing, operator-aware
@@ -150,7 +150,7 @@ describe('RN-CONFORM-05 — operator-aware assignment (WP-08)', () => {
     );
     // Authorizing a fixture the integration never registered is refused at the source.
     assert.throws(() =>
-      f.registry.prepareTestingAuthorization({ authorizationId: 'auth-bad', organizationId: 'org-synthetic-alpha', integrationDigest: f.c.integration.integrationDigest, purpose: 'CONFORMANCE', fixtureRefs: ['https-customer-tenant'], notBefore: f.c.clock.now(), notAfter: '2027-01-01T00:00:00.000Z' }),
+      f.registry.prepareTestingAuthorization({ authorizationId: 'auth-bad', organizationId: 'org-synthetic-alpha', integrationDigest: f.c.integration.integrationDigest, purpose: 'CONFORMANCE', supersedes: null, ...REFERENCE_SCOPE, fixtureRefs: ['https-customer-tenant'], notBefore: f.c.clock.now(), notAfter: '2027-01-01T00:00:00.000Z' }),
     );
     f.c.clock.advance(31 * 86_400);
     beat(f);
@@ -383,5 +383,24 @@ describe('RN-CONFORM-05 — restart, rollback and corruption (WP-17)', () => {
     raw2.exec('DROP TRIGGER fed_jobs_fencing');
     raw2.close();
     assert.throws(() => f.restart(), (e: unknown) => e instanceof FederationStoreError && e.code === 'CORRUPT');
+  });
+});
+
+describe('RN-CONFORM-07 — review #1: revocation stops redelivery', () => {
+  it('a challenge already bound to a job is not redelivered after its authorization is revoked', async () => {
+    const f = standardFederation('rn07-redelivery');
+    const r = scheduleOne(f, 'G01', 'document.open', 2, { key: 'rn07-redeliver' });
+    if (!r.scheduled) throw new Error(r.reason);
+    for (const a of r.job.assignments) f.down.add(a.validatorId);
+    await f.worker('w-rn07').process(r.job.jobId);
+    const bound = f.fed.getJob(r.job.jobId)!;
+    assert.ok(bound.challengeId !== null, 'the challenge was issued and bound');
+    f.down.clear();
+    f.c.services().registry.revokeTestingAuthorization(ORG_A, FED_AUTHORIZATION, 'consent withdrawn (test)');
+    const delivered = f.deliveries.filter((d) => d.result !== 'UNREACHABLE').length;
+    f.c.clock.advance(FEDERATION_TIMING.backoffBaseSeconds + FEDERATION_TIMING.jitterMaxSeconds + 1);
+    const out = await f.worker('w-rn07').process(r.job.jobId);
+    assert.deepEqual([out.outcome, 'detail' in out ? out.detail : null], ['CANCELLED', 'AUTHORIZATION_REVOKED']);
+    assert.equal(f.deliveries.filter((d) => d.result !== 'UNREACHABLE').length, delivered, 'nothing was delivered after revocation');
   });
 });

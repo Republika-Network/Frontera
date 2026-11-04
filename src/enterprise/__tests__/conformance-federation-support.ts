@@ -23,7 +23,7 @@ import {
 import { RN_CONFORMANCE_DOCUMENT_USE_REFERENCE_PROFILE_V0_1 } from '../conformance/profile.js';
 import { deriveConformanceKeyId, publicKeyPemOf, signConformancePayload } from '../conformance/signing.js';
 import { ORG_A, decide, deterministicRandom, enrollmentDecisions, testKey } from './conformance-support.js';
-import { REFERENCE_DEPLOYMENT_DIGEST, REFERENCE_FIXTURE_REF, runReferenceProbe, type ReferenceChallengeType } from './conformance-reference-pep.js';
+import { REFERENCE_DEPLOYMENT_DIGEST, REFERENCE_FIXTURE_REF, REFERENCE_OPERATIONS, runReferenceProbe, type ReferenceChallengeType } from './conformance-reference-pep.js';
 import { REFERENCE_CHALLENGES, buildReferenceCircuit, referenceApprovals, referenceIntegrationInput, type ReferenceCircuit } from './conformance-reference-support.js';
 
 /**
@@ -220,15 +220,26 @@ export function onboardOperator(f: Federation, operatorId: string): void {
   f.registry.activateOperator(operatorId);
 }
 
+/** The explicit scope every federation authorization grants: the reference PEP's operations, G01–G08, its one fixture, bounded probes. */
+export const REFERENCE_SCOPE = Object.freeze({
+  fixtureRefs: [REFERENCE_FIXTURE_REF],
+  operations: [...REFERENCE_OPERATIONS, 'deployment.read-attested-manifest'],
+  challengeTypes: [...REFERENCE_CHALLENGES],
+  maxChallengesPerHour: 10_000,
+  maxConcurrentChallenges: 1_000,
+  maxTotalChallenges: null,
+});
+
 /** Two humans of the platform's own organization authorize synthetic testing of the reference integration for 30 days. */
 export function authorizeReferenceTesting(f: Federation, authorizationId = FED_AUTHORIZATION, days = 30): void {
   const now = f.c.clock.ms();
   const { record, prepared } = f.registry.prepareTestingAuthorization({
     authorizationId,
+    supersedes: null,
     organizationId: ORG_A,
     integrationDigest: f.c.integration.integrationDigest,
     purpose: 'CONFORMANCE',
-    fixtureRefs: [REFERENCE_FIXTURE_REF],
+    ...REFERENCE_SCOPE,
     notBefore: new Date(now).toISOString(),
     notAfter: new Date(now + days * 86_400_000).toISOString(),
   });
@@ -240,10 +251,11 @@ export function authorizeRequalificationTesting(f: Federation): void {
   const now = f.c.clock.ms();
   const { record, prepared } = f.registry.prepareTestingAuthorization({
     authorizationId: FED_REQUALIFICATION_AUTHORIZATION,
+    supersedes: null,
     organizationId: f.requalification.organizationId,
     integrationDigest: f.requalification.integrationDigest,
-    purpose: 'REQUALIFICATION',
-    fixtureRefs: [REFERENCE_FIXTURE_REF],
+    purpose: 'VALIDATOR_REQUALIFICATION',
+    ...REFERENCE_SCOPE,
     notBefore: new Date(now).toISOString(),
     notAfter: new Date(now + 30 * 86_400_000).toISOString(),
   });

@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { conformanceDigest } from '../conformance/canonical.js';
 import { DEPLOYMENT_ATTESTATION_OPERATION, createChallengeCoordinator, newIdentifier, type RandomSource } from '../conformance/coordinator.js';
 import type { ChallengeType, HumanAction, ObservationPayload, ObservedOutcome, SignedChallenge, SignedHumanDecision } from '../conformance/contracts.js';
-import { HUMAN_DECISION_FORMAT, toMs, toTimestamp } from '../conformance/contracts.js';
+import { CHALLENGE_TYPES, HUMAN_DECISION_FORMAT, toMs, toTimestamp } from '../conformance/contracts.js';
+import type { TestingAuthorizationPurpose } from '../conformance/testing-authorization.js';
 import { classifyOutcome } from '../conformance/engine.js';
 import { createEvidenceService, type SubmissionResult } from '../conformance/evidence.js';
 import { createSyntheticHumanDirectory, type SyntheticHumanDirectory } from '../conformance/human-authority.js';
@@ -371,6 +372,72 @@ export function integrationInput(profileDigest: string, overrides: Record<string
   };
 }
 
+// ---------------------------------------------------------------------------
+// RN-CONFORM-07: explicit synthetic testing authorizations. There is no test bypass: every challenge a harness issues
+// is covered by a two-person `testing.authorize` approval by humans of the integration's own organization.
+// ---------------------------------------------------------------------------
+
+const AUTHORIZATION_WINDOW_MS = 90 * 86_400_000;
+const authorizationCache = new Map<string, { authorizationId: string; notAfterMs: number }>();
+let authorizationCounter = 0;
+
+/**
+ * Returns an ACTIVE synthetic authorization of `purpose` for `integrationDigest` that covers [now, now + deadline],
+ * creating (and two-person approving) a new one when none does. Scope is explicit: every covered operation plus the
+ * deployment attestation, every G01–G08 challenge type the profile backs, every registered synthetic fixture.
+ */
+export function ensureTestingAuthorization(
+  deps: { readonly store: ConformanceStore; readonly registry: ReturnType<typeof createConformanceRegistry>; readonly clock: ConformanceClock; readonly profiles: ConformanceProfileRegistry; readonly approvers: readonly [SyntheticHuman, SyntheticHuman] },
+  integrationDigest: string,
+  organizationId: string,
+  deadlineSeconds: number,
+  purpose: TestingAuthorizationPurpose = 'CONFORMANCE',
+): string {
+  const now = toMs(deps.clock.now());
+  const key = `${deps.store.path}|${integrationDigest}|${purpose}`;
+  const cached = authorizationCache.get(key);
+  const usable = (id: string) => {
+    const a = deps.store.getTestingAuthorization(id);
+    return a !== undefined && a.revokedSeq === null && a.notBeforeMs <= now && now + deadlineSeconds * 1000 <= a.notAfterMs;
+  };
+  if (cached !== undefined && usable(cached.authorizationId)) return cached.authorizationId;
+  const integration = deps.store.getIntegrationByDigest(organizationId, integrationDigest);
+  if (integration === undefined || deps.approvers.some((h) => h.organizationId !== organizationId)) return 'auth-not-available';
+  const profile = deps.profiles.resolve(integration.record.profile.id, integration.record.profile.version, integration.record.profile.digest);
+  if (!profile.ok) return 'auth-not-available';
+  authorizationCounter += 1;
+  const at = deps.clock.now();
+  // One live authorization per (organization, integration version, purpose): a lapsing one is revoked and superseded.
+  const predecessor = cached?.authorizationId ?? deps.store.liveTestingAuthorizationId(organizationId, integrationDigest, purpose, now);
+  if (predecessor !== undefined) deps.registry.revokeTestingAuthorization(organizationId, predecessor, 'synthetic harness renewal');
+  const { record, prepared } = deps.registry.prepareTestingAuthorization({
+    authorizationId: `auth-synthetic-${authorizationCounter}`,
+    supersedes: predecessor ?? null,
+    organizationId,
+    integrationDigest,
+    purpose,
+    fixtureRefs: integration.record.testEndpoints.filter((e) => e.environment === 'synthetic').map((e) => e.fixtureRef),
+    operations: [...integration.record.coveredOperations, DEPLOYMENT_ATTESTATION_OPERATION],
+    challengeTypes: [...new Set(profile.definition.requirements.map((r) => r.challengeType).filter((t): t is ChallengeType => t !== null && (CHALLENGE_TYPES as readonly string[]).includes(t)))],
+    notBefore: at,
+    notAfter: toTimestamp(now + AUTHORIZATION_WINDOW_MS),
+    maxChallengesPerHour: 10_000,
+    maxConcurrentChallenges: 1_000,
+    maxTotalChallenges: null,
+  });
+  deps.registry.authorizeTesting(record, [
+    decide(deps.approvers[0], 'attest', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, at),
+    decide(deps.approvers[1], 'approve', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, at),
+  ]);
+  authorizationCache.set(key, { authorizationId: record.authorizationId, notAfterMs: now + AUTHORIZATION_WINDOW_MS });
+  return record.authorizationId;
+}
+
+/** The circuit's authorization for an integration digest (default: the circuit's integration). */
+export function testingAuthorizationFor(c: Circuit, integrationDigest = c.integration.integrationDigest, organizationId = ORG_A, deadlineSeconds = 900): string {
+  return ensureTestingAuthorization({ store: c.store, registry: c.services().registry, clock: c.clock, profiles: c.profiles, approvers: [c.humans.alice, c.humans.bob] }, integrationDigest, organizationId, deadlineSeconds);
+}
+
 let idempotencyCounter = 0;
 
 /** Issues one challenge of `type` to `validators`. */
@@ -381,15 +448,20 @@ export function issue(
   options: { idempotencyKey?: string; deadlineSeconds?: number; integrationDigest?: string; organizationId?: string; operation?: string } = {},
 ): SignedChallenge {
   idempotencyCounter += 1;
+  const organizationId = options.organizationId ?? ORG_A;
+  const integrationDigest = options.integrationDigest ?? c.integration.integrationDigest;
+  const deadlineSeconds = options.deadlineSeconds ?? 600;
   return c.services().coordinator.issue({
     idempotencyKey: options.idempotencyKey ?? `idem-${type}-${idempotencyCounter}`,
-    organizationId: options.organizationId ?? ORG_A,
-    integrationDigest: options.integrationDigest ?? c.integration.integrationDigest,
+    organizationId,
+    integrationDigest,
     challengeType: type,
     operation: type === 'G08' ? DEPLOYMENT_ATTESTATION_OPERATION : (options.operation ?? 'document.open'),
     fixtureRef: 'fixture-synthetic-pep-v1',
     assignedValidatorIds: validators.map((v) => v.validatorId),
-    deadlineSeconds: options.deadlineSeconds ?? 600,
+    deadlineSeconds,
+    authorizationId: testingAuthorizationFor(c, integrationDigest, organizationId, deadlineSeconds),
+    purpose: 'CONFORMANCE',
   });
 }
 

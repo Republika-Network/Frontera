@@ -18,6 +18,7 @@ import type {
   ValidatorOperatorRecord,
 } from './contracts.js';
 import { canonicalizeConformance } from './canonical.js';
+import { MAX_CHALLENGES_PER_INTEGRATION_PER_HOUR, MAX_CONCURRENT_CHALLENGES_PER_INTEGRATION, isTestingAuthorizationRecord, testingAuthorizationDigest, type TestingAuthorizationPurpose, type TestingAuthorizationRecord } from './testing-authorization.js';
 
 /**
  * RN-CONFORM-02 / WP-08 — the dedicated conformance store.
@@ -71,8 +72,10 @@ import { canonicalizeConformance } from './canonical.js';
  * acceptance. `/2` (RN-CONFORM-03): status assertions and anchor intents. A `/2` file is refused with
  * SCHEMA_MIGRATION_REQUIRED and converted only by the explicit `migrateConformanceStore`; a `/1` file is refused.
  */
-export const CONFORMANCE_STORE_SCHEMA_VERSION = 'rn.conformance.store/3';
-export const CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION = 'rn.conformance.store/2';
+export const CONFORMANCE_STORE_SCHEMA_VERSION = 'rn.conformance.store/4';
+/** RN-CONFORM-07: the earlier versions `migrateConformanceStore` can convert, oldest first. */
+export const CONFORMANCE_STORE_MIGRATABLE_VERSIONS = Object.freeze(['rn.conformance.store/2', 'rn.conformance.store/3'] as const);
+export const CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION = 'rn.conformance.store/3';
 
 const TWO_HUMANS = (action: string, consumedFor: string, binding: string, subject: string) => `(
   (SELECT COUNT(DISTINCT d.principal_id) FROM cc_consumed_decisions d WHERE d.consumed_for = ${consumedFor} AND d.action = '${action}' AND d.action_binding_digest IS ${binding} AND d.subject_ref = ${subject}) >= 2
@@ -594,14 +597,176 @@ END;
 `;
 
 /** `/3` = `/2` with the two operator-gated triggers replaced, plus the operator status log. */
-const SCHEMA = `${SCHEMA_V2.replace(ENROLLED_TRIGGER_V2, () => ENROLLED_TRIGGER_V3).replace(ATTRIBUTED_TRIGGER_V2, () => ATTRIBUTED_TRIGGER_V3)}${OPERATOR_STATUS_SCHEMA_V3}`;
+const SCHEMA_V3 = `${SCHEMA_V2.replace(ENROLLED_TRIGGER_V2, () => ENROLLED_TRIGGER_V3).replace(ATTRIBUTED_TRIGGER_V2, () => ATTRIBUTED_TRIGGER_V3)}${OPERATOR_STATUS_SCHEMA_V3}`;
+
+// ---------------------------------------------------------------------------
+// RN-CONFORM-07: schema /4 — authoritative testing authorization and evidence-purpose isolation.
+// ---------------------------------------------------------------------------
+
+/** The /2–/3 violation-recording trigger, verbatim (extracted, so the migration drops exactly this text). */
+const RECORD_VIOLATION_TRIGGER_V2 = (() => {
+  const start = SCHEMA_V2.indexOf('CREATE TRIGGER cc_observations_record_violation');
+  return SCHEMA_V2.slice(start, SCHEMA_V2.indexOf('\nEND;', start) + 5);
+})();
+/** An observation is CONFORMANCE evidence exactly when its challenge's authorization association says so. */
+const CONFORMANCE_PURPOSE = (challengeExpr: string) => `EXISTS (SELECT 1 FROM cc_challenge_authorizations ca WHERE ca.challenge_id = ${challengeExpr} AND ca.purpose = 'CONFORMANCE')`;
+/** /4: only CONFORMANCE-purpose violations are recorded or counted (requalification evidence never reaches a credential). */
+const RECORD_VIOLATION_TRIGGER_V4 = `CREATE TRIGGER cc_observations_record_violation AFTER INSERT ON cc_observations WHEN NEW.outcome_class = 'violation' AND ${CONFORMANCE_PURPOSE('NEW.challenge_id')} BEGIN
+  INSERT INTO cc_confirmed_violations (event_id, organization_id, integration_digest, profile_id, profile_version, control_id, operation, critical, operator_count, min_operators, observed_at_ms, confirmed_at_ms)
+    SELECT NEW.event_id, NEW.organization_id, NEW.integration_digest, NEW.profile_id, NEW.profile_version, NEW.control_id, NEW.operation,
+      EXISTS (SELECT 1 FROM json_each(p.definition_json, '$.requirements') r WHERE json_extract(r.value, '$.requirementId') = NEW.control_id AND json_extract(r.value, '$.severity') = 'critical'),
+      (SELECT COUNT(DISTINCT o.operator_id) FROM cc_observations o WHERE o.organization_id = NEW.organization_id AND o.integration_digest = NEW.integration_digest
+        AND o.profile_id = NEW.profile_id AND o.profile_version = NEW.profile_version AND o.control_id = NEW.control_id AND o.operation = NEW.operation AND o.outcome_class = 'violation'
+        AND ${CONFORMANCE_PURPOSE('o.challenge_id')}
+        AND o.observed_at_ms BETWEEN NEW.observed_at_ms - json_extract(p.definition_json, '$.corroboration.windowSeconds') * 1000 AND NEW.observed_at_ms + json_extract(p.definition_json, '$.corroboration.windowSeconds') * 1000),
+      json_extract(p.definition_json, '$.corroboration.minDistinctOperators'),
+      NEW.observed_at_ms, NEW.accepted_at_ms
+    FROM cc_profiles p WHERE p.profile_id = NEW.profile_id AND p.profile_version = NEW.profile_version;
+  SELECT RAISE(ABORT, 'cc:violation not recorded') WHERE NOT EXISTS (SELECT 1 FROM cc_confirmed_violations v WHERE v.event_id = NEW.event_id AND v.integration_digest = NEW.integration_digest AND v.control_id = NEW.control_id);
+END;`;
+const ACTIVE_AUTHORIZATION_OF = (challengeExpr: string, atExpr: string) => `EXISTS (SELECT 1 FROM cc_challenge_authorizations a JOIN cc_testing_authorizations t ON t.authorization_id = a.authorization_id
+    WHERE a.challenge_id = ${challengeExpr} AND a.purpose <> 'LEGACY' AND ${atExpr} <= t.not_after_ms AND NOT EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = t.authorization_id))`;
+/** /4: an observation is accepted only for a challenge whose authorization is unrevoked and unexpired at acceptance. */
+const ATTRIBUTED_TRIGGER_V4 = ATTRIBUTED_TRIGGER_V3.replace(
+  "  SELECT RAISE(ABORT, 'cc:observation challenge mismatch')",
+  () => `  SELECT RAISE(ABORT, 'cc:observation without active authorization') WHERE NOT ${ACTIVE_AUTHORIZATION_OF('NEW.challenge_id', 'NEW.accepted_at_ms')};\n  SELECT RAISE(ABORT, 'cc:observation challenge mismatch')`,
+);
+const IMMUTABLE = (table: string) => `CREATE TRIGGER ${table}_no_update BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:immutable ${table}'); END;
+CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:immutable ${table}'); END;`;
+const ORDER_NOW = `(SELECT o.value FROM cc_order o WHERE o.id = 1)`;
+/** Review #8: the highest sequence any row already carries. A new sequence must exceed it (the counter must have advanced). */
+const SEQ_USED = `(SELECT MAX(m) FROM (SELECT MAX(activated_seq) AS m FROM cc_testing_authorizations UNION ALL SELECT MAX(seq) FROM cc_authorization_events UNION ALL SELECT MAX(issued_seq) FROM cc_challenge_authorizations UNION ALL SELECT MAX(accepted_seq) FROM cc_observation_purposes))`;
+const FRESH_SEQ = (expr: string) => `(${expr} IS ${ORDER_NOW} AND ${expr} > COALESCE(${SEQ_USED}, 0))`;
+const AUTHORIZATION_SCHEMA_V4 = `
+CREATE TABLE cc_order (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  value INTEGER NOT NULL CHECK (value >= 0)
+);
+CREATE TRIGGER cc_order_no_delete BEFORE DELETE ON cc_order BEGIN SELECT RAISE(ABORT, 'cc:immutable cc_order'); END;
+CREATE TRIGGER cc_order_single BEFORE INSERT ON cc_order WHEN EXISTS (SELECT 1 FROM cc_order) BEGIN SELECT RAISE(ABORT, 'cc:duplicate cc_order'); END;
+CREATE TRIGGER cc_order_forward BEFORE UPDATE ON cc_order WHEN NEW.id IS NOT OLD.id OR NEW.value <> OLD.value + 1 BEGIN SELECT RAISE(ABORT, 'cc:order only advances by one'); END;
+CREATE TABLE cc_testing_authorizations (
+  authorization_id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL CHECK (version >= 1),
+  supersedes TEXT,
+  organization_id TEXT NOT NULL,
+  integration_id TEXT NOT NULL,
+  integration_version INTEGER NOT NULL,
+  integration_digest TEXT NOT NULL REFERENCES cc_integrations (integration_digest),
+  purpose TEXT NOT NULL CHECK (purpose IN ('CONFORMANCE', 'VALIDATOR_REQUALIFICATION')),
+  environment TEXT NOT NULL CHECK (environment = 'synthetic'),
+  not_before_ms INTEGER NOT NULL,
+  not_after_ms INTEGER NOT NULL,
+  max_per_hour INTEGER NOT NULL CHECK (max_per_hour >= 1),
+  max_concurrent INTEGER NOT NULL CHECK (max_concurrent >= 1),
+  max_total INTEGER CHECK (max_total IS NULL OR max_total >= 1),
+  record_json TEXT NOT NULL,
+  authorization_digest TEXT NOT NULL,
+  activated_seq INTEGER NOT NULL,
+  synthetic INTEGER NOT NULL CHECK (synthetic = 1),
+  CHECK (not_after_ms > not_before_ms)
+);
+${IMMUTABLE('cc_testing_authorizations')}
+${duplicateGuard('cc_testing_authorizations', [['authorization_id'], ['authorization_digest']])}
+CREATE TABLE cc_authorization_events (
+  authorization_id TEXT PRIMARY KEY REFERENCES cc_testing_authorizations (authorization_id),
+  seq INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind = 'REVOKED'),
+  at_ms INTEGER NOT NULL,
+  reason TEXT NOT NULL
+);
+${IMMUTABLE('cc_authorization_events')}
+${duplicateGuard('cc_authorization_events', [['authorization_id']])}
+CREATE TABLE cc_challenge_authorizations (
+  challenge_id TEXT PRIMARY KEY,
+  authorization_id TEXT REFERENCES cc_testing_authorizations (authorization_id),
+  authorization_digest TEXT,
+  purpose TEXT NOT NULL CHECK (purpose IN ('CONFORMANCE', 'VALIDATOR_REQUALIFICATION', 'LEGACY')),
+  issued_seq INTEGER NOT NULL,
+  CHECK ((purpose = 'LEGACY') = (authorization_id IS NULL)),
+  CHECK ((purpose = 'LEGACY') = (authorization_digest IS NULL))
+);
+${IMMUTABLE('cc_challenge_authorizations')}
+${duplicateGuard('cc_challenge_authorizations', [['challenge_id']])}
+CREATE TABLE cc_observation_purposes (
+  event_id TEXT PRIMARY KEY,
+  challenge_id TEXT NOT NULL,
+  authorization_id TEXT,
+  purpose TEXT NOT NULL CHECK (purpose IN ('CONFORMANCE', 'VALIDATOR_REQUALIFICATION', 'LEGACY')),
+  accepted_seq INTEGER NOT NULL
+);
+${IMMUTABLE('cc_observation_purposes')}
+${duplicateGuard('cc_observation_purposes', [['event_id']])}
+CREATE TRIGGER cc_testing_authorizations_valid BEFORE INSERT ON cc_testing_authorizations BEGIN
+  SELECT RAISE(ABORT, 'cc:authorization integration mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_integrations i WHERE i.integration_digest = NEW.integration_digest AND i.organization_id = NEW.organization_id AND i.integration_id = NEW.integration_id AND i.integration_version = NEW.integration_version);
+  SELECT RAISE(ABORT, 'cc:authorization order') WHERE NOT ${FRESH_SEQ('NEW.activated_seq')};
+  SELECT RAISE(ABORT, 'cc:authorization digest mismatch') WHERE json_extract(NEW.record_json, '$.authorizationId') IS NOT NEW.authorization_id OR json_extract(NEW.record_json, '$.organizationId') IS NOT NEW.organization_id
+    OR json_extract(NEW.record_json, '$.integrationDigest') IS NOT NEW.integration_digest OR json_extract(NEW.record_json, '$.purpose') IS NOT NEW.purpose OR json_extract(NEW.record_json, '$.version') IS NOT NEW.version
+    OR json_extract(NEW.record_json, '$.supersedes') IS NOT NEW.supersedes OR json_extract(NEW.record_json, '$.maxChallengesPerHour') IS NOT NEW.max_per_hour
+    OR json_extract(NEW.record_json, '$.maxConcurrentChallenges') IS NOT NEW.max_concurrent OR json_extract(NEW.record_json, '$.maxTotalChallenges') IS NOT NEW.max_total;
+  -- Review #2: one live authorization per (organization, integration version, purpose); a scope change supersedes it.
+  SELECT RAISE(ABORT, 'cc:authorization overlaps a live authorization') WHERE EXISTS (SELECT 1 FROM cc_testing_authorizations o WHERE o.organization_id = NEW.organization_id
+    AND o.integration_digest = NEW.integration_digest AND o.purpose = NEW.purpose AND o.not_after_ms > NEW.not_before_ms AND NOT EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = o.authorization_id));
+  SELECT RAISE(ABORT, 'cc:authorization already superseded') WHERE NEW.supersedes IS NOT NULL AND EXISTS (SELECT 1 FROM cc_testing_authorizations o WHERE o.supersedes = NEW.supersedes);
+  SELECT RAISE(ABORT, 'cc:authorization version') WHERE (NEW.supersedes IS NULL AND NEW.version <> 1) OR (NEW.supersedes IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cc_testing_authorizations s WHERE s.authorization_id = NEW.supersedes AND s.organization_id = NEW.organization_id AND s.integration_id = NEW.integration_id AND s.purpose = NEW.purpose AND s.version + 1 = NEW.version AND EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = s.authorization_id)));
+  SELECT RAISE(ABORT, 'cc:requalification target is credentialed') WHERE NEW.purpose = 'VALIDATOR_REQUALIFICATION' AND EXISTS (SELECT 1 FROM cc_credentials c JOIN cc_integrations i ON i.integration_digest = c.integration_digest WHERE i.integration_id = NEW.integration_id AND i.organization_id = NEW.organization_id);
+  SELECT RAISE(ABORT, 'cc:authorization requires two humans') WHERE NOT ${TWO_HUMANS('testing.authorize', "'authorization:' || NEW.authorization_id", 'NEW.authorization_digest', "'authorization:' || NEW.authorization_id")};
+END;
+CREATE TRIGGER cc_authorization_events_order BEFORE INSERT ON cc_authorization_events WHEN NOT ${FRESH_SEQ('NEW.seq')} BEGIN SELECT RAISE(ABORT, 'cc:revocation order'); END;
+CREATE TRIGGER cc_challenge_authorizations_valid BEFORE INSERT ON cc_challenge_authorizations BEGIN
+  SELECT RAISE(ABORT, 'cc:legacy association outside migration') WHERE NEW.purpose = 'LEGACY' AND NOT EXISTS (SELECT 1 FROM cc_challenges c WHERE c.challenge_id = NEW.challenge_id);
+  SELECT RAISE(ABORT, 'cc:association authorization mismatch') WHERE NEW.purpose <> 'LEGACY' AND NOT EXISTS (SELECT 1 FROM cc_testing_authorizations t WHERE t.authorization_id = NEW.authorization_id AND t.authorization_digest = NEW.authorization_digest AND t.purpose = NEW.purpose);
+  SELECT RAISE(ABORT, 'cc:authorization revoked') WHERE NEW.purpose <> 'LEGACY' AND EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = NEW.authorization_id);
+  SELECT RAISE(ABORT, 'cc:association order') WHERE NEW.issued_seq IS NOT ${ORDER_NOW} OR (NEW.purpose <> 'LEGACY' AND NOT ${FRESH_SEQ('NEW.issued_seq')});
+END;
+CREATE TRIGGER cc_challenges_authorized BEFORE INSERT ON cc_challenges BEGIN
+  SELECT RAISE(ABORT, 'cc:challenge outside its authorization') WHERE NOT EXISTS (SELECT 1 FROM cc_challenge_authorizations a JOIN cc_testing_authorizations t ON t.authorization_id = a.authorization_id
+    WHERE a.challenge_id = NEW.challenge_id AND a.purpose <> 'LEGACY' AND t.organization_id = NEW.organization_id AND t.integration_digest = NEW.integration_digest
+      AND json_extract(t.record_json, '$.profileId') = NEW.profile_id AND json_extract(t.record_json, '$.profileVersion') = NEW.profile_version
+      AND EXISTS (SELECT 1 FROM json_each(t.record_json, '$.operations') x WHERE x.value = NEW.operation)
+      AND EXISTS (SELECT 1 FROM json_each(t.record_json, '$.challengeTypes') x WHERE x.value = json_extract(NEW.challenge_json, '$.challengeType'))
+      AND EXISTS (SELECT 1 FROM json_each(t.record_json, '$.fixtureRefs') x WHERE x.value = json_extract(NEW.challenge_json, '$.fixtureRef'))
+      AND NEW.issued_at_ms >= t.not_before_ms AND NEW.deadline_ms <= t.not_after_ms
+      AND NOT EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = t.authorization_id));
+  SELECT RAISE(ABORT, 'cc:authorization quota exhausted') WHERE EXISTS (SELECT 1 FROM cc_challenge_authorizations a JOIN cc_testing_authorizations t ON t.authorization_id = a.authorization_id WHERE a.challenge_id = NEW.challenge_id AND (
+      (t.max_total IS NOT NULL AND (SELECT COUNT(*) FROM cc_challenges c JOIN cc_challenge_authorizations b ON b.challenge_id = c.challenge_id WHERE b.authorization_id = t.authorization_id) >= t.max_total)
+      OR (SELECT COUNT(*) FROM cc_challenges c JOIN cc_challenge_authorizations b ON b.challenge_id = c.challenge_id WHERE b.authorization_id = t.authorization_id AND c.issued_at_ms > NEW.issued_at_ms - 3600000) >= t.max_per_hour
+      OR (SELECT COUNT(*) FROM cc_challenges c JOIN cc_challenge_authorizations b ON b.challenge_id = c.challenge_id WHERE b.authorization_id = t.authorization_id AND c.deadline_ms > NEW.issued_at_ms) >= t.max_concurrent));
+  -- Review #3: integration-wide ceilings across every version and authorization of the integration (by integration_id).
+  SELECT RAISE(ABORT, 'cc:integration rate limit') WHERE (SELECT COUNT(*) FROM cc_challenges c JOIN cc_integrations i ON i.integration_digest = c.integration_digest
+    WHERE i.integration_id = (SELECT n.integration_id FROM cc_integrations n WHERE n.integration_digest = NEW.integration_digest) AND i.organization_id = NEW.organization_id AND c.issued_at_ms > NEW.issued_at_ms - 3600000) >= ${MAX_CHALLENGES_PER_INTEGRATION_PER_HOUR};
+  SELECT RAISE(ABORT, 'cc:integration concurrency limit') WHERE (SELECT COUNT(*) FROM cc_challenges c JOIN cc_integrations i ON i.integration_digest = c.integration_digest
+    WHERE i.integration_id = (SELECT n.integration_id FROM cc_integrations n WHERE n.integration_digest = NEW.integration_digest) AND i.organization_id = NEW.organization_id AND c.deadline_ms > NEW.issued_at_ms) >= ${MAX_CONCURRENT_CHALLENGES_PER_INTEGRATION};
+END;
+CREATE TRIGGER cc_observations_purpose AFTER INSERT ON cc_observations BEGIN
+  UPDATE cc_order SET value = value + 1 WHERE id = 1;
+  INSERT INTO cc_observation_purposes (event_id, challenge_id, authorization_id, purpose, accepted_seq)
+    SELECT NEW.event_id, NEW.challenge_id, a.authorization_id, a.purpose, ${ORDER_NOW} FROM cc_challenge_authorizations a WHERE a.challenge_id = NEW.challenge_id;
+  SELECT RAISE(ABORT, 'cc:observation purpose not recorded') WHERE NOT EXISTS (SELECT 1 FROM cc_observation_purposes p WHERE p.event_id = NEW.event_id);
+END;
+CREATE TRIGGER cc_observation_purposes_bound BEFORE INSERT ON cc_observation_purposes BEGIN
+  SELECT RAISE(ABORT, 'cc:observation purpose order') WHERE NEW.purpose <> 'LEGACY' AND NOT ${FRESH_SEQ('NEW.accepted_seq')};
+  SELECT RAISE(ABORT, 'cc:observation purpose forged') WHERE NOT EXISTS (SELECT 1 FROM cc_observations o JOIN cc_challenge_authorizations a ON a.challenge_id = o.challenge_id
+    WHERE o.event_id = NEW.event_id AND o.challenge_id = NEW.challenge_id AND a.purpose = NEW.purpose AND a.authorization_id IS NEW.authorization_id);
+END;
+CREATE TRIGGER cc_credentials_purpose_reserved BEFORE INSERT ON cc_credentials BEGIN
+  SELECT RAISE(ABORT, 'cc:integration reserved for validator requalification') WHERE EXISTS (SELECT 1 FROM cc_testing_authorizations t JOIN cc_integrations i ON i.integration_id = t.integration_id AND i.organization_id = t.organization_id
+    WHERE i.integration_digest = NEW.integration_digest AND t.purpose = 'VALIDATOR_REQUALIFICATION');
+END;
+CREATE INDEX cc_testing_authorizations_subject ON cc_testing_authorizations (organization_id, integration_digest, purpose);
+CREATE INDEX cc_testing_authorizations_supersedes ON cc_testing_authorizations (supersedes);
+CREATE INDEX cc_challenge_authorizations_by_authorization ON cc_challenge_authorizations (authorization_id);
+CREATE INDEX cc_challenge_authorizations_seq ON cc_challenge_authorizations (issued_seq);
+CREATE INDEX cc_observation_purposes_seq ON cc_observation_purposes (accepted_seq);
+`;
+const SCHEMA = `${SCHEMA_V3.replace(ATTRIBUTED_TRIGGER_V3, () => ATTRIBUTED_TRIGGER_V4).replace(RECORD_VIOLATION_TRIGGER_V2, () => RECORD_VIOLATION_TRIGGER_V4)}${AUTHORIZATION_SCHEMA_V4}`;
 
 const TABLES_V2 = Object.freeze([
   'cc_meta', 'cc_profiles', 'cc_platforms', 'cc_integrations', 'cc_operators', 'cc_consumed_decisions', 'cc_validators', 'cc_validator_events',
   'cc_challenges', 'cc_evidence_packages', 'cc_observations', 'cc_confirmed_violations', 'cc_rejections', 'cc_credentials', 'cc_evaluations', 'cc_transitions', 'cc_heads',
   'cc_status_assertions', 'cc_anchor_intents',
 ]);
-const TABLES = Object.freeze([...TABLES_V2, 'cc_operator_events']);
+const TABLES = Object.freeze([...TABLES_V2, 'cc_operator_events', 'cc_order', 'cc_testing_authorizations', 'cc_authorization_events', 'cc_challenge_authorizations', 'cc_observation_purposes']);
 
 export type ConformanceStoreErrorCode = 'CAS_CONFLICT' | 'INVARIANT_REFUSED' | 'CONFLICT' | 'NOT_FOUND' | 'CORRUPT' | 'BUSY' | 'OPEN_REFUSED' | 'SCHEMA_MIGRATION_REQUIRED' | 'ALREADY_CURRENT';
 
@@ -672,6 +837,32 @@ export interface EvaluationCommit {
   readonly evaluationDigest: string;
   /** Present exactly when the evaluation suspends an ACTIVE credential. */
   readonly protectiveTransition: SignedTransition | null;
+}
+
+export interface ChallengeAuthorizationBinding {
+  readonly authorizationId: string;
+  readonly authorizationDigest: string;
+  readonly purpose: TestingAuthorizationPurpose;
+}
+export interface StoredTestingAuthorization {
+  readonly record: TestingAuthorizationRecord;
+  readonly authorizationDigest: string;
+  readonly activatedSeq: number;
+  readonly notBeforeMs: number;
+  readonly notAfterMs: number;
+  readonly revokedSeq: number | null;
+  readonly revokedAtMs: number | null;
+}
+export interface StoredChallengeAuthorization {
+  readonly authorizationId: string | null;
+  readonly authorizationDigest: string | null;
+  readonly purpose: TestingAuthorizationPurpose | 'LEGACY';
+  readonly issuedSeq: number;
+}
+export interface StoredObservationPurpose {
+  readonly authorizationId: string | null;
+  readonly purpose: TestingAuthorizationPurpose | 'LEGACY';
+  readonly acceptedSeq: number;
 }
 
 export interface ConsumedDecision {
@@ -794,7 +985,24 @@ export interface ConformanceStore {
   listOperatorEvents(operatorId: string): readonly OperatorStatusEvent[];
   isDecisionConsumed(decisionId: string): boolean;
   listConsumedDecisions(consumedFor: string): readonly { ref: HumanDecisionRef; decisionJson: string; action: string; subjectRef: string; organizationId: string }[];
-  insertChallenge(signed: SignedChallenge): void;
+  /**
+   * RN-CONFORM-07: inserts the challenge together with its authorization association in ONE IMMEDIATE transaction
+   * (order counter advanced, association, challenge). Scope, window, revocation and quotas are enforced by trigger.
+   */
+  insertChallenge(signed: SignedChallenge, authorization: ChallengeAuthorizationBinding): void;
+  /** RN-CONFORM-07: stores an ACTIVE testing authorization with its two consumed decisions. Returns its activation sequence. */
+  insertTestingAuthorization(record: TestingAuthorizationRecord, authorizationDigest: string, decisions: readonly ConsumedDecision[], consumedAt: string): number;
+  getTestingAuthorization(authorizationId: string): StoredTestingAuthorization | undefined;
+  /** Protective, terminal. Returns the revocation's order sequence. */
+  revokeTestingAuthorization(authorizationId: string, atMs: number, reason: string): number;
+  getChallengeAuthorization(challengeId: string): StoredChallengeAuthorization | undefined;
+  /** The unrevoked authorization of (organization, integration version, purpose) whose window reaches past `fromMs`, if any. */
+  liveTestingAuthorizationId(organizationId: string, integrationDigest: string, purpose: TestingAuthorizationPurpose, fromMs: number): string | undefined;
+  /** Whether some authorization already supersedes `authorizationId`. */
+  isTestingAuthorizationSuperseded(authorizationId: string): boolean;
+  getObservationPurpose(eventId: string): StoredObservationPurpose | undefined;
+  /** Challenges admitted under one authorization: total, issued in the hour before `atMs`, and still open at `atMs`. */
+  authorizationUsage(authorizationId: string, atMs: number): { readonly total: number; readonly lastHour: number; readonly open: number };
   getChallenge(challengeId: string): SignedChallenge | undefined;
   getChallengeByIdempotencyKey(idempotencyKey: string): SignedChallenge | undefined;
   insertEvidencePackage(organizationId: string, digest: string, packageJson: string, storedAt: string): 'inserted' | 'identical';
@@ -882,13 +1090,20 @@ const metaOf = (db: Database.Database) =>
     : (db.prepare('SELECT schema_version, synthetic FROM cc_meta WHERE id = 1').get() as { schema_version: string; synthetic: number } | undefined);
 
 /**
- * RN-CONFORM-05: the explicit, one-way `/2` → `/3` conversion. Never run implicitly. One IMMEDIATE transaction: it
- * verifies the file is EXACTLY the `/2` schema (a tampered or partial file is refused), replaces the two operator-gated
- * triggers, adds the operator status log, records one LEGACY event per existing operator (not eligible: it only
- * preserves the historical acceptance of rows accepted before it) and bumps the version. No existing row is rewritten.
- * `faultAfterSchema` is TEST-ONLY (an interrupted run must leave the file exactly `/2`).
+ * The explicit, one-way conversion of an earlier synthetic store to the current schema. Never run implicitly. ONE
+ * IMMEDIATE transaction for the whole chain, so an interrupted run leaves the file exactly as it was. Each step first
+ * verifies the file is EXACTLY that version's schema (a tampered or partial file is refused). No existing row is
+ * rewritten.
+ * - `/2` → `/3` (RN-CONFORM-05): operator status log; one LEGACY event per operator (never eligible for new evidence).
+ * - `/3` → `/4` (RN-CONFORM-07): testing authorizations, challenge/observation purpose associations and the durable
+ *   order counter; every existing challenge and observation gets a LEGACY association: historically verifiable, never
+ *   eligible for a new evaluation, and no new observation can ever be accepted for a legacy challenge.
+ * `faultAfterSchema` is TEST-ONLY (called after the first step's schema changes).
  */
-export function migrateConformanceStore(path: string, options: { readonly now?: () => number; readonly faultAfterSchema?: () => void } = {}): { readonly from: string; readonly to: string; readonly legacyOperators: number } {
+export function migrateConformanceStore(
+  path: string,
+  options: { readonly now?: () => number; readonly faultAfterSchema?: () => void } = {},
+): { readonly from: string; readonly to: string; readonly steps: readonly string[]; readonly legacyOperators: number; readonly legacyChallenges: number; readonly legacyObservations: number } {
   const file = resolve(path);
   if (!existsSync(file)) throw new ConformanceStoreError('OPEN_REFUSED', 'no store exists at that path');
   const db = new Database(file, { fileMustExist: true });
@@ -899,30 +1114,64 @@ export function migrateConformanceStore(path: string, options: { readonly now?: 
     db.pragma('synchronous = FULL');
     const meta = metaOf(db);
     if (meta?.schema_version === CONFORMANCE_STORE_SCHEMA_VERSION) throw new ConformanceStoreError('ALREADY_CURRENT', 'the store is already at the current schema');
-    if (meta?.schema_version !== CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION || meta.synthetic !== 1) throw new ConformanceStoreError('CORRUPT', 'not a synthetic rn.conformance.store/2 file');
+    const from = meta?.schema_version;
+    if (from === undefined || !(CONFORMANCE_STORE_MIGRATABLE_VERSIONS as readonly string[]).includes(from) || meta?.synthetic !== 1) throw new ConformanceStoreError('CORRUPT', 'not a synthetic rn.conformance.store/2 or /3 file');
     if (db.pragma('quick_check', { simple: true }) !== 'ok') throw new ConformanceStoreError('CORRUPT', 'integrity check failed');
-    if (JSON.stringify(expectedTriggers(db)) !== JSON.stringify(schemaSetOf(SCHEMA_V2))) throw new ConformanceStoreError('CORRUPT', 'the /2 tables or triggers differ from the /2 schema; refusing to migrate');
-    // Review C-7: never earlier than any accepted /2 row, so the LEGACY era covers every historical acceptance.
+    const expected = from === 'rn.conformance.store/2' ? SCHEMA_V2 : SCHEMA_V3;
+    if (JSON.stringify(expectedTriggers(db)) !== JSON.stringify(schemaSetOf(expected))) throw new ConformanceStoreError('CORRUPT', `the ${from} tables or triggers differ from its schema; refusing to migrate`);
+    // Review C-7: never earlier than any accepted row, so the LEGACY era covers every historical acceptance.
     const latestAccepted = (db.prepare('SELECT MAX(accepted_at_ms) AS m FROM cc_observations').get() as { m: number | null }).m ?? 0;
     const at = Math.max((options.now ?? Date.now)(), latestAccepted);
+    const steps: string[] = [];
     let legacyOperators = 0;
+    let legacyChallenges = 0;
+    let legacyObservations = 0;
     db.transaction(() => {
       const metaGuard = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'cc_meta_no_update'").get() as { sql: string }).sql;
-      db.exec('DROP TRIGGER cc_validators_enrolled; DROP TRIGGER cc_observations_attributed;');
-      db.exec(ENROLLED_TRIGGER_V3);
-      db.exec(ATTRIBUTED_TRIGGER_V3);
-      db.exec(OPERATOR_STATUS_SCHEMA_V3);
-      const operators = db.prepare('SELECT operator_id FROM cc_operators ORDER BY operator_id').all() as { operator_id: string }[];
-      const insert = db.prepare("INSERT INTO cc_operator_events (operator_id, seq, kind, at_ms, reason, binding_digest) VALUES (?, 1, 'LEGACY', ?, 'MIGRATED_FROM_STORE_V2', NULL)");
-      for (const o of operators) insert.run(o.operator_id, at);
-      legacyOperators = operators.length;
-      options.faultAfterSchema?.();
+      let faulted = false;
+      const fault = () => {
+        if (!faulted) {
+          faulted = true;
+          options.faultAfterSchema?.();
+        }
+      };
+      if (from === 'rn.conformance.store/2') {
+        db.exec('DROP TRIGGER cc_validators_enrolled; DROP TRIGGER cc_observations_attributed;');
+        db.exec(ENROLLED_TRIGGER_V3);
+        db.exec(ATTRIBUTED_TRIGGER_V3);
+        db.exec(OPERATOR_STATUS_SCHEMA_V3);
+        const operators = db.prepare('SELECT operator_id FROM cc_operators ORDER BY operator_id').all() as { operator_id: string }[];
+        const insert = db.prepare("INSERT INTO cc_operator_events (operator_id, seq, kind, at_ms, reason, binding_digest) VALUES (?, 1, 'LEGACY', ?, 'MIGRATED_FROM_STORE_V2', NULL)");
+        for (const o of operators) insert.run(o.operator_id, at);
+        legacyOperators = operators.length;
+        fault();
+        if (JSON.stringify(expectedTriggers(db).filter((x) => !x.startsWith('table:cc_meta:'))) !== JSON.stringify(schemaSetOf(SCHEMA_V3).filter((x) => !x.startsWith('table:cc_meta:')))) {
+          throw new ConformanceStoreError('CORRUPT', 'the /2 → /3 step does not produce /3');
+        }
+        steps.push('rn.conformance.store/2 → rn.conformance.store/3');
+      }
+      // /3 → /4
+      db.exec('DROP TRIGGER cc_observations_attributed; DROP TRIGGER cc_observations_record_violation;');
+      db.exec(ATTRIBUTED_TRIGGER_V4);
+      db.exec(RECORD_VIOLATION_TRIGGER_V4);
+      db.exec(AUTHORIZATION_SCHEMA_V4);
+      db.prepare('INSERT INTO cc_order (id, value) VALUES (1, 0)').run();
+      const challenges = db.prepare('SELECT challenge_id FROM cc_challenges ORDER BY challenge_id').all() as { challenge_id: string }[];
+      const legacyChallenge = db.prepare("INSERT INTO cc_challenge_authorizations (challenge_id, authorization_id, authorization_digest, purpose, issued_seq) VALUES (?, NULL, NULL, 'LEGACY', 0)");
+      for (const c of challenges) legacyChallenge.run(c.challenge_id);
+      const observations = db.prepare('SELECT event_id, challenge_id FROM cc_observations ORDER BY event_id').all() as { event_id: string; challenge_id: string }[];
+      const legacyObservation = db.prepare("INSERT INTO cc_observation_purposes (event_id, challenge_id, authorization_id, purpose, accepted_seq) VALUES (?, ?, NULL, 'LEGACY', 0)");
+      for (const o of observations) legacyObservation.run(o.event_id, o.challenge_id);
+      legacyChallenges = challenges.length;
+      legacyObservations = observations.length;
+      fault();
+      steps.push('rn.conformance.store/3 → rn.conformance.store/4');
       db.exec('DROP TRIGGER cc_meta_no_update;');
       db.prepare('UPDATE cc_meta SET schema_version = ? WHERE id = 1').run(CONFORMANCE_STORE_SCHEMA_VERSION);
       db.exec(metaGuard);
-      if (JSON.stringify(expectedTriggers(db)) !== JSON.stringify(schemaTriggers())) throw new ConformanceStoreError('CORRUPT', 'the migrated schema does not equal /3');
+      if (JSON.stringify(expectedTriggers(db)) !== JSON.stringify(schemaTriggers())) throw new ConformanceStoreError('CORRUPT', 'the migrated schema does not equal the current schema');
     }).immediate();
-    return Object.freeze({ from: CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION, to: CONFORMANCE_STORE_SCHEMA_VERSION, legacyOperators });
+    return Object.freeze({ from, to: CONFORMANCE_STORE_SCHEMA_VERSION, steps: Object.freeze(steps), legacyOperators, legacyChallenges, legacyObservations });
   } finally {
     db.close();
   }
@@ -938,7 +1187,7 @@ export function createConformanceStoreV2Fixture(path: string): void {
     db.pragma('journal_mode = WAL');
     db.transaction(() => {
       db.exec(SCHEMA_V2);
-      db.prepare('INSERT INTO cc_meta (id, schema_version, synthetic) VALUES (1, ?, 1)').run(CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION);
+      db.prepare('INSERT INTO cc_meta (id, schema_version, synthetic) VALUES (1, ?, 1)').run('rn.conformance.store/2');
     }).immediate();
   } finally {
     db.close();
@@ -961,12 +1210,13 @@ export function openConformanceStore(path: string, options: OpenOptions = {}): C
       db.transaction(() => {
         db.exec(SCHEMA);
         db.prepare('INSERT INTO cc_meta (id, schema_version, synthetic) VALUES (1, ?, 1)').run(CONFORMANCE_STORE_SCHEMA_VERSION);
+        db.prepare('INSERT INTO cc_order (id, value) VALUES (1, 0)').run();
       }).immediate();
     } else {
       // A /2 file is never opened (its triggers do not enforce operator status) and never migrated implicitly.
       const previous = metaOf(db);
-      if (previous?.schema_version === CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION) {
-        throw new ConformanceStoreError('SCHEMA_MIGRATION_REQUIRED', `${CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION} store: convert it explicitly with migrateConformanceStore() before opening`);
+      if (previous !== undefined && (CONFORMANCE_STORE_MIGRATABLE_VERSIONS as readonly string[]).includes(previous.schema_version)) {
+        throw new ConformanceStoreError('SCHEMA_MIGRATION_REQUIRED', `${previous.schema_version} store: convert it explicitly with migrateConformanceStore() before opening`);
       }
       for (const table of TABLES) {
         if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) === undefined) throw new ConformanceStoreError('CORRUPT', `missing table ${table}`);
@@ -1038,6 +1288,8 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
   const insertDecision = db.prepare(
     'INSERT INTO cc_consumed_decisions (decision_id, principal_id, role, action, organization_id, subject_ref, action_binding_digest, decision_digest, decision_json, consumed_for, consumed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
+  const advanceOrder = () => db.prepare('UPDATE cc_order SET value = value + 1 WHERE id = 1').run();
+  const orderNow = () => (db.prepare('SELECT value FROM cc_order WHERE id = 1').get() as { value: number }).value;
   const consume = (decisions: readonly ConsumedDecision[], consumedFor: string, at: string) => {
     for (const d of decisions) {
       insertDecision.run(d.ref.decisionId, d.ref.principalId, d.ref.role, d.action, d.organizationId, d.subjectRef, d.ref.actionBindingDigest, d.ref.decisionDigest, canonicalizeConformance(d.signed), consumedFor, at);
@@ -1200,13 +1452,101 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
         subjectRef: String(row['subject_ref']),
         organizationId: String(row['organization_id']),
       })),
-    insertChallenge: (signed: SignedChallenge) =>
-      run(() => {
-        const c = signed.challenge;
-        db.prepare(
-          'INSERT INTO cc_challenges (challenge_id, idempotency_key, nonce, organization_id, integration_digest, profile_id, profile_version, control_id, operation, issued_at_ms, deadline_ms, challenge_json, signature_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        ).run(c.challengeId, c.idempotencyKey, c.nonce, c.organizationId, c.integrationDigest, c.profileId, c.profileVersion, c.controlId, c.operation, Date.parse(c.issuedAt), Date.parse(c.deadline), canonicalizeConformance(c), canonicalizeConformance(signed.coordinatorSignature));
-      }),
+    insertChallenge: (signed: SignedChallenge, authorization: ChallengeAuthorizationBinding) =>
+      run(() =>
+        db.transaction(() => {
+          const c = signed.challenge;
+          advanceOrder();
+          db.prepare('INSERT INTO cc_challenge_authorizations (challenge_id, authorization_id, authorization_digest, purpose, issued_seq) VALUES (?, ?, ?, ?, ?)').run(
+            c.challengeId, authorization.authorizationId, authorization.authorizationDigest, authorization.purpose, orderNow(),
+          );
+          db.prepare(
+            'INSERT INTO cc_challenges (challenge_id, idempotency_key, nonce, organization_id, integration_digest, profile_id, profile_version, control_id, operation, issued_at_ms, deadline_ms, challenge_json, signature_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          ).run(c.challengeId, c.idempotencyKey, c.nonce, c.organizationId, c.integrationDigest, c.profileId, c.profileVersion, c.controlId, c.operation, Date.parse(c.issuedAt), Date.parse(c.deadline), canonicalizeConformance(c), canonicalizeConformance(signed.coordinatorSignature));
+        }).immediate(),
+      ),
+    insertTestingAuthorization: (record: TestingAuthorizationRecord, authorizationDigest: string, decisions: readonly ConsumedDecision[], consumedAt: string) =>
+      run(() =>
+        db.transaction((): number => {
+          advanceOrder();
+          const seq = orderNow();
+          consume(decisions, `authorization:${record.authorizationId}`, consumedAt);
+          db.prepare(
+            'INSERT INTO cc_testing_authorizations (authorization_id, version, supersedes, organization_id, integration_id, integration_version, integration_digest, purpose, environment, not_before_ms, not_after_ms, max_per_hour, max_concurrent, max_total, record_json, authorization_digest, activated_seq, synthetic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)',
+          ).run(
+            record.authorizationId, record.version, record.supersedes, record.organizationId, record.integrationId, record.integrationVersion, record.integrationDigest, record.purpose, record.environment,
+            Date.parse(record.notBefore), Date.parse(record.notAfter), record.maxChallengesPerHour, record.maxConcurrentChallenges, record.maxTotalChallenges, canonicalizeConformance(record), authorizationDigest, seq,
+          );
+          return seq;
+        }).immediate(),
+      ),
+    getTestingAuthorization: (authorizationId: string) => {
+      const row = db.prepare('SELECT t.*, r.seq AS revoked_seq, r.at_ms AS revoked_at_ms FROM cc_testing_authorizations t LEFT JOIN cc_authorization_events r ON r.authorization_id = t.authorization_id WHERE t.authorization_id = ?').get(authorizationId) as
+        | Record<string, unknown>
+        | undefined;
+      if (row === undefined) return undefined;
+      let record: unknown;
+      try {
+        record = JSON.parse(String(row['record_json']));
+      } catch {
+        throw new ConformanceStoreError('CORRUPT', 'testing authorization is not JSON');
+      }
+      // Review #4: every column must equal the record, and the pinned digest must be the record's digest.
+      if (
+        !isTestingAuthorizationRecord(record) || canonicalizeConformance(record) !== row['record_json'] || testingAuthorizationDigest(record) !== row['authorization_digest'] ||
+        record.authorizationId !== authorizationId || record.version !== row['version'] || record.supersedes !== row['supersedes'] || record.organizationId !== row['organization_id'] ||
+        record.integrationId !== row['integration_id'] || record.integrationVersion !== row['integration_version'] || record.integrationDigest !== row['integration_digest'] ||
+        record.purpose !== row['purpose'] || record.environment !== row['environment'] || Date.parse(record.notBefore) !== row['not_before_ms'] || Date.parse(record.notAfter) !== row['not_after_ms'] ||
+        record.maxChallengesPerHour !== row['max_per_hour'] || record.maxConcurrentChallenges !== row['max_concurrent'] || record.maxTotalChallenges !== row['max_total']
+      ) {
+        throw new ConformanceStoreError('CORRUPT', 'testing authorization row differs from its record');
+      }
+      return Object.freeze({
+        record,
+        authorizationDigest: String(row['authorization_digest']),
+        activatedSeq: Number(row['activated_seq']),
+        notBeforeMs: Number(row['not_before_ms']),
+        notAfterMs: Number(row['not_after_ms']),
+        revokedSeq: row['revoked_seq'] === null ? null : Number(row['revoked_seq']),
+        revokedAtMs: row['revoked_at_ms'] === null ? null : Number(row['revoked_at_ms']),
+      });
+    },
+    revokeTestingAuthorization: (authorizationId: string, atMs: number, reason: string) =>
+      run(() =>
+        db.transaction((): number => {
+          advanceOrder();
+          const seq = orderNow();
+          db.prepare("INSERT INTO cc_authorization_events (authorization_id, seq, kind, at_ms, reason) VALUES (?, ?, 'REVOKED', ?, ?)").run(authorizationId, seq, atMs, reason);
+          return seq;
+        }).immediate(),
+      ),
+    liveTestingAuthorizationId: (organizationId: string, integrationDigest: string, purpose: TestingAuthorizationPurpose, fromMs: number) =>
+      (
+        db
+          .prepare(
+            'SELECT authorization_id FROM cc_testing_authorizations o WHERE organization_id = ? AND integration_digest = ? AND purpose = ? AND not_after_ms > ? AND NOT EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = o.authorization_id) ORDER BY activated_seq LIMIT 1',
+          )
+          .get(organizationId, integrationDigest, purpose, fromMs) as { authorization_id: string } | undefined
+      )?.authorization_id,
+    isTestingAuthorizationSuperseded: (authorizationId: string) => db.prepare('SELECT 1 FROM cc_testing_authorizations WHERE supersedes = ?').get(authorizationId) !== undefined,
+    getChallengeAuthorization: (challengeId: string) => {
+      const r = db.prepare('SELECT authorization_id, authorization_digest, purpose, issued_seq FROM cc_challenge_authorizations WHERE challenge_id = ?').get(challengeId) as
+        | { authorization_id: string | null; authorization_digest: string | null; purpose: string; issued_seq: number }
+        | undefined;
+      return r === undefined ? undefined : Object.freeze({ authorizationId: r.authorization_id, authorizationDigest: r.authorization_digest, purpose: r.purpose as StoredChallengeAuthorization['purpose'], issuedSeq: r.issued_seq });
+    },
+    getObservationPurpose: (eventId: string) => {
+      const r = db.prepare('SELECT authorization_id, purpose, accepted_seq FROM cc_observation_purposes WHERE event_id = ?').get(eventId) as { authorization_id: string | null; purpose: string; accepted_seq: number } | undefined;
+      return r === undefined ? undefined : Object.freeze({ authorizationId: r.authorization_id, purpose: r.purpose as StoredObservationPurpose['purpose'], acceptedSeq: r.accepted_seq });
+    },
+    authorizationUsage: (authorizationId: string, atMs: number) => {
+      const r = db
+        .prepare(
+          'SELECT COUNT(*) AS total, SUM(CASE WHEN c.issued_at_ms > ? THEN 1 ELSE 0 END) AS last_hour, SUM(CASE WHEN c.deadline_ms > ? THEN 1 ELSE 0 END) AS open FROM cc_challenges c JOIN cc_challenge_authorizations a ON a.challenge_id = c.challenge_id WHERE a.authorization_id = ?',
+        )
+        .get(atMs - 3_600_000, atMs, authorizationId) as { total: number; last_hour: number | null; open: number | null };
+      return Object.freeze({ total: r.total, lastHour: r.last_hour ?? 0, open: r.open ?? 0 });
+    },
     getChallenge: (challengeId: string) => parseChallenge(db.prepare('SELECT challenge_json, signature_json FROM cc_challenges WHERE challenge_id = ?').get(challengeId) as Record<string, unknown> | undefined),
     getChallengeByIdempotencyKey: (key: string) => parseChallenge(db.prepare('SELECT challenge_json, signature_json FROM cc_challenges WHERE idempotency_key = ?').get(key) as Record<string, unknown> | undefined),
     insertEvidencePackage: (organizationId: string, digest: string, packageJson: string, storedAt: string) =>

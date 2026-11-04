@@ -13,11 +13,12 @@ import { RN_CONFORMANCE_DOCUMENT_USE_REFERENCE_PROFILE_V0_1, createConformancePr
 import { CONFORMANCE_NETWORK_ORGANIZATION, createConformanceRegistry } from '../conformance/registry.js';
 import { publicKeyPemOf, signConformancePayload } from '../conformance/signing.js';
 import { openConformanceStore, type ConformanceStore } from '../conformance/sqlite-conformance-store.js';
+import type { TestingAuthorizationPurpose } from '../conformance/testing-authorization.js';
 import { projectCredentialStatus, type StatusProjectionDeps } from '../conformance/status-projection.js';
 import { createStatusRegistry, type OnlineStatusRequest, type StatusRegistry } from '../conformance/status-registry.js';
 import { createStatusIssuerKeyRegistry, createSyntheticStatusSigner, statusIssuerKeyRecord, type StatusIssuerKeyRegistry, type SyntheticStatusSigner } from '../conformance/status-signer.js';
 import { openStatusVerifierStore, verifyConformanceStatus, type StatusExpectation, type StatusVerdict, type StatusVerifierStore } from '../conformance/status-verifier.js';
-import { ALL_ACTIONS, ORG_A, ORG_B, T0, approveSyntheticOperator, decide, deterministicRandom, enrollmentDecisions, manualClock, syntheticHuman, syntheticValidator, testKey, type ManualClock, type SyntheticHuman, type SyntheticValidator } from './conformance-support.js';
+import { ALL_ACTIONS, ORG_A, ORG_B, T0, approveSyntheticOperator, decide, ensureTestingAuthorization, deterministicRandom, enrollmentDecisions, manualClock, syntheticHuman, syntheticValidator, testKey, type ManualClock, type SyntheticHuman, type SyntheticValidator } from './conformance-support.js';
 import {
   REFERENCE_ADAPTER,
   REFERENCE_ADAPTER_DIGEST,
@@ -186,6 +187,11 @@ export function buildReferenceCircuit(options: { readonly seed?: string } = {}):
   return circuit;
 }
 
+/** RN-CONFORM-07: the reference circuit's explicit, two-person synthetic testing authorization (renewed when it lapses). */
+export function referenceAuthorization(c: ReferenceCircuit, deadlineSeconds = 900, integrationDigest = c.integration.integrationDigest, purpose: TestingAuthorizationPurpose = 'CONFORMANCE'): string {
+  return ensureTestingAuthorization({ store: c.store, registry: c.services().registry, clock: c.clock, profiles: c.profiles, approvers: [c.humans.alice, c.humans.bob] }, integrationDigest, ORG_A, deadlineSeconds, purpose);
+}
+
 let idem = 0;
 
 /** Issues one signed challenge through the real coordinator. */
@@ -200,6 +206,8 @@ export function issueReference(c: ReferenceCircuit, type: ChallengeType, validat
     fixtureRef: REFERENCE_FIXTURE_REF,
     assignedValidatorIds: validators.map((v) => v.validatorId),
     deadlineSeconds,
+    authorizationId: referenceAuthorization(c, deadlineSeconds),
+    purpose: 'CONFORMANCE',
   });
   c.executed.push({
     challengeId: signed.challenge.challengeId,
