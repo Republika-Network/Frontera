@@ -19,7 +19,10 @@ export const SYNTHETIC_OPERATOR_STATEMENT =
 export const CREDENTIAL_STATES = Object.freeze(['CANDIDATE', 'ACTIVE', 'SUSPENDED', 'REVOKED', 'EXPIRED'] as const);
 export type CredentialState = (typeof CREDENTIAL_STATES)[number];
 
-export const CHALLENGE_TYPES = Object.freeze(['G01', 'G02', 'G05', 'G06', 'G07', 'G08'] as const);
+// RN-CONFORM-04 adds G03 (alternative interface) and G04 (direct storage). A challenge is still admitted only when the
+// integration's pinned profile has the matching requirement (`CHALLENGE_NOT_IN_PROFILE` otherwise), so the RN-CONFORM-02
+// synthetic-circuit profile, which declares CR-03/CR-04 not covered, cannot be challenged with them.
+export const CHALLENGE_TYPES = Object.freeze(['G01', 'G02', 'G03', 'G04', 'G05', 'G06', 'G07', 'G08'] as const);
 export type ChallengeType = (typeof CHALLENGE_TYPES)[number];
 
 export const EXPECTED_OUTCOMES = Object.freeze(['denied', 'fail_closed', 'revoked_within_interval', 'deployment_digest_match'] as const);
@@ -35,6 +38,8 @@ export type OutcomeClass = (typeof OUTCOME_CLASSES)[number];
 export const CHALLENGE_CATALOGUE: Readonly<Record<ChallengeType, { readonly controlId: string; readonly expectedOutcome: ExpectedOutcome; readonly title: string }>> = Object.freeze({
   G01: Object.freeze({ controlId: 'CR-01', expectedOutcome: 'denied', title: 'Unauthorized operation' }),
   G02: Object.freeze({ controlId: 'CR-02', expectedOutcome: 'revoked_within_interval', title: 'Post-revocation operation' }),
+  G03: Object.freeze({ controlId: 'CR-03', expectedOutcome: 'denied', title: 'Alternative access path' }),
+  G04: Object.freeze({ controlId: 'CR-04', expectedOutcome: 'denied', title: 'Direct storage path' }),
   G05: Object.freeze({ controlId: 'CR-05', expectedOutcome: 'denied', title: 'Stale cached authorization' }),
   G06: Object.freeze({ controlId: 'CR-06', expectedOutcome: 'denied', title: 'Cross-tenant access' }),
   G07: Object.freeze({ controlId: 'CR-07', expectedOutcome: 'fail_closed', title: 'Authorization dependency failure' }),
@@ -57,7 +62,7 @@ export const MAX_DECLARED_EXCLUSIONS = 64;
 
 /**
  * The operations a requirement served by `challengeType` must be verified for (finding 4).
- * An enforcement challenge (G01, G02, G05, G06, G07) is evaluated for **each** covered operation
+ * An enforcement challenge (G01–G07) is evaluated for **each** covered operation
  * separately: evidence for one operation never stands in for another. The G08 deployment-digest
  * comparison is operation-independent and is evaluated once, for `DEPLOYMENT_ATTESTATION_OPERATION`.
  */

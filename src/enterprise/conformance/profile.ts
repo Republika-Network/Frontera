@@ -31,6 +31,14 @@ import { compareSemver, isSemver, type ChallengeType } from './contracts.js';
  *   CR-04, CR-10 and CR-11 are listed as *not covered*, never as passed.
  *   ACTIVE under this profile means only "the synthetic circuit's covered
  *   requirements were satisfied by synthetic validators".
+ * - `rn.conformance.document-use-reference@0.1.0` (RN-CONFORM-04) — the
+ *   synthetic Fileverse-inspired reference PEP profile. It adds the G03
+ *   (alternative interface) and G04 (direct storage) challenge-backed CR-03 and
+ *   CR-04 to the synthetic circuit's requirements, pins a **synthetic reference
+ *   adapter contract** as its SDK (CC-D-10 stays open: this names no real SDK),
+ *   and still declares CR-10 and CR-11 not covered. ACTIVE under it means only
+ *   "the synthetic reference PEP's covered operations satisfied every covered
+ *   requirement before synthetic validators" — never a Fileverse certification.
  */
 
 export type RequirementEvaluation = 'validator-corroborated' | 'deterministic-freshness' | 'deterministic-sdk' | 'deterministic-dispute' | 'human-review' | 'unimplemented-challenge';
@@ -100,6 +108,15 @@ const CR = Object.freeze({
   '12': req('CR-12', 'SDK version is within the supported range and not downgraded.', 'D', 'critical', 'G08', DAY, 'deterministic-sdk'),
 });
 
+/**
+ * RN-CONFORM-04: CR-03 and CR-04 backed by their (now implemented) G03/G04 challenges. Separate constants so the pinned
+ * `rn.conformance.integration@0.1.0` definition — where they remain `unimplemented-challenge` — is byte-for-byte unchanged.
+ */
+const CR_REFERENCE = Object.freeze({
+  '03': req('CR-03', 'Every in-scope interface enforces the same decision.', 'M', 'critical', 'G03', 7 * DAY, 'validator-corroborated'),
+  '04': req('CR-04', 'Protected assets are not retrievable through storage routes that bypass enforcement.', 'M', 'critical', 'G04', 7 * DAY, 'validator-corroborated'),
+});
+
 const TERMS = Object.freeze({ freshnessGraceSeconds: 6 * HOUR, credentialTermSeconds: 90 * DAY, candidateTermSeconds: 30 * DAY, suspensionRevocationSeconds: 30 * DAY });
 
 export const RN_CONFORMANCE_INTEGRATION_PROFILE_V0_1: ConformanceProfileDefinition = Object.freeze({
@@ -140,13 +157,38 @@ export const RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1: ConformanceProfileDe
   ]),
 });
 
+export const RN_CONFORMANCE_DOCUMENT_USE_REFERENCE_PROFILE_V0_1: ConformanceProfileDefinition = Object.freeze({
+  schema: 'rn.conformance.profile/1',
+  profileId: 'rn.conformance.document-use-reference',
+  profileVersion: '0.1.0',
+  designation: 'synthetic-test-only',
+  normative: false,
+  commercialActivation: false,
+  source: 'docs/architecture/continuous-conformance/RN_CONFORM_04_IMPLEMENTATION.md',
+  derivedFrom: Object.freeze({ profileId: 'rn.conformance.integration', profileVersion: '0.1.0' }),
+  corroboration: CC_D_03,
+  ...TERMS,
+  // CC-D-10 is open. This is the synthetic reference adapter contract the RN-CONFORM-04 fixture implements, not an SDK identity.
+  supportedSdk: Object.freeze({ package: '@republika-synthetic/document-use-reference-adapter', minVersion: '1.0.0', maxVersionExclusive: '2.0.0' }),
+  requirements: Object.freeze([CR['01'], CR['02'], CR_REFERENCE['03'], CR_REFERENCE['04'], CR['05'], CR['06'], CR['07'], CR['08'], CR['09'], CR['12']]),
+  notCovered: Object.freeze([
+    Object.freeze({ requirementId: 'CR-10', reason: 'Disputes are handled inside the corroboration rule of each covered requirement; no separate CR-10 result is produced.' }),
+    Object.freeze({ requirementId: 'CR-11', reason: 'Human data-minimization review is not automated: no fixture or validator result can satisfy CR-11.' }),
+  ]),
+});
+
 /** Golden digests (aoc-canonical-json/1). Changing a definition without a new version must fail this pin. */
 export const PINNED_PROFILE_DIGESTS: Readonly<Record<string, string>> = Object.freeze({
   'rn.conformance.integration@0.1.0': 'sha256:c3fa6377c7482b10bb51b24f83a8f1e7491147b3562bb54eb3456e64e2ac3e43',
   'rn.conformance.synthetic-circuit@0.1.0': 'sha256:89ff278a2b9c0061e6a3f509382570baa388dcd46b5422b7cd827c7076b1a432',
+  'rn.conformance.document-use-reference@0.1.0': 'sha256:ce109637f4119028928510226db866f986d83d3ee0a21553221374cf6c55c3d3',
 });
 
-export const BUILT_IN_PROFILES: readonly ConformanceProfileDefinition[] = Object.freeze([RN_CONFORMANCE_INTEGRATION_PROFILE_V0_1, RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1]);
+export const BUILT_IN_PROFILES: readonly ConformanceProfileDefinition[] = Object.freeze([
+  RN_CONFORMANCE_INTEGRATION_PROFILE_V0_1,
+  RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1,
+  RN_CONFORMANCE_DOCUMENT_USE_REFERENCE_PROFILE_V0_1,
+]);
 
 export function profileKey(profileId: string, profileVersion: string): string {
   return `${profileId}@${profileVersion}`;
