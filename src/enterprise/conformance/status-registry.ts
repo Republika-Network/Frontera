@@ -20,7 +20,7 @@ import {
 import { projectCredentialStatus, type StatusProjectionDeps, type StatusProjectionResult } from './status-projection.js';
 import type { KeyObject } from 'node:crypto';
 
-import { authenticateStatusRequest, projectionOf, type StatusIssuerKeyRecord, type StatusSignerPort, type StatusSignerRefusal } from './status-signer.js';
+import { authenticateStatusRequest, createStatusIssuerKeyRegistry, projectionOf, type StatusIssuerKeyRecord, type StatusIssuerKeyRegistry, type StatusSignerPort, type StatusSignerRefusal } from './status-signer.js';
 
 /**
  * RN-CONFORM-03 / WP-03–WP-06, WP-09 — the status registry: issues signed
@@ -123,6 +123,11 @@ export function createStatusRegistry(deps: {
   readonly onlineLifetimeMs?: number;
   readonly stapledLifetimeMs?: number;
   readonly maxAttempts?: number;
+  /**
+   * The issuer key set verifiers are expected to pin. A cached stapled assertion is served only while its signing key is
+   * still usable under it (Codex C-2). Defaults to the signer's published keys.
+   */
+  readonly trustedKeys?: StatusIssuerKeyRegistry;
   /** Deterministic test barriers. `afterPrepare` runs outside the lock after the snapshot; `beforeSign` inside it. */
   readonly hooks?: { readonly afterPrepare?: (attempt: number) => void; readonly beforeSign?: () => void };
 }): StatusRegistry {
@@ -260,7 +265,9 @@ export function createStatusRegistry(deps: {
           // The row's columns (used to select it) must agree with the artifact served (review P2-E).
           const consistent =
             parsed.ok && parsed.kind === 'assertion' && parsed.artifact.issuer === issuer && toMs(parsed.artifact.issuedAt) === cached.issuedAtMs && toMs(parsed.artifact.validUntil) === cached.validUntilMs &&
-            parsed.artifact.sequence === cached.sequence && parsed.artifact.requestNonce === null && toMs(parsed.artifact.validUntil) > toMs(now);
+            parsed.artifact.sequence === cached.sequence && parsed.artifact.requestNonce === null && toMs(parsed.artifact.validUntil) > toMs(now) &&
+            // Codex C-2: never serve an assertion whose signing key verifiers no longer trust (expired, revoked, unknown).
+            (deps.trustedKeys ?? createStatusIssuerKeyRegistry(signer.publicKeys())).usability(parsed.artifact.signature.keyId, issuer, toMs(parsed.artifact.issuedAt), toMs(now)) === 'USABLE';
           if (consistent && parsed.ok && parsed.kind === 'assertion' && current.ok && conformanceDigest(projectionOf(parsed.payload)) === current.digest) {
             return Object.freeze({ kind: 'assertion', text: cached.assertionJson, assertion: parsed.artifact });
           }

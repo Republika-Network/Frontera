@@ -112,9 +112,11 @@ export interface StatusVerifierStore {
    *
    * - **Floors** — raised by every authentic artifact, whether or not its continuity is proven, and never lowered:
    *   the highest committed `stateVersion` seen (with its transition digest), and, at that state version, the
-   *   issue time of the newest artifact that did **not** state fresh evidence. Below the state floor →
-   *   ROLLBACK_DETECTED; a FRESH artifact issued before the freshness floor → ROLLBACK_DETECTED (an older,
-   *   better-looking view after a signed degradation, review N-1); a second transition at the floor state →
+   *   **sequence** of the newest artifact that did **not** state fresh evidence. Below the state floor →
+   *   ROLLBACK_DETECTED; a FRESH artifact with a lower sequence than the freshness floor → ROLLBACK_DETECTED (an
+   *   older, better-looking view after a signed degradation, review N-1 / Codex C-1 — ordered by the issuer's
+   *   sequence, so equal `issuedAt` milliseconds cannot reorder them); a FRESH artifact with a higher sequence is
+   *   a genuine recovery and passes, leaving the floor in place; a second transition at the floor state →
    *   CONFLICT_DETECTED.
    * - **The continuity anchor** (sequence, digest, state) — moved only by a proven link, a same-state gap, or an
    *   online check. Equivocation against it (same sequence, other digest; next sequence not linking) →
@@ -155,7 +157,9 @@ CREATE TABLE vs_high_water (
   state TEXT NOT NULL,
   floor_state_version INTEGER NOT NULL,
   floor_transition_digest TEXT NOT NULL,
-  freshness_floor_ms INTEGER NOT NULL,
+  -- Sequence of the newest signed non-FRESH view of the floor state (0: none). Sequence, not time: the issuer orders
+  -- its assertions by sequence, and two assertions may share an issuedAt millisecond (Codex C-1).
+  freshness_floor_sequence INTEGER NOT NULL,
   observed_at_ms INTEGER NOT NULL,
   PRIMARY KEY (issuer, credential_id)
 );
@@ -175,7 +179,7 @@ CREATE TRIGGER vs_latches_no_duplicate BEFORE INSERT ON vs_latches BEGIN SELECT 
 -- Forward only: the anchor never moves back in sequence or state, the floors never decrease, the trusted clock never decreases.
 CREATE TRIGGER vs_high_water_forward BEFORE UPDATE ON vs_high_water BEGIN
   SELECT RAISE(ABORT, 'vs:high-water mark moved backwards') WHERE NEW.sequence < OLD.sequence OR NEW.state_version < OLD.state_version OR NEW.floor_state_version < OLD.floor_state_version
-    OR (NEW.floor_state_version = OLD.floor_state_version AND (NEW.freshness_floor_ms < OLD.freshness_floor_ms OR NEW.floor_transition_digest <> OLD.floor_transition_digest))
+    OR (NEW.floor_state_version = OLD.floor_state_version AND (NEW.freshness_floor_sequence < OLD.freshness_floor_sequence OR NEW.floor_transition_digest <> OLD.floor_transition_digest))
     OR NEW.credential_id <> OLD.credential_id OR NEW.issuer <> OLD.issuer;
 END;
 CREATE TRIGGER vs_high_water_no_delete BEFORE DELETE ON vs_high_water BEGIN SELECT RAISE(ABORT, 'vs:immutable'); END;
@@ -186,7 +190,7 @@ CREATE TRIGGER vs_latches_no_delete BEFORE DELETE ON vs_latches BEGIN SELECT RAI
 CREATE TRIGGER vs_meta_no_update BEFORE UPDATE ON vs_meta BEGIN SELECT RAISE(ABORT, 'vs:immutable'); END;
 CREATE TRIGGER vs_meta_no_delete BEFORE DELETE ON vs_meta BEGIN SELECT RAISE(ABORT, 'vs:immutable'); END;
 `;
-const VERIFIER_SCHEMA_VERSION = 'rn.conformance.status-verifier-store/2';
+const VERIFIER_SCHEMA_VERSION = 'rn.conformance.status-verifier-store/3';
 
 /** Name and SQL text of every table, index and trigger: a same-name object with another body is another schema. */
 function schemaOf(db: Database.Database): string {
@@ -253,12 +257,12 @@ export function openStatusVerifierStore(path: string, options: { readonly create
         const latched = latchOf.get(input.credentialId, input.issuer, input.issuer) as { detail: string } | undefined;
         if (latched !== undefined) return { kind: 'refused', result: 'CONFLICT_DETECTED', detail: `latched: ${latched.detail}` };
         const hw = db.prepare('SELECT * FROM vs_high_water WHERE issuer = ? AND credential_id = ?').get(input.issuer, input.credentialId) as
-          | { sequence: number; assertion_digest: string; state_version: number; transition_digest: string; state: string; floor_state_version: number; floor_transition_digest: string; freshness_floor_ms: number }
+          | { sequence: number; assertion_digest: string; state_version: number; transition_digest: string; state: string; floor_state_version: number; floor_transition_digest: string; freshness_floor_sequence: number }
           | undefined;
-        const notFreshMark = input.fresh ? 0 : input.issuedAtMs;
+        const notFreshMark = input.fresh ? 0 : input.sequence;
         if (hw === undefined) {
           db.prepare(
-            'INSERT INTO vs_high_water (issuer, credential_id, sequence, assertion_digest, state_version, transition_digest, state, floor_state_version, floor_transition_digest, freshness_floor_ms, observed_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO vs_high_water (issuer, credential_id, sequence, assertion_digest, state_version, transition_digest, state, floor_state_version, floor_transition_digest, freshness_floor_sequence, observed_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           ).run(input.issuer, input.credentialId, input.sequence, input.digest, input.stateVersion, input.transitionDigest, input.state, input.stateVersion, input.transitionDigest, notFreshMark, input.nowMs);
           return ok('FIRST_OBSERVATION');
         }
@@ -273,18 +277,18 @@ export function openStatusVerifierStore(path: string, options: { readonly create
         if (input.stateVersion === hw.state_version && input.transitionDigest !== hw.transition_digest) return conflict(`stateVersion ${input.stateVersion} names two transitions`);
         // Floors: an older state, or an older better-looking view of the floor state, refuses (never latches).
         if (input.stateVersion < hw.floor_state_version) return { kind: 'refused', result: 'ROLLBACK_DETECTED', detail: `stateVersion ${input.stateVersion} < ${hw.floor_state_version}` };
-        if (input.stateVersion === hw.floor_state_version && input.fresh && input.issuedAtMs < hw.freshness_floor_ms) {
-          return { kind: 'refused', result: 'ROLLBACK_DETECTED', detail: `fresh view issued before a signed degradation at ${new Date(hw.freshness_floor_ms).toISOString()}` };
+        if (input.stateVersion === hw.floor_state_version && input.fresh && input.sequence < hw.freshness_floor_sequence) {
+          return { kind: 'refused', result: 'ROLLBACK_DETECTED', detail: `fresh view (sequence ${input.sequence}) older than a signed degradation (sequence ${hw.freshness_floor_sequence})` };
         }
         // Raise the floors from this authentic artifact (whatever its continuity).
         const raiseState = input.stateVersion > hw.floor_state_version;
         const floorState = raiseState ? input.stateVersion : hw.floor_state_version;
         const floorDigest = raiseState ? input.transitionDigest : hw.floor_transition_digest;
-        const freshnessFloor = raiseState ? notFreshMark : Math.max(hw.freshness_floor_ms, notFreshMark);
+        const freshnessFloor = raiseState ? notFreshMark : Math.max(hw.freshness_floor_sequence, notFreshMark);
         const anchor = (moved: boolean) =>
           db
             .prepare(
-              'UPDATE vs_high_water SET sequence = ?, assertion_digest = ?, state_version = ?, transition_digest = ?, state = ?, floor_state_version = ?, floor_transition_digest = ?, freshness_floor_ms = ?, observed_at_ms = ? WHERE issuer = ? AND credential_id = ?',
+              'UPDATE vs_high_water SET sequence = ?, assertion_digest = ?, state_version = ?, transition_digest = ?, state = ?, floor_state_version = ?, floor_transition_digest = ?, freshness_floor_sequence = ?, observed_at_ms = ? WHERE issuer = ? AND credential_id = ?',
             )
             .run(
               moved ? input.sequence : hw.sequence, moved ? input.digest : hw.assertion_digest, moved ? input.stateVersion : hw.state_version, moved ? input.transitionDigest : hw.transition_digest,

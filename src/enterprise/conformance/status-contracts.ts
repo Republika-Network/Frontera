@@ -1,7 +1,7 @@
 import type { AuthoritySignature } from '../authority-authenticity/authority-signature.js';
 import { decodeAuthoritySignatureBytes, isWellFormedAuthoritySignature } from '../authority-authenticity/signature-envelope.js';
 import { canonicalizeConformance, conformanceDigest, snapshotPlainJson } from './canonical.js';
-import { CREDENTIAL_STATES, SYNTHETIC_DESIGNATION, isDigest, isIdentifier, isSemver, isTimestamp, readClosed, toMs, type CredentialState } from './contracts.js';
+import { CREDENTIAL_STATES, MAX_COVERED_OPERATIONS, MAX_DECLARED_EXCLUSIONS, SYNTHETIC_DESIGNATION, isDigest, isIdentifier, isSemver, isTimestamp, readClosed, toMs, type CredentialState } from './contracts.js';
 
 /**
  * RN-CONFORM-03 / WP-01 — the signed credential status assertion
@@ -101,8 +101,9 @@ export function transitionsUrlPath(credentialId: string): string {
 }
 
 const isNullableTimestamp = (v: unknown) => v === null || isTimestamp(v);
-const isOperationList = (v: unknown) =>
-  Array.isArray(v) && v.length <= 16 && v.every((o) => typeof o === 'string' && OPERATION.test(o)) && new Set(v).size === v.length && [...v].sort().every((o, i) => o === v[i]);
+/** A sorted, duplicate-free list of operation names of at most `max` entries. The bounds are the admission bounds (`contracts.ts`). */
+const isOperationList = (v: unknown, max: number) =>
+  Array.isArray(v) && v.length <= max && v.every((o) => typeof o === 'string' && OPERATION.test(o)) && new Set(v).size === v.length && [...v].sort().every((o, i) => o === v[i]);
 const sub = (value: unknown, keys: readonly string[]) => {
   const read = readClosed(value, keys);
   return read.ok ? read.record : undefined;
@@ -127,7 +128,9 @@ function checkAssertion(o: { readonly [key: string]: unknown }): string | null {
   if (subject === undefined || !isIdentifier(subject['platformId']) || !isIdentifier(subject['organizationId']) || !isIdentifier(subject['integrationId'])) return 'subject';
   if (!Number.isSafeInteger(subject['integrationVersion']) || (subject['integrationVersion'] as number) < 1 || !isDigest(subject['integrationDigest'])) return 'subject';
   const scope = sub(o['scope'], ['coveredOperations', 'declaredExclusions']);
-  if (scope === undefined || !isOperationList(scope['coveredOperations']) || (scope['coveredOperations'] as unknown[]).length === 0 || !isOperationList(scope['declaredExclusions'])) return 'scope';
+  if (scope === undefined || !isOperationList(scope['coveredOperations'], MAX_COVERED_OPERATIONS) || (scope['coveredOperations'] as unknown[]).length === 0 || !isOperationList(scope['declaredExclusions'], MAX_DECLARED_EXCLUSIONS)) {
+    return 'scope';
+  }
   const profile = sub(o['profile'], ['id', 'version', 'digest']);
   if (profile === undefined || !isIdentifier(profile['id']) || !isSemver(profile['version']) || !isDigest(profile['digest'])) return 'profile';
   const sdk = sub(o['sdk'], ['package', 'version']);

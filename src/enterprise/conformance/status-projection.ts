@@ -1,5 +1,5 @@
 import { conformanceDigest } from './canonical.js';
-import { toMs, type CredentialState } from './contracts.js';
+import { MAX_COVERED_OPERATIONS, MAX_DECLARED_EXCLUSIONS, toMs, type CredentialState } from './contracts.js';
 import { evaluateConformance } from './engine.js';
 import type { SyntheticHumanDirectory } from './human-authority.js';
 import { loadEngineInput } from './lifecycle.js';
@@ -87,11 +87,16 @@ export function projectCredentialStatus(deps: StatusProjectionDeps, credentialId
     const lastSuccess = deps.store
       .listRecentEvaluations(organizationId, credentialId, RECENT_EVALUATIONS)
       .find((e) => toMs(e.record.evaluatedAt) <= atMs && e.record.proposal.kind !== 'SUSPEND' && e.record.requirementResults.filter((r) => r.severity === 'critical').every((r) => r.category === 'VERIFIED_SUCCESS'));
+    // Codex C-3: a scope that cannot be stated completely is never stated partially (no truncation): fail closed with a reason.
+    const exclusions = [...new Set(credential.declaredExclusions)].sort();
+    if (credential.coveredOperations.length > MAX_COVERED_OPERATIONS || exclusions.length > MAX_DECLARED_EXCLUSIONS) {
+      return { ok: false, reason: 'REGISTRY_UNAVAILABLE', detail: 'SCOPE_NOT_REPRESENTABLE' };
+    }
     const record = integration.record;
     const projection: StatusProjection = Object.freeze({
       credentialId,
       subject: Object.freeze({ platformId: credential.platformId, organizationId, integrationId: credential.integrationId, integrationVersion: credential.integrationVersion, integrationDigest: credential.integrationDigest }),
-      scope: Object.freeze({ coveredOperations: Object.freeze([...credential.coveredOperations].sort()), declaredExclusions: Object.freeze([...new Set(credential.declaredExclusions)].sort()) }),
+      scope: Object.freeze({ coveredOperations: Object.freeze([...credential.coveredOperations].sort()), declaredExclusions: Object.freeze(exclusions) }),
       profile: Object.freeze({ id: credential.profileId, version: credential.profileVersion, digest: credential.profileDigest }),
       sdk: Object.freeze({ package: record.sdk.package, version: record.sdk.version }),
       adapter: Object.freeze({ name: record.adapter.name, version: record.adapter.version }),
