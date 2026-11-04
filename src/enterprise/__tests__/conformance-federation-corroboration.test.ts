@@ -158,7 +158,9 @@ describe('RN-CONFORM-05 — federated corroboration scenarios (WP-13)', () => {
     assert.equal(categoryOf(split)?.category, 'CONFLICTING');
     assert.equal(split.protectiveTransition, null);
     const dispute = f.scheduler.planFollowUps(FED_AUTHORIZATION, REFERENCE_FIXTURE_REF).find((r) => r.scheduled && r.job.purpose === 'DISPUTE');
-    assert.ok(dispute?.scheduled && dispute.job.assignments.every((a) => a.operatorId === FED_OPERATORS.C));
+    // B's observation was simultaneous with the violation, not after it, so it cannot resolve it (engine rule): the
+    // dispute needs two operators other than A, and C is among them (review P1-2).
+    assert.ok(dispute?.scheduled && dispute.job.assignments.every((a) => a.operatorId !== FED_OPERATORS.A) && dispute.job.assignments.some((a) => a.operatorId === FED_OPERATORS.C));
     await drain(f);
     const settled = cr01(f, id);
     assert.equal(settled.protectiveTransition?.record.transitionCode, 'T4');

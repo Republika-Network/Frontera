@@ -79,6 +79,8 @@ export interface Federation {
   readonly deliveries: { readonly validatorId: string; readonly challengeId: string; readonly result: RuntimeResult | 'UNREACHABLE' }[];
   readonly transport: ChallengeTransport;
   worker(id: string): DispatchWorker;
+  /** A worker with its own transport (crash / fault injection). */
+  workerWith(id: string, transport: ChallengeTransport): DispatchWorker;
   /** Reopens the federation store (coordinator restart) and rebuilds every federation service over it. */
   restart(options?: { readonly expectedMinimumStateSeq?: number }): void;
 }
@@ -179,6 +181,7 @@ export function buildFederation(options: { readonly seed?: string; readonly oper
   wire(openFederationStore(fedPath, { create: true }));
   Object.assign(f, {
     worker: (id: string) => createDispatchWorker({ workerId: id, fed: f.fed, store: c.store, registry: f.registry, coordinator, transport, clock: c.clock, random }),
+    workerWith: (id: string, t: ChallengeTransport) => createDispatchWorker({ workerId: id, fed: f.fed, store: c.store, registry: f.registry, coordinator, transport: t, clock: c.clock, random }),
     restart(o: { expectedMinimumStateSeq?: number } = {}) {
       try {
         f.fed.close();

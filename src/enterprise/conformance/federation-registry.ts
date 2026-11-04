@@ -28,7 +28,7 @@ import { verifyTwoPersonAuthority, type SyntheticHumanDirectory } from './human-
 import type { ConformanceProfileRegistry } from './profile.js';
 import { CONFORMANCE_NETWORK_ORGANIZATION, ConformanceRegistryError, type ConformanceRegistry } from './registry.js';
 import { deriveConformanceKeyId, verifyConformanceSignature } from './signing.js';
-import type { ConformanceStore } from './sqlite-conformance-store.js';
+import { operatorEligibleAt, type ConformanceStore } from './sqlite-conformance-store.js';
 
 /**
  * RN-CONFORM-05 — operator identity, validator enrollment, key generations, quarantine and revocation.
@@ -247,6 +247,8 @@ export function createFederationRegistry(deps: {
   const prepareOperatorAction = (operatorId: string, kind: 'approve' | 'reinstate' | 'revoke'): PreparedFederationAction => {
     const current = fed.operatorState(operatorId);
     if (current === undefined) throw new FederationError('UNKNOWN_OPERATOR', operatorId);
+    // P2-5: approval and reinstatement are decided by the AUTHORITATIVE conformance store, so the humans sign its binding.
+    if (kind !== 'revoke') return conformance.prepareOperatorAction(operatorId, kind);
     return Object.freeze({
       action: `operator.${kind}` as HumanAction,
       organizationId: CONFORMANCE_NETWORK_ORGANIZATION,
@@ -341,6 +343,36 @@ export function createFederationRegistry(deps: {
     return changed;
   };
 
+  const quarantineOperatorInternal = (operatorId: string, reason: string, at: number) => {
+    for (const v of fed.listValidators().filter((x) => x.operatorId === operatorId)) quarantineValidatorInternal(v.validatorId, `OPERATOR_QUARANTINED:${reason}`, at);
+    const state = operatorStateOf(operatorId);
+    if (state === 'APPROVED' || state === 'ACTIVE') {
+      fed.appendOperatorState(operatorId, 'QUARANTINED', at, reason, []);
+      event('OPERATOR_QUARANTINED', at, 'operator', operatorId, { reason });
+    }
+  };
+  /** P2-5 / S-13: the federation's operator view follows the authoritative conformance store towards restriction. */
+  const syncOperator = (operatorId: string, at: number): boolean => {
+    if (store.getOperator(operatorId) === undefined) return false;
+    const latest = store.listOperatorEvents(operatorId).at(-1)?.kind;
+    const state = operatorStateOf(operatorId);
+    if (latest === 'REVOKED' && state !== 'REVOKED') {
+      for (const v of fed.listValidators().filter((x) => x.operatorId === operatorId)) {
+        revokeGenerations(v.validatorId, 'OPERATOR_REVOKED', at);
+        if (validatorStateOf(v.validatorId) !== 'REVOKED') fed.appendValidatorState(v.validatorId, 'REVOKED', at, 'OPERATOR_REVOKED', []);
+      }
+      fed.appendOperatorState(operatorId, 'REVOKED', at, 'CONFORMANCE_STORE_REVOKED', []);
+      event('REGISTRY_DIVERGENCE', at, 'operator', operatorId, { conformance: 'REVOKED' });
+      return true;
+    }
+    if (latest === 'QUARANTINED' && (state === 'APPROVED' || state === 'ACTIVE')) {
+      event('REGISTRY_DIVERGENCE', at, 'operator', operatorId, { conformance: 'QUARANTINED' });
+      quarantineOperatorInternal(operatorId, 'CONFORMANCE_STORE_QUARANTINE', at);
+      return true;
+    }
+    return false;
+  };
+
   const registry: FederationRegistry = {
     registerOperator(input) {
       const read = readClosed(input, ['operatorId', 'operatorClass', 'administrativeOwnerRef']);
@@ -376,14 +408,22 @@ export function createFederationRegistry(deps: {
     approveOperator(operatorId, decisions) {
       requireOperatorTransition(operatorId, 'APPROVED');
       if (operatorStateOf(operatorId) !== 'REGISTERED') throw new FederationError('TRANSITION_NOT_ALLOWED', 'only a REGISTERED operator is approved');
-      const prepared = prepareOperatorAction(operatorId, 'approve');
-      const consumed = authorize(prepared, decisions);
+      // The conformance store is authoritative: its two-person APPROVED event (trigger-checked) is what makes the operator
+      // eligible. A retry after a crash between the stores adopts an approval the conformance store already recorded.
+      if (!conformance.operatorEligible(operatorId)) {
+        // Verified first (nothing is written for a refused approval), then re-verified and consumed by the store.
+        authorize(prepareOperatorAction(operatorId, 'approve'), decisions);
+        if (store.getOperator(operatorId) === undefined) conformance.registerSyntheticOperator(operatorId);
+        try {
+          conformance.approveOperator(operatorId, decisions);
+        } catch (error) {
+          if (error instanceof ConformanceRegistryError) throw new FederationError('APPROVAL_REFUSED', error.detail === '' ? error.code : error.detail);
+          throw error;
+        }
+      }
       const at = nowMs();
-      // The conformance store gets the operator only after approval: before it, no validator can be enrolled under it.
-      if (store.getOperator(operatorId) !== undefined) throw new FederationError('DUPLICATE_OPERATOR', `${operatorId} already exists in the conformance store`);
-      conformance.registerSyntheticOperator(operatorId);
-      translate(() => fed.appendOperatorState(operatorId, 'APPROVED', at, 'TWO_PERSON_APPROVAL', consumed));
-      event('OPERATOR_APPROVED', at, 'operator', operatorId, { approvers: consumed.length });
+      fed.appendOperatorState(operatorId, 'APPROVED', at, 'TWO_PERSON_APPROVAL_IN_CONFORMANCE_STORE', []);
+      event('OPERATOR_APPROVED', at, 'operator', operatorId, { authoritative: 'conformance-store' });
     },
     activateOperator(operatorId) {
       const from = requireOperatorTransition(operatorId, 'ACTIVE');
@@ -395,22 +435,30 @@ export function createFederationRegistry(deps: {
     quarantineOperator(operatorId, reason) {
       requireOperatorTransition(operatorId, 'QUARANTINED');
       if (!isIdentifier(reason)) throw new FederationError('MALFORMED_INPUT', 'reason');
-      const at = nowMs();
-      for (const v of fed.listValidators().filter((x) => x.operatorId === operatorId)) quarantineValidatorInternal(v.validatorId, `OPERATOR_QUARANTINED:${reason}`, at);
-      fed.appendOperatorState(operatorId, 'QUARANTINED', at, reason, []);
-      event('OPERATOR_QUARANTINED', at, 'operator', operatorId, { reason });
+      // Authoritative store first: from this instant no validator of the operator enrolls or contributes evidence.
+      if (conformance.operatorEligible(operatorId)) conformance.quarantineOperator(operatorId, reason);
+      quarantineOperatorInternal(operatorId, reason, nowMs());
     },
     reinstateOperator(operatorId, decisions) {
       requireOperatorTransition(operatorId, 'ACTIVE');
       if (operatorStateOf(operatorId) !== 'QUARANTINED') throw new FederationError('TRANSITION_NOT_ALLOWED', 'only a QUARANTINED operator is reinstated');
-      const consumed = authorize(prepareOperatorAction(operatorId, 'reinstate'), decisions);
+      if (!conformance.operatorEligible(operatorId)) {
+        try {
+          conformance.reinstateOperator(operatorId, decisions);
+        } catch (error) {
+          if (error instanceof ConformanceRegistryError) throw new FederationError('APPROVAL_REFUSED', error.detail === '' ? error.code : error.detail);
+          throw error;
+        }
+      }
       const at = nowMs();
-      translate(() => fed.appendOperatorState(operatorId, 'ACTIVE', at, 'TWO_PERSON_REINSTATEMENT', consumed));
+      fed.appendOperatorState(operatorId, 'ACTIVE', at, 'TWO_PERSON_REINSTATEMENT_IN_CONFORMANCE_STORE', []);
       event('OPERATOR_REINSTATED', at, 'operator', operatorId);
     },
     revokeOperator(operatorId, decisions) {
       requireOperatorTransition(operatorId, 'REVOKED');
       const consumed = authorize(prepareOperatorAction(operatorId, 'revoke'), decisions);
+      // Authoritative, terminal revocation first (protective in the conformance store).
+      if (store.getOperator(operatorId) !== undefined && store.listOperatorEvents(operatorId).at(-1)?.kind !== 'REVOKED') conformance.revokeOperator(operatorId, 'OPERATOR_REVOKED');
       const at = nowMs();
       for (const v of fed.listValidators().filter((x) => x.operatorId === operatorId)) {
         revokeGenerations(v.validatorId, 'OPERATOR_REVOKED', at);
@@ -431,6 +479,7 @@ export function createFederationRegistry(deps: {
       const opState = operatorStateOf(input.operatorId);
       if (operator === undefined) throw new FederationError('UNKNOWN_OPERATOR', input.operatorId);
       if (opState !== 'APPROVED' && opState !== 'ACTIVE') throw new FederationError('OPERATOR_NOT_ELIGIBLE', `${input.operatorId} is ${opState ?? 'unknown'}`);
+      if (!conformance.operatorEligible(input.operatorId)) throw new FederationError('OPERATOR_NOT_ELIGIBLE', `${input.operatorId} is not eligible in the conformance store`);
       const capabilities = readCapabilities(input.capabilities, profiles);
       const at = nowMs();
       if (fed.getValidator(input.validatorId) !== undefined || store.getValidator(input.validatorId) !== undefined) throw new FederationError('DUPLICATE_VALIDATOR', input.validatorId);
@@ -672,6 +721,9 @@ export function createFederationRegistry(deps: {
       const referenceObs = job?.challengeId === null || job === undefined || reference === undefined ? undefined : store.getObservationForChallengeValidator(job.challengeId, reference.conformanceValidatorId);
       const passed =
         job !== undefined && job.purpose === 'REQUALIFICATION' && job.state === 'COMPLETED' && auth?.record.purpose === 'REQUALIFICATION' && candidate !== undefined && reference !== undefined &&
+        // Codex P2 / S-08: the probation target must STILL have no credential at the decision point.
+        !store.hasCredentialForIntegration(job.organizationId, job.integrationDigest) &&
+        auth.record.integrationDigest === job.integrationDigest && auth.record.organizationId === job.organizationId &&
         candidateObs !== undefined && referenceObs !== undefined && candidateObs.outcomeClass === referenceObs.outcomeClass && candidateObs.outcomeClass !== 'inconclusive';
       if (!passed) {
         event('REQUALIFICATION_SCHEDULED', at, 'validator', validatorId, { generation, result: 'FAILED' });
@@ -756,6 +808,11 @@ export function createFederationRegistry(deps: {
       if (record === undefined) return { eligible: false, reason: 'UNKNOWN_VALIDATOR' };
       if (validatorStateOf(validatorId) !== 'ACTIVE') return { eligible: false, reason: 'VALIDATOR_NOT_ACTIVE' };
       if (operatorStateOf(record.operatorId) !== 'ACTIVE') return { eligible: false, reason: 'OPERATOR_NOT_ACTIVE' };
+      // P2-5 / S-13: the authoritative operator status, not only the federation's view of it.
+      if (!operatorEligibleAt(store.listOperatorEvents(record.operatorId), now)) return { eligible: false, reason: 'OPERATOR_NOT_ACTIVE' };
+      // P1-1 / S-01: a protective quarantine on ANY current generation (including a retired one with an outstanding
+      // challenge) makes the validator ineligible at once — before and independently of any federation sync.
+      if (quarantinedInConformance(validatorId)) return { eligible: false, reason: 'QUARANTINED' };
       const active = fed.listGenerations(validatorId).filter((g) => fed.generationState(validatorId, g.generation)?.state === 'ACTIVE');
       // Exactly one ACTIVE generation: two would be an inconsistent rotation, refused rather than guessed at.
       if (active.length !== 1) return { eligible: false, reason: 'NO_ACTIVE_GENERATION' };
@@ -770,7 +827,8 @@ export function createFederationRegistry(deps: {
     },
     syncFromConformance() {
       const at = nowMs();
-      return Object.freeze(fed.listValidators().flatMap((v) => syncValidator(v.validatorId, at)));
+      const operators = fed.listOperators().filter((o) => syncOperator(o.operatorId, at)).map((o) => o.operatorId);
+      return Object.freeze([...operators, ...fed.listValidators().flatMap((v) => syncValidator(v.validatorId, at))]);
     },
     enforceProtocolThreshold() {
       const at = nowMs();

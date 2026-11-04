@@ -7,7 +7,7 @@ import type { FederationHealth } from './federation-health.js';
 import type { FederationRegistry } from './federation-registry.js';
 import { FederationStoreError, type FederationStore } from './federation-store.js';
 import type { ConformanceProfileRegistry } from './profile.js';
-import type { ConformanceStore } from './sqlite-conformance-store.js';
+import { operatorEligibleAt, type ConformanceStore } from './sqlite-conformance-store.js';
 
 /**
  * RN-CONFORM-05 — the durable challenge scheduler, the dispatch worker and operational metrics.
@@ -253,38 +253,79 @@ export function createFederationScheduler(deps: {
       const at = nowMs();
       const auth = fed.getAuthorization(authorizationId);
       if (auth === undefined) return [{ scheduled: false, reason: 'AUTHORIZATION_INVALID', availableOperators: 0 }];
-      const windowMs = 30 * 60 * 1000;
-      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - windowMs, 4096);
-      const groups = new Map<string, { controlId: string; operation: string; violation: Map<string, string>; conformant: Set<string> }>();
-      // Newest first: the latest observation per operator decides that operator's position.
-      const seen = new Set<string>();
+      const integration = store.getIntegrationByDigest(auth.record.organizationId, auth.record.integrationDigest);
+      const resolved = integration === undefined ? undefined : profiles.resolve(integration.record.profile.id, integration.record.profile.version, integration.record.profile.digest);
+      if (resolved === undefined || !resolved.ok) return [{ scheduled: false, reason: 'AUTHORIZATION_INVALID', availableOperators: 0 }];
+      const corroboration = resolved.definition.corroboration;
+      const k = corroboration.minDistinctOperators;
+      const w = corroboration.windowSeconds * 1000;
+      const othersToResolve = corroboration.disputeResolutionOperators - 1;
+      // Look back far enough to see an unresolved violation still inside T_confirm, plus one window of evidence before it.
+      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - corroboration.investigationTimeoutSeconds * 1000 - w, 4096);
+      // Only evidence the engine would count now: validators not quarantined/revoked, operators eligible (lifecycle rule).
+      const counts = new Map<string, boolean>();
+      const counted = (validatorId: string): boolean => {
+        let ok = counts.get(validatorId);
+        if (ok === undefined) {
+          const v = store.getValidator(validatorId);
+          ok = v !== undefined && (v.keyRevokedAtMs === null || v.keyRevokedAtMs > at) && (v.quarantinedAtMs === null || v.quarantinedAtMs > at) && operatorEligibleAt(store.listOperatorEvents(v.record.operatorId), at);
+          counts.set(validatorId, ok);
+        }
+        return ok;
+      };
+      const groups = new Map<string, { controlId: string; operation: string; obs: { op: string; t: number; cls: string; eventId: string }[] }>();
       for (const o of recent) {
+        if (o.outcomeClass === 'inconclusive' || !counted(o.validatorId)) continue;
         const key = `${o.controlId}|${o.operation}`;
-        const opKey = `${key}|${o.operatorId}`;
-        if (seen.has(opKey)) continue;
-        seen.add(opKey);
-        const g = groups.get(key) ?? { controlId: o.controlId, operation: o.operation, violation: new Map<string, string>(), conformant: new Set<string>() };
-        if (o.outcomeClass === 'violation') g.violation.set(o.operatorId, o.eventId);
-        else if (o.outcomeClass === 'conformant') g.conformant.add(o.operatorId);
+        const g = groups.get(key) ?? { controlId: o.controlId, operation: o.operation, obs: [] };
+        g.obs.push({ op: o.operatorId, t: o.observedAtMs, cls: o.outcomeClass, eventId: o.eventId });
         groups.set(key, g);
       }
+      const openFollowUps = fed.listJobs(['PENDING', 'LEASED', 'DISPATCHED', 'RETRY_PENDING']).filter((j) => j.purpose === 'INVESTIGATION' || j.purpose === 'DISPUTE');
       const results: ScheduleResult[] = [];
       for (const g of groups.values()) {
-        if (g.violation.size === 0) continue;
         const type = (Object.keys(CHALLENGE_CATALOGUE) as ChallengeType[]).find((t) => CHALLENGE_CATALOGUE[t].controlId === g.controlId);
         if (type === undefined) continue;
         const operation = type === 'G08' ? DEPLOYMENT_ATTESTATION_OPERATION : g.operation;
-        const trigger = [...g.violation.values()].sort()[0] as string;
-        if (g.conformant.size === 0 && g.violation.size < 2) {
+        // Review P1-2 / S-06: the ENGINE's chronology (engine.ts evaluateCorroborated), not "operators seen in the window".
+        const violations = g.obs.filter((o) => o.cls === 'violation').sort((a, b) => a.t - b.t || a.eventId.localeCompare(b.eventId));
+        const conformant = g.obs.filter((o) => o.cls === 'conformant');
+        // 1. The latest confirmed violation (≥ k distinct operators inside one window): handled by the lifecycle, not here.
+        let lastConfirmed: number | null = null;
+        for (const v of violations) {
+          const inWindow = violations.filter((x) => x.t >= v.t && x.t <= v.t + w);
+          if (new Set(inWindow.map((x) => x.op)).size >= k) lastConfirmed = Math.max(lastConfirmed ?? 0, ...inWindow.map((x) => x.t));
+        }
+        const after = (t: number) => lastConfirmed === null || t > lastConfirmed;
+        const postViolations = violations.filter((v) => after(v.t));
+        const postConformant = conformant.filter((c) => after(c.t));
+        // 2. A violation is resolved only by ≥ 2 OTHER operators reporting conformance STRICTLY AFTER it.
+        const resolversOf = (v: { op: string; t: number }) => new Set(postConformant.filter((c) => c.op !== v.op && c.t > v.t).map((c) => c.op));
+        const first = postViolations.find((v) => resolversOf(v).size < othersToResolve);
+        if (first === undefined) continue;
+        if (openFollowUps.some((j) => j.challengeType === type && j.operation === operation)) continue; // already in flight
+        const violators = new Set(postViolations.map((v) => v.op));
+        const resolvers = resolversOf(first);
+        const conflicting = postConformant.some((c) => c.op !== first.op && (c.t > first.t || first.t - c.t <= w));
+        if (!conflicting) {
+          // Single-operator report: one more operator either confirms it (k = 2) or turns it into a dispute.
+          results.push(scheduler.schedule({ purpose: 'INVESTIGATION', authorizationId, challengeType: type, operation, fixtureRef, requiredOperators: Math.max(1, k - violators.size), excludeOperators: [...violators], jobKey: `investigate|${first.eventId}` }));
+        } else {
+          // Dispute: the operators still missing to resolve THIS violation. Operators whose evidence predates it are
+          // eligible again (their old observation cannot resolve it); violators and post-violation resolvers are not.
+          const needed = othersToResolve - resolvers.size;
           results.push(
-            scheduler.schedule({ purpose: 'INVESTIGATION', authorizationId, challengeType: type, operation, fixtureRef, requiredOperators: 2 - g.violation.size, excludeOperators: [...g.violation.keys()], jobKey: `investigate|${trigger}` }),
+            scheduler.schedule({
+              purpose: 'DISPUTE',
+              authorizationId,
+              challengeType: type,
+              operation,
+              fixtureRef,
+              requiredOperators: needed,
+              excludeOperators: [...new Set([...violators, ...resolvers])],
+              jobKey: `dispute|${first.eventId}|${[...resolvers].sort().join(',')}`,
+            }),
           );
-        } else if (g.conformant.size > 0) {
-          const involved = [...g.violation.keys(), ...g.conformant];
-          const needed = Math.max(0, 3 - new Set(involved).size);
-          if (needed > 0) {
-            results.push(scheduler.schedule({ purpose: 'DISPUTE', authorizationId, challengeType: type, operation, fixtureRef, requiredOperators: needed, excludeOperators: involved, jobKey: `dispute|${trigger}|${[...g.conformant].sort().join(',')}` }));
-          }
         }
       }
       return Object.freeze(results);
@@ -333,7 +374,15 @@ export function expireOverdueJobs(fed: FederationStore, store: ConformanceStore,
     const auth = fed.getAuthorization(job.authorizationId);
     const overdue = job.challengeDeadlineMs !== null ? nowMs > job.challengeDeadlineMs : auth === undefined || nowMs + job.deadlineSeconds * 1000 > toMs(auth.record.notAfter);
     if (!overdue) continue;
-    const committed = job.challengeId === null ? 0 : new Set(job.assignments.filter((a) => store.getObservationForChallengeValidator(job.challengeId as string, a.conformanceValidatorId) !== undefined).map((a) => a.operatorId)).size;
+    const committedAssignments = job.challengeId === null ? [] : job.assignments.filter((a) => store.getObservationForChallengeValidator(job.challengeId as string, a.conformanceValidatorId) !== undefined);
+    const committed = new Set(committedAssignments.map((a) => a.operatorId)).size;
+    // Codex P2 / S-09: reconcile first. A job whose every assigned observation was accepted (e.g. the worker crashed
+    // after the last commit, before marking it) is COMPLETED, never EXPIRED — its result is not lost to a late restart.
+    if (job.challengeId !== null && committedAssignments.length === job.assignments.length) {
+      const done = fed.closeWithoutLease(job.jobId, nowMs, 'COMPLETED', 'RECONCILED_AFTER_DEADLINE');
+      if (done.state === 'COMPLETED') fed.appendEvent('JOB_COMPLETED', nowMs, 'job', job.jobId, { committedOperators: committed, requiredOperators: job.requiredOperators, reconciled: true });
+      continue;
+    }
     const closed = fed.closeWithoutLease(job.jobId, nowMs, 'EXPIRED', job.challengeDeadlineMs !== null ? 'CHALLENGE_DEADLINE_PASSED' : 'AUTHORIZATION_WINDOW_EXHAUSTED');
     if (closed.state !== 'EXPIRED') continue; // another process closed it first
     fed.appendEvent('JOB_EXPIRED', nowMs, 'job', job.jobId, { committedOperators: committed, requiredOperators: job.requiredOperators });
@@ -368,6 +417,11 @@ export function createDispatchWorker(deps: {
     }
     throw error;
   };
+  const requalificationTargetCredentialed = (job: ScheduledJob): boolean => {
+    if (job.purpose !== 'REQUALIFICATION') return false;
+    const auth = fed.getAuthorization(job.authorizationId);
+    return auth === undefined || auth.record.purpose !== 'REQUALIFICATION' || store.hasCredentialForIntegration(job.organizationId, job.integrationDigest);
+  };
   const committedFor = (job: ScheduledJob) => job.assignments.filter((a) => job.challengeId !== null && store.getObservationForChallengeValidator(job.challengeId, a.conformanceValidatorId) !== undefined);
   const assignmentEligible = (job: ScheduledJob, a: JobAssignment, at: number, untilMs: number): boolean => {
     if (job.purpose === 'REQUALIFICATION' && fed.validatorState(a.validatorId)?.state === 'QUARANTINED') {
@@ -395,6 +449,11 @@ export function createDispatchWorker(deps: {
           fed.commitWithLease(lease, at, { state: 'EXPIRED', lastError: 'AUTHORIZATION_WINDOW_EXHAUSTED' });
           fed.appendEvent('JOB_EXPIRED', at, 'job', jobId, { reason: 'AUTHORIZATION_WINDOW_EXHAUSTED' });
           return { jobId, outcome: 'EXPIRED', detail: 'AUTHORIZATION_WINDOW_EXHAUSTED' };
+        }
+        if (requalificationTargetCredentialed(job)) {
+          fed.commitWithLease(lease, at, { state: 'CANCELLED', lastError: 'REQUALIFICATION_TARGET_CREDENTIALED' });
+          fed.appendEvent('JOB_CANCELLED', at, 'job', jobId, { reason: 'REQUALIFICATION_TARGET_CREDENTIALED' });
+          return { jobId, outcome: 'CANCELLED', detail: 'REQUALIFICATION_TARGET_CREDENTIALED' };
         }
         const until = at + job.deadlineSeconds * 1000;
         const lost = job.assignments.filter((a) => !assignmentEligible(job, a, at, until));
@@ -443,6 +502,12 @@ export function createDispatchWorker(deps: {
         at = nowMs();
         // Fencing before every outbound action: a worker that lost its lease stops here.
         lease = fed.renewLease(lease, at, T.leaseSeconds * 1000);
+        // Codex P2 / S-08: probation work stops the moment its target acquires a credential (re-checked per delivery).
+        if (requalificationTargetCredentialed(job)) {
+          fed.commitWithLease(lease, at, { state: 'CANCELLED', lastError: 'REQUALIFICATION_TARGET_CREDENTIALED' });
+          fed.appendEvent('JOB_CANCELLED', at, 'job', jobId, { reason: 'REQUALIFICATION_TARGET_CREDENTIALED' });
+          return { jobId, outcome: 'CANCELLED', detail: 'REQUALIFICATION_TARGET_CREDENTIALED' };
+        }
         if (!assignmentEligible(job, a, at, deadlineMs)) {
           ineligible += 1;
           fed.appendDelivery(jobId, a.conformanceValidatorId, lease.fencingToken, at, 'NOT_ELIGIBLE');
