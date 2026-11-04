@@ -170,7 +170,10 @@ no new assignments; history untouched; no credential is touched — the engine r
 remains. **Release** creates a new generation (the quarantined identity never returns), needs two humans for
 `validator.enroll` **and** two for `validator.reinstate`, keeps the validator quarantined until a bounded
 requalification challenge (alongside a reference validator of another active operator) agrees with the
-reference, and re-checks key and operator eligibility. No heartbeat, activation or rotation path exits quarantine.
+reference, and re-checks key and operator eligibility. Requalification runs only under a `REQUALIFICATION`
+testing authorization whose integration has **no credential** (the validator network's own fixture), so a
+still-untrusted generation's observation is never a vote on a real credential; the registry derives the result
+from the completed job and the stored evidence (it is never told). No heartbeat, activation or rotation path exits quarantine.
 
 ## 14. Revocation (WP-12)
 
@@ -205,7 +208,7 @@ every redelivery; it never becomes an acceptance through retry.
 
 ## 17. Conformance engine integration (WP-13)
 
-No engine, evidence, lifecycle or status code changed. Scenarios (`conformance-federation-corroboration.test.ts`):
+No engine, lifecycle or status code changed. Evidence acceptance received one narrowly scoped compatibility fix (§24, F-0) and the conformance store one read-only query (`hasCredentialForIntegration`); no schema changed. Scenarios (`conformance-federation-corroboration.test.ts`):
 A + D two distinct operator records → `VERIFIED_FAILURE` → automatic T4 → online status `SUSPENDED`; B + G three
 validators of one operator → one operator vote, nothing confirmed; C one malicious validator → investigation →
 `CONFLICTING` → third operator → resolved, credential stays ACTIVE; E conflict → third operator confirms (no false
@@ -309,3 +312,41 @@ backups with pinned state sequences held outside the store; disaster-recovery dr
 Founder approval of CC-D-02; legal agreement; identity and eligibility verification producing something other
 than `NOT_VERIFIED`; conflict-of-interest declaration; operational-security attestation; key ceremony with proof of
 possession; two-person approval in the registry; a probation period of requalification challenges.
+
+## CI and review record
+
+**Independent review** (a fresh, read-only AI reviewer given the diff and the focus list, not the author's
+conclusions; **not an accredited audit**). No P0. Dispositions:
+
+| Id | Finding | Disposition |
+|---|---|---|
+| F-0 | (found by CI before the review) a quarantine stamped in the acceptance millisecond made already-accepted evidence fail re-authentication, so the status failed closed as `EVIDENCE_TAMPERED` for the evaluation horizon; one validator could trigger it with a same-millisecond contradiction | **Fixed** in `evidence.ts` (re-authentication of a stored row treats a same-millisecond status event as later; live acceptance unchanged). Reviewer verdict: sound. Regression test |
+| P1-1 | a conformance-store-only quarantine could be escaped by rotation (before sync; quarantine + key revocation; key revocation after a conflict) | **Fixed**: enrollment requests mirror the conformance store first and refuse while any current generation is quarantined there; sync evaluates quarantine independently of revocation for every generation state. Regression tests (3 variants) |
+| P1-2 | a reinstating generation's requalification observation counted as a vote on the organization's real credential | **Fixed**: `REQUALIFICATION` authorizations only on credential-free integrations; scheduler enforces purpose. Regression test (a lying candidate during requalification changes nothing on the real credential and fails requalification) |
+| P2-1 | `completeReinstatement` trusted a caller-supplied pass flag | **Fixed**: derived from the stored job and evidence. Regression tests |
+| P2-2 | crash between stores left a conformance identity quarantine/revocation could not reach, and blocked later reinstatement | **Fixed**: the federation PENDING intent is written first. Regression test |
+| P2-3 | testing authorization and per-operator assignment are enforced by the scheduler, not by the RN-CONFORM-02 coordinator; a direct `coordinator.issue` caller bypasses them | **Accepted, documented** (changing the RN-CONFORM-02 coordinator contract is out of scope). Votes cannot be inflated (the engine counts operators); the coordinator stays a privileged internal component |
+| P2-4 | predictable observation event ids let another validator pre-empt and suppress one | **Fixed**: CSPRNG event ids. Regression test |
+| P2-5 | federation operator status does not bind the conformance store; a pre-existing conformance operator id could be adopted | **Partly fixed**: adoption refused (regression test). **Residual**: two humans can still enroll a conformance-store validator directly under a federation operator id the federation has quarantined or revoked; closing it needs operator status in the RN-CONFORM-02 store (follow-up) |
+| P3-1 | same-owner takeover of an expired lease raised | **Fixed** + test |
+| P3-2 | closing an already-terminal job aborted a run | **Fixed** (conditional close) |
+| P3-3 | violation counting gameable by re-encoding / stale timestamps / pre-reinstatement history | **Fixed** (event-id refs; only generations and violations since the last reinstatement). Rejection timestamps are still the scan time (store has no read of `received_at`): **residual** |
+| P3-4 | unauthenticated heartbeat refusals and possession requests append rows (log growth) | **Accepted** (synthetic, in-process; production needs rate limits at the transport) |
+| P3-5 | free text in an event | **Fixed** |
+| P3-6 | the rollback pin is optional and not persisted; a far-future clock raises the high-water mark permanently | **Accepted, documented** (production DR requirement, §26) |
+| P3-7 | federation state rows carry decision ids but no database-level two-person check | **Accepted** (mitigated: eligibility re-reads the conformance store, where enrollment is trigger-checked) |
+| P3-8 | doc said evidence code unchanged | **Fixed** (§17) |
+
+Test-quality findings (requalification passed by the test itself, organization binding not isolated, weak static
+ban list, orphan generation not covered) were addressed by the regression tests above and a strengthened static
+check (no direct conformance-store writes, no dynamic imports in federation modules).
+
+**CI** (head `791c2e1c`, code-final): all 15 checks green — validate (main suite **15,041 tests, 15,023 pass, 0 fail**,
+11 skipped, 7 todo, of which **66** are the new federation tests), protocol-tarball-consumption, CodeQL, clean-room
+consumer, publishability, pilot jobs, `rn-conform-04-demo` and `rn-conform-05-demo` (report sha256
+`8c8ef74821ecd7b42c220dfd2feee606280103cfab0dac5d0622ebcfe1a8a702`; the digest differs per run because validator
+keys and event ids are ephemeral). Earlier rounds: 5 test failures (three tests assumed operator B would be picked;
+Scenario C needed strictly later evidence; F-0), then one explicit-any lint false positive on a comment.
+
+**Process:** no code was executed in the Windows-mounted worktree by the author or any subagent; validation ran in
+GitHub CI only. File edits were made with editor tools and small text-substitution scripts.
