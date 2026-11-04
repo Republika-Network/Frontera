@@ -193,6 +193,20 @@ mission brief. It confirmed questions 1, 3, 4, 7, 9–12 and 16 held; its findin
 
 ## 12. Limitations and deferred work
 
+> **Production activation requires separately approved signing-key custody, disaster-recovery procedures and
+> legal/privacy authorization. None of those gates is satisfied by this synthetic implementation.**
+> Not implemented here: HSM/KMS custody, backup monotonicity of the signer journal, public disclosure, production
+> rate limiting.
+
+**Signer-journal rollback hazard.** The signer's journal is the only record of which sequences, digests and states it
+has already signed for each credential; it lives outside the registry database so that a registry restore cannot make
+the signer forget. Restoring the journal itself from an older backup does make it forget: it would then accept
+`sequence = last + 1` for sequences it already used, and sign a **second, different** assertion for a sequence that
+verifiers may already hold — genuine equivocation, which every verifier that saw the original latches as
+`CONFLICT_DETECTED`. A journal must therefore never be restored or rolled back; a disaster-recovery design for it
+(e.g. monotonic, replicated storage) is part of the production custody gate above.
+
+
 * Synthetic issuer, keys and requester secret; the signer runs in-process behind a port. A separate
   process, HSM/KMS and production key enrollment are not done (CC-D-07).
 * The signer reads the same database (a read-only view in production); compromise of the database
@@ -246,3 +260,16 @@ clauses), P2-E (cache) and the fixed P3s closed, and predicted no CI failures (c
 | N-6 | P3 | Marks keyed by credential only: a second pinned issuer could force an `issuer changed` latch | **Fixed**: marks and latches keyed by (issuer, credential) |
 | N-7 | P3 | `CLOCK_BEHIND` wedges issuance until wall time passes the last `issuedAt`; restoring **both** registry and signer journal re-uses sequences (genuine equivocation → verifiers latch) | **Documented** operator hazard: never restore the signer journal |
 | N-8 | P3 | Verifier store handle leaked on a malformed file | **Fixed** |
+
+### 13.2 Codex findings on `781f93ac` (all three fixed)
+
+| # | Thread location | Root cause | Fix | Regression test |
+|---|---|---|---|---|
+| C-1 | `status-verifier.ts` freshness floor | The floor compared `issuedAt` strictly; two assertions may share a millisecond, so an earlier FRESH view replayed after a later degraded one | The floor is the **issuer sequence** of the newest non-FRESH view of the floor state (durable, trigger-monotonic, schema `status-verifier-store/3`); a FRESH view with a lower sequence is `ROLLBACK_DETECTED`; a higher-sequence FRESH view is a genuine recovery | `Codex C-1 …` (same-millisecond pair, restart, recovery, no latch, no rollback past SUSPENDED) |
+| C-2 | `status-registry.ts` stapled cache | The cache never checked whether its signing key was still usable | A cached staple is served only if its key is `USABLE` under the trusted key set (default: the signer's published keys); otherwise it is reissued under the current key, or `UNAVAILABLE` | `Codex C-2 …` (expired and scheduled-revoked key; old staple rejected; replacement under the new key; signer down → fail closed; racing issuers → one sequence) |
+| C-3 | `status-contracts.ts` scope lists | The status schema capped exclusions at 16 while admission had no bound | One bound, `MAX_DECLARED_EXCLUSIONS = 64`, enforced at admission (`registry.ts`) and by the parser; a stored scope beyond the bounds is never stated partially (`SCOPE_NOT_REPRESENTABLE`, fail closed). No integration record format or digest changed | `Codex C-3 …` (0, 16, 17, 64 stated completely; 65 refused; parser agrees; no substitution; stored oversize → fail closed) |
+
+**Gate A hardening.** The RN-CONFORM-02 structure suite compared paths by string prefix, so any sibling
+`src/enterprise/conformance-*` directory counted as the module (and could import it unnoticed). It now uses a
+directory boundary, and the only exemption is the named listener directory and its test; a negative test pins that a
+sibling or look-alike directory is neither the module nor exempt.
