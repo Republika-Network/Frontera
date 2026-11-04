@@ -226,8 +226,12 @@ export function signReferenceDecision(payload: ReferenceDecisionPayload, key: Ke
 /** Closed-shape check plus signature verification. Total: anything malformed is `undefined`. */
 export function readSignedDecision(value: unknown, trustedPublicKeyPem: string): SignedReferenceDecision | undefined {
   try {
-    if (typeof value !== 'object' || value === null) return undefined;
-    const outer = value as Record<string, unknown>;
+    // Read the caller's value exactly ONCE, into plain data. Everything below — shape checks, the signed bytes and the
+    // returned payload — uses only this snapshot, so a getter or Proxy cannot show one value to verification and another
+    // to use (review P2-1).
+    const snapshot: unknown = JSON.parse(JSON.stringify(value));
+    if (typeof snapshot !== 'object' || snapshot === null) return undefined;
+    const outer = snapshot as Record<string, unknown>;
     if (Object.keys(outer).sort().join(',') !== 'payload,signature' || typeof outer['signature'] !== 'string') return undefined;
     const payload = outer['payload'];
     if (typeof payload !== 'object' || payload === null) return undefined;
@@ -511,6 +515,8 @@ export interface PepPorts {
   readonly revocation: RevocationPort;
   readonly clock: FixtureClock;
   readonly trustedAuthorityPublicKeyPem: string;
+  /** Deadline for each dependency call (default {@link AUTHORITY_TIMEOUT_MS}); a slower real dependency may set more. */
+  readonly authorityTimeoutMs?: number;
 }
 
 /** Which defects apply to this request: none, for the conformant PEP. */
@@ -520,22 +526,37 @@ const NO_DEFECTS: DefectProbe = () => false;
 const REQUEST_KEYS = new Set(['principalId', 'organizationId', 'documentId', 'operation', 'termsDigest', 'decision', 'newTermsDigest']);
 
 function readRequest(value: unknown): DocumentOperationRequest | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const r = value as Record<string, unknown>;
+  // One read of the caller's object, into plain data; every later step uses the snapshot only (review P2-2).
+  let snapshot: unknown;
+  try {
+    snapshot = JSON.parse(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+  if (typeof snapshot !== 'object' || snapshot === null || Array.isArray(snapshot)) return undefined;
+  const r = snapshot as Record<string, unknown>;
   if (!Object.keys(r).every((k) => REQUEST_KEYS.has(k))) return undefined;
   for (const k of ['principalId', 'organizationId', 'documentId', 'termsDigest']) if (typeof r[k] !== 'string' || (r[k] as string).length === 0 || (r[k] as string).length > 256) return undefined;
   if (!isReferenceOperation(r['operation'])) return undefined;
   if (r['operation'] === 'document.modify-protected-terms' ? typeof r['newTermsDigest'] !== 'string' : r['newTermsDigest'] !== undefined) return undefined;
-  return r as unknown as DocumentOperationRequest;
+  if (r['newTermsDigest'] !== undefined && (r['newTermsDigest'] as string).length > 256) return undefined;
+  return Object.freeze(r) as unknown as DocumentOperationRequest;
 }
 
-async function withTimeout(answer: Promise<AuthorityAnswer>): Promise<AuthorityAnswer> {
+/**
+ * Calls a dependency with a deadline. A synchronous throw, a rejection, a non-promise answer or a missed deadline all
+ * become `fallback` — never an exception escaping the PEP (review P3-1).
+ */
+async function guarded<T>(call: () => Promise<T> | T, fallback: T, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<AuthorityAnswer>((resolve) => {
-    timer = setTimeout(() => resolve({ kind: 'unavailable', detail: 'timeout' }), AUTHORITY_TIMEOUT_MS);
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), timeoutMs);
   });
   try {
-    return await Promise.race([answer.catch((): AuthorityAnswer => ({ kind: 'unavailable', detail: 'dependency threw' })), timeout]);
+    const answer = Promise.resolve()
+      .then(call)
+      .catch(() => fallback);
+    return await Promise.race([answer, timeout]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
@@ -543,6 +564,7 @@ async function withTimeout(answer: Promise<AuthorityAnswer>): Promise<AuthorityA
 
 async function runPep(raw: unknown, ports: PepPorts, defect: DefectProbe): Promise<PepOutcome> {
   const steps: PepStep[] = [];
+  const timeoutMs = ports.authorityTimeoutMs ?? AUTHORITY_TIMEOUT_MS;
   const at = ports.clock.ms();
   const evidence = (record: Flat): PepEvidence => Object.freeze({ schema: 'rn.reference.pep-evidence/1', evidenceDigest: referenceDigest({ ...record, atMs: at }), steps: Object.freeze([...steps]) });
   const deny = (reason: PepDenial, operation: string | null, documentId: string | null): PepOutcome => {
@@ -578,7 +600,9 @@ async function runPep(raw: unknown, ports: PepPorts, defect: DefectProbe): Promi
   if (!has('BYPASS-01')) {
     let candidate: unknown = request.decision;
     if (candidate === undefined) {
-      const answer = await withTimeout(ports.authorization.decide({ principalId: principal.principalId, organizationId: request.organizationId, documentId, operation, termsClaimId: metadata.termsClaimId, termsDigest: metadata.termsDigest }));
+      const unavailable: AuthorityAnswer = { kind: 'unavailable', detail: 'dependency failed or timed out' };
+      const raw = await guarded<unknown>(() => ports.authorization.decide({ principalId: principal.principalId, organizationId: request.organizationId, documentId, operation, termsClaimId: metadata.termsClaimId, termsDigest: metadata.termsDigest }), unavailable, timeoutMs);
+      const answer: AuthorityAnswer = typeof raw === 'object' && raw !== null && ((raw as AuthorityAnswer).kind === 'decision' || (raw as AuthorityAnswer).kind === 'unavailable') ? (raw as AuthorityAnswer) : unavailable;
       if (answer.kind !== 'decision') {
         if (!has('BYPASS-07')) return deny('AUTHORITY_UNAVAILABLE', operation, documentId);
       } else {
@@ -610,12 +634,7 @@ async function runPep(raw: unknown, ports: PepPorts, defect: DefectProbe): Promi
     if ((at >= p.expiresAtMs || at >= ceilingEnd) && !has('BYPASS-05')) return deny('DECISION_STALE', operation, documentId);
   }
   if (!has('BYPASS-02')) {
-    let revocation: RevocationState;
-    try {
-      revocation = await ports.revocation.revocationOf(documentId, metadata.termsClaimId);
-    } catch {
-      revocation = 'UNKNOWN';
-    }
+    const revocation = await guarded<RevocationState>(() => ports.revocation.revocationOf(documentId, metadata.termsClaimId), 'UNKNOWN', timeoutMs);
     if (revocation === 'REVOKED') return deny('REVOKED', operation, documentId);
     if (revocation !== 'NOT_REVOKED') return deny('REVOCATION_UNKNOWN', operation, documentId);
   }
@@ -697,7 +716,7 @@ export interface ReferenceIntegration {
 
 export function createReferenceIntegration(
   deployment: ReferenceDeployment = conformantDeployment(),
-  options: { readonly world?: ReferenceWorld; readonly clock?: FixtureClock; readonly authorization?: AuthorizationPort; readonly revocation?: RevocationPort; readonly trustedAuthorityPublicKeyPem?: string } = {},
+  options: { readonly world?: ReferenceWorld; readonly clock?: FixtureClock; readonly authorization?: AuthorizationPort; readonly revocation?: RevocationPort; readonly trustedAuthorityPublicKeyPem?: string; readonly authorityTimeoutMs?: number } = {},
 ): ReferenceIntegration {
   const world = options.world ?? createReferenceWorld();
   const clock = options.clock ?? fixtureClock();
@@ -710,6 +729,7 @@ export function createReferenceIntegration(
     revocation: options.revocation ?? authority,
     clock,
     trustedAuthorityPublicKeyPem: options.trustedAuthorityPublicKeyPem ?? AUTHORITY_PUBLIC_KEY_PEM,
+    ...(options.authorityTimeoutMs === undefined ? {} : { authorityTimeoutMs: options.authorityTimeoutMs }),
   };
   const defect: DefectProbe = (id, operation) => deployment.defects.has(id) && (deployment.defectOperations.size === 0 || deployment.defectOperations.has(operation));
   const execute = (request: unknown) => runPep(request, ports, defect);
@@ -839,7 +859,10 @@ export async function runReferenceProbe(deployment: ReferenceDeployment, type: R
       case 'G04': {
         const metadata = integration.store.metadata(target);
         const response = integration.storage(metadata?.locator ?? '', operation);
-        subProbes.push({ name: 'storage-locator', outcome: response.status === 200 ? 'allowed' : 'denied', reason: `HTTP_${response.status}`, leakedProtectedContent: containsSentinel(response.body) });
+        // Only an explicit refusal (403, no body) counts as enforcement; anything else (e.g. a 404 from a wrong locator) is
+        // inconclusive, never a pass (review P3-2).
+        const outcome: SubProbe['outcome'] = response.status === 200 ? 'allowed' : response.status === 403 && response.body === null ? 'denied' : 'precondition-failed';
+        subProbes.push({ name: 'storage-locator', outcome, reason: `HTTP_${response.status}`, leakedProtectedContent: containsSentinel(response.body) });
         break;
       }
       case 'G05': {

@@ -66,7 +66,7 @@ describe('RN-CONFORM-04 reference PEP — authorized operations and execution or
     });
   }
 
-  it('the exported conformant PEP equals the conformant deployment', async () => {
+  it('the exported conformant PEP refuses an unauthorized export exactly as the conformant deployment does', async () => {
     const i = createReferenceIntegration(conformantDeployment());
     const direct = await executeProtectedDocumentOperation(request(i, PRINCIPALS.outsider, 'document.export'), i.ports);
     denied(direct, 'NOT_PERMITTED');
@@ -148,6 +148,46 @@ describe('RN-CONFORM-04 WP-07 — freshness and revocation', () => {
   });
 });
 
+describe('RN-CONFORM-04 review P2-1/P2-2 — caller objects are read once (no check-then-use substitution)', () => {
+  it('a genuine decision whose getters change after verification is judged by its first reading — the outsider gets nothing', async () => {
+    const i = createReferenceIntegration();
+    const genuine = (await i.obtainDecision(PRINCIPALS.reader, ORG_ALPHA, TARGET, 'document.open')) as { payload: Record<string, unknown>; signature: string };
+    let reads = 0;
+    const shifting: Record<string, unknown> = { ...genuine.payload };
+    Object.defineProperty(shifting, 'principalId', { enumerable: true, get: () => (reads++ === 0 ? PRINCIPALS.reader : PRINCIPALS.outsider) });
+    const outcome = await i.execute(request(i, PRINCIPALS.outsider, 'document.open', { decision: { payload: shifting, signature: genuine.signature } }));
+    assert.equal(outcome.outcome, 'denied');
+    assert.deepEqual(i.store.accesses, []);
+  });
+
+  it('a request whose organization changes between reads cannot cross tenants', async () => {
+    const i = createReferenceIntegration();
+    let reads = 0;
+    const shifting: Record<string, unknown> = { ...request(i, PRINCIPALS.betaAgent, 'document.open') };
+    Object.defineProperty(shifting, 'organizationId', { enumerable: true, get: () => (reads++ === 0 ? ORG_BETA : ORG_ALPHA) });
+    const outcome = await i.execute(shifting);
+    assert.equal(outcome.outcome, 'denied');
+    assert.deepEqual(i.store.accesses, []);
+  });
+});
+
+describe('RN-CONFORM-04 review P3-1 — a throwing, hanging or non-promise dependency denies; it never escapes the PEP', () => {
+  const ports = (i: ReferenceIntegration, authorization: unknown, revocation: unknown) => ({ ...i.ports, authorization: authorization as never, revocation: revocation as never });
+  it('authorization dependency: synchronous throw, rejection, null answer', async () => {
+    const i = createReferenceIntegration();
+    for (const decide of [() => { throw new Error('boom'); }, () => Promise.reject(new Error('boom')), () => null]) {
+      denied(await executeProtectedDocumentOperation(request(i, PRINCIPALS.reader, 'document.open'), ports(i, { decide }, i.authority)), 'AUTHORITY_UNAVAILABLE');
+    }
+  });
+  it('revocation dependency: throw or hang → REVOCATION_UNKNOWN', async () => {
+    const i = createReferenceIntegration();
+    for (const revocationOf of [() => { throw new Error('boom'); }, () => new Promise(() => undefined)]) {
+      denied(await executeProtectedDocumentOperation(request(i, PRINCIPALS.reader, 'document.open'), ports(i, i.authority, { revocationOf })), 'REVOCATION_UNKNOWN');
+    }
+    assert.deepEqual(i.store.accesses, []);
+  });
+});
+
 describe('RN-CONFORM-04 WP-11 — the authorization dependency fails closed', () => {
   for (const mode of ['unavailable', 'timeout', 'malformed'] as const) {
     it(`${mode}: denied, and the store is never touched`, async () => {
@@ -214,7 +254,11 @@ describe('RN-CONFORM-04 WP-03 — every defective variant is detectable by a val
       const probe = await runReferenceProbe(defective, type, 'document.export');
       if (type === 'G08') assert.notEqual(probe.observedDeploymentDigest, conformant.observedDeploymentDigest);
       else assert.equal(probe.observedOutcome, 'allowed');
-      if (type !== 'G08') assert.equal((await runReferenceProbe(defective, type, 'document.open')).observedOutcome, 'denied', 'the defect is scoped to document.export');
+      if (type !== 'G08') {
+        for (const other of ['document.open', 'document.modify-protected-terms'] as const) {
+          assert.equal((await runReferenceProbe(defective, type, other)).observedOutcome, 'denied', `the defect is scoped to document.export (${other})`);
+        }
+      }
     });
   }
 

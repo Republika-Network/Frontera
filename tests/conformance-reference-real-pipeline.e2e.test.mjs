@@ -110,7 +110,8 @@ function setup() {
   const clock = fixtureClock(AT);
   let current = S.active1;
   const pipeline = realPipeline(clock, () => current);
-  const integration = createReferenceIntegration(undefined, { world: fvWorld(), clock, authorization: pipeline, revocation: pipeline });
+  // The real pipeline verifies signatures and history on its first call; it gets a generous deadline (review P2-4).
+  const integration = createReferenceIntegration(undefined, { world: fvWorld(), clock, authorization: pipeline, revocation: pipeline, authorityTimeoutMs: 10_000 });
   const request = (principalId, operation, extra = {}) => ({
     principalId,
     organizationId: ORG_ALPHA,

@@ -93,7 +93,9 @@ describe('RN-CONFORM-04 — Scenarios A–D: conformant → bypass → automatic
     const v2 = s.verify(a2, id, { kind: 'online', nonce: n2 }, { store: online });
     assert.deepEqual([v2.result, v2.state, v2.stateVersion, v2.conformant], ['NOT_CONFORMANT', 'SUSPENDED', 3, false]);
     assert.ok((v2.sequence ?? 0) > (v1.sequence ?? 0), 'the status sequence only moves forward');
-    assert.equal(s.verify(a1, id, { kind: 'online', nonce: n2 }, { store: online }).result, 'NONCE_MISMATCH');
+    // The old online assertion is refused (it has expired), and a current assertion presented for another nonce is refused too.
+    assert.equal(s.verify(a1, id, { kind: 'online', nonce: n1 }, { store: online }).result, 'EXPIRED_ASSERTION');
+    assert.equal(s.verify(a2, id, { kind: 'online', nonce: n1 }).result, 'NONCE_MISMATCH');
     // The earlier stapled ACTIVE assertion: refused by a verifier that has seen the newer state; a stateless verifier still
     // accepts it until its own validUntil (≤ 15 min) — the documented bound of offline revocation, not instantaneous.
     assert.equal(s.verify(stapledActive, id, { kind: 'stapled' }, { store: online }).result, 'ROLLBACK_DETECTED');
@@ -189,7 +191,7 @@ describe('RN-CONFORM-04 WP-11 — credential lifecycle adversarial cases', () =>
     assert.equal(back.state, 'ACTIVE');
   });
 
-  it('a credential cannot be issued by one human, and a validator\'s self-reported fixture result is not a pass', async () => {
+  it('single-operator evidence never makes a credential eligible, and one human cannot issue alone', async () => {
     const c = buildReferenceCircuit();
     const { lifecycle } = c.services();
     const credential = lifecycle.registerCandidate({ organizationId: ORG_A, integrationDigest: c.integration.integrationDigest });

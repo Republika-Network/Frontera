@@ -12,7 +12,7 @@ The implementation:
 
 **The question:** can an integrated platform bypass its authorization enforcement while still presenting a valid Republika conformance credential?
 
-**What this mission demonstrates:** with the RN-CONFORM-02 engine and RN-CONFORM-03 status unchanged, it cannot do so for longer than the corroboration window. A synthetic Fileverse-inspired reference PEP was built, every coverage-matrix challenge (G01–G08) was made executable for every covered operation, and eight deliberately defective variants were implemented. Each variant produces a **corroborated** VERIFIED_FAILURE on its control, for the defective operation only. On an ACTIVE credential the violation triggers an automatic, atomic ACTIVE → SUSPENDED transition, and a newly signed online status then reports SUSPENDED. Reinstatement requires all three of:
+**What this mission demonstrates:** with the RN-CONFORM-02 engine and RN-CONFORM-03 status unchanged, a bypass that the challenges exercise does not survive once two distinct operators observe it. A synthetic Fileverse-inspired reference PEP was built, every coverage-matrix challenge (G01–G08) was made executable for every covered operation, and eight deliberately defective variants were implemented. Each variant produces a **corroborated** VERIFIED_FAILURE on its control, for the defective operation only. On an ACTIVE credential the violation triggers an automatic, atomic ACTIVE → SUSPENDED transition, and a newly signed online status then reports SUSPENDED. Reinstatement requires all three of:
 
 - a remediation statement;
 - full critical revalidation;
@@ -21,6 +21,14 @@ The implementation:
 | Demonstrably functional (measured by tests) | Synthetic (mocked fixture behaviour) |
 | --- | --- |
 | Engine classification, corroboration, suspension, reinstatement, signed status, history verification, evidence acceptance and its refusals | The document workflow, its decision authority and storage, the defects, the validators and operators, and the human approvers |
+
+**Detection limits** (independent review, P2-3):
+
+- **Challenge cadence.** Detection happens only when challenges run. The real bound is challenge cadence + the 30-minute corroboration window + the ≤ 15-minute stapled validity. Evidence freshness alone allows 1 day + 6 hours of grace before an `EVIDENCE_STALE` suspension.
+- **Recognisable probes.** The probes use fixed principals, and the challenge nonce never reaches the PEP. An integration that recognises probes and treats them differently, or a bypass that skips only non-probe principals, is not detectable this way.
+- **Self-reported digest.** G08 compares the digest the integration *reports*. An integration that lies about its attested manifest is not detected by G08 alone, so the attestation source must be independent.
+
+These limits belong to the challenge-based method, not to this fixture. They are why CC-D-02 (independent operators) and an authorized, unpredictable test environment are prerequisites for any real claim.
 
 ## 2. Baseline
 
@@ -160,7 +168,7 @@ Also covered:
 4. Every interface (primary, batch, storage) is challenged separately.
 5. Classification comes only from the engine over signed, accepted validator evidence. No fixture flag such as `isCompliant` exists or counts.
 6. Suspension needs ≥ 2 distinct operators and is atomic with the evaluation. Reinstatement after a confirmed violation needs remediation, full revalidation and two distinct humans.
-7. A different deployment digest is a G08 violation. A new deployment is a new integration version and a new credential (RN-CONFORM-02).
+7. A different **reported** deployment digest is a G08 violation (G08 trusts the attested manifest; see the §1 limits). A new deployment is a new integration version and a new credential (RN-CONFORM-02).
 8. The defects exist only in test fixtures.
 9. The fixture is unreachable from Host, routes, package exports or configuration. No API is added and the API freeze is unchanged.
 
