@@ -1009,11 +1009,23 @@ A single row is never a partial plan, so it adds no resume deadlock and no inter
 - **`verifyFvCurrentOperators`** counts only verified operators whose principal is active and that still hold an active credential. That is current authority, distinct from historical membership (`verifyFvOperatorRoles`, which still verifies). A revoked credential never counts, whether an administrator revoked it or a forged row did.
 - **`verifyFvRevocations`** re-verifies, from the store alone, **every** `credential_revoked` row of the FV store. A row is *authorized* only when all of these hold:
   - it is the revocation ceremony's;
-  - everything AUTH-03 decided at write time holds again at that position (review L2/L3): the contract and its commitment, the target and its key digest, the target still active, a verified operator target, the position and chain digest, the signed time, an active administrator with its credential active, no unfinished plan, an unused challenge, an advancing counter and a valid signature;
+  - every write-time condition of AUTH-03 that the history can still prove holds again at that position (review L2/L3; parity completed by AUDIT-HF01):
+    - the contract and its commitment;
+    - its scope, against the registration's authenticated binding (AUDIT-HF01): the organization, store id, deployment, FV state kind, witness id and witness key digest. The store id is compared explicitly: the prior chain digest is recomputed under the authorization's own claimed store id, so it does not bind that id by itself;
+    - its signed lifetime: positive and at most 300 s (AUDIT-HF01);
+    - the target, its key digest and its ownership, the target still active and a verified operator;
+    - the position, chain digest and signed time;
+    - an active administrator with its credential active, no unfinished plan, an unused challenge, an advancing counter and a valid signature;
   - the stored row is **byte-for-byte the row AUTH-03 rebuilds** from that contract and assertion, so no projected field (`assertedWith`, counter, reason) can be swapped under a genuine signature (publication review F1).
 
+  The scope the audit checks against (`expected`) must be the registration's authenticated binding. That means the values every FV ceremony uses, read from the registration record as `fvRegisteredStoreAccess.registeredRecord` opens it: the pinned issuer's signature over that binding, plus the registrar's pinned configuration, including the digest of the pinned witness key. A caller-chosen scope proves nothing, and without a complete one nothing is authorized. One credential can appear in both result sets (a genuine revocation, then a replayed copy of its row later), so a consumer asks whether it is *authorized*, never whether it is absent from *unauthorized*.
+
   Otherwise the row is *unauthorized*, for example a holder of the store's signing key forging one. Either way the credential stays revoked: **a revocation only ever removes authority**. A forged revocation is still a real loss of access, an availability and governance issue (recovery is §18).
-- **What `authorized` does not prove (publication review F2):** that the row was appended within the signed window. Neither the store nor the witness records a trusted append time. So a holder of the signing key could append, at its exact head and later, a genuine administrator authorization the ceremony never used (one left in the unsigned record after `WINDOW_CLOSED`, say). `authorized` means "the administrator signed exactly this revocation at exactly this position".
+- **What `authorized` proves, and what it does not (publication review F2; AUDIT-HF01).** Two checks must be kept apart:
+  - **The signed window's validity is checked.** The window's structure, its 300 s cap, and every other internally verifiable constraint of the contract hold.
+  - **The actual append time is not established.** AUTH-03 checked the window against the ceremony's clock at write time. Neither the store nor the witness records a trusted append time; the reference witness's local `recorded_at` columns are unsigned metadata.
+
+  So a holder of the store's signing key could later append a genuine, in-scope authorization the ceremony never used (one left in the unsigned record after `WINDOW_CLOSED`, say), at its exact head, if nothing else was written since (tested). `authorized` means "the administrator signed exactly this revocation, in this scope, for this position". It does not mean "approved at the time it was appended". It still only removes authority.
 - **The administrator's current state is required.** If its credential is revoked (in 2A3A only by a forged row, since the administrator is never a target), it authorizes neither a revocation nor an enrolment (tested).
 - **Freshness:** each decision reads the store's verified history under CORE-07 freshness. A rolled-back store never revives a revoked credential: the witness refuses it (tested).
 
@@ -1055,11 +1067,14 @@ A single row is never a partial plan, so it adds no resume deadlock and no inter
 - **The administrator is a single trust root,** with no revocation, replacement or recovery in 2A3A (§18).
 - **The mid-plan lockout of §16.7 is unchanged:** a revocation cannot release it.
 - **The executor is unchanged:** nothing becomes operational, and `bootstrapExecution` stays `disabled` (tested).
+- **No trusted append time (F2):** `verifyFvRevocations` cannot prove a row was appended within its signed window (§17.4). A delayed append of a genuine, unused, in-scope authorization is labelled authorized. It only removes authority, but it is a real loss of access the administrator may have abandoned.
+- **The operator-role audit has the same class of gap (found by AUDIT-HF01; open, not fixed here).** `verifyFvOperatorRoles` (2A2B) does not re-check the store id, deployment, state kind, witness id, witness key digest or 300 s lifetime that its own write-time verification enforces (`fv-operator.ts`). Its comment that the chain digest "also binds the store id" is wrong, for the reason given in §17.4. Unlike F-A, this one can *grant* standing: an administrator-signed but off-contract operator authorization, appended raw by a signing-key holder, would count as a verified operator, and so as current authority in `verifyFvCurrentOperators`. Exploiting it needs both the store's signing key and an administrator assertion over an off-contract commitment. A sibling hotfix should bring it to the same parity before anything relies on operator roles.
+- **The append guard** (`appendFvRevocation`) is defence in depth. It is reachable only by a write of the same owner between AUTH-03's verification and the append, and that path is tested (AUDIT-HF01).
 
 ### 17.8 Evidence
 
 - **Tests.**
-  - `tests/fv-p4c2b3c2a3a-credential-revocation.e2e.test.mjs`: 24 tests, with real child processes paused or SIGKILLed, a real witness and real AUTH-02 authentication.
+  - `tests/fv-p4c2b3c2a3a-credential-revocation.e2e.test.mjs`: 28 tests (4 added by AUDIT-HF01), with real child processes paused or SIGKILLed, a real witness and real AUTH-02 authentication.
   - `fv-p4c2b3c2a3a-credential-revocation-structure.test.ts`: 4 tests.
   - Existing structure pins gained exact, commented exceptions for the new family member. No assertion was removed.
 - **Regression:** the focused suites (2A3A, 2A2B, 2A2A, HF01, 2A1, B3C-3, B3B, B3C-1, FV-EXEC-LOCK-01, all structure tests, AUTH-02/03/04, CORE-07, G-02A, PROD-02) and every gate pass on the final tree. The counts are in the CHANGELOG entry.
@@ -1102,6 +1117,15 @@ A single row is never a partial plan, so it adds no resume deadlock and no inter
     is killed.
   - **F2, Low/Medium:** an authorization the ceremony refused as expired, appended later by a key holder, is labelled
     authorized. **Documented as a limit (§17.4):** there is no trusted append time to check against.
+- **Post-merge review (PR #268 merged as `ccbeff0d`; a fresh read-only AI agent, not human)** found F-A, F-B and F-D. **AUDIT-HF01** closes or documents each:
+  - **F-A, Low: fixed.** The audit did not re-check the deployment, state kind, witness id, witness key digest or 300 s cap. An administrator-signed but off-contract row was therefore labelled authorized. `verifyFvRevocations` now takes the registration's authenticated expectation (a required fourth argument), fails closed without a complete one, and re-checks all five.
+    - The independent review of this hotfix (N1, Low, reproduced) found the store id unchecked too, against a doc claim that the chain digest binds it. It is now compared explicitly, and tested.
+    - Tested on nine off-contract rows, each refused by AUTH-03 and reported unauthorized: a 30-day window, an inverted window, another store, deployment, state kind, witness id or witness key, a substituted target key, and a target credential owned by another principal. For the five scope cases, the same row is authorized under its own scope, which proves the scope check is what refuses it.
+    - Controls: the raw row is shown to equal AUTH-03's row; an in-scope row, and one at exactly the 300 s cap, are authorized; a missing or incomplete scope authorizes nothing.
+  - **F-B: documented** in §17.4 and §17.7. A test pins the retained limit.
+  - **F-D: tested.** A write by the same owner, made between AUTH-03's verification and the guarded append, gives `CONFLICT`. Nothing is revoked, the history and witness stay consistent, and the operator keeps current authority.
+  - **Mutants: 13 of 14 killed,** on the compiled audit in a separate copy, restored and hash-checked. They cover the lifetime cap and its positive bound, each of the five scope bindings, row equality, the signature, the target key digest, target ownership and the append guard (until now an untested survivor). The survivor is the explicit fail-closed scope guard, which is redundant: the strict parser requires every scope field of an authorization to be non-empty, so a missing or empty expectation never matches, and a null one throws inside the audit's `try`. It is kept as defence in depth.
+  - **Found, not fixed:** the same class of gap in `verifyFvOperatorRoles` (§17.7).
 
 ## 18. B3C-2A3B: governance recovery and interrupted enrolment (design only; NOT implemented)
 

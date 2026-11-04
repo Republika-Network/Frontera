@@ -4,6 +4,22 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Fixed — FV-P4C-2B3C-2A3A-AUDIT-HF01 revocation audit contract parity (internal, not operational)
+- **What.** `verifyFvRevocations` (`human-identity/fv-revocation.ts`) now re-checks the scope and lifetime AUTH-03 enforces at write time:
+  - the store id, deployment, FV state kind, witness id and witness key digest (the store id was found unchecked by this hotfix's own independent review);
+  - the 300 s cap.
+
+  Before this, an administrator-signed but off-contract revocation row, appended raw by a store signing-key holder, was labelled authorized (post-merge review F-A, Low). It only ever removed authority.
+- **API (internal; no index export, no production caller).** The audit takes a required fourth argument: the registration's authenticated expectation, the same binding every FV ceremony uses. It fails closed without a complete one. AUTH-03's write-time decision is unchanged.
+- **Documented limit (F-B).** The audit cannot prove a row's actual append time; there is no trusted timestamp. Now stated in §17.4 and §17.7, and pinned by a test.
+- **Tested (F-D).** The append guard's `CONFLICT` path, through a same-owner write between verification and append.
+- **Found, not fixed.** The same class of gap in the operator-role audit `verifyFvOperatorRoles` (2A2B). It is documented for a sibling hotfix.
+- **Evidence.**
+  - `tests/fv-p4c2b3c2a3a-credential-revocation.e2e.test.mjs` (28, 4 new);
+  - the structure test (4, with new pins);
+  - mutants 13 of 14 killed (the survivor, the explicit fail-closed guard, is redundant with the strict parser);
+  - focused regression and gates green (§17.8).
+
 ### Added — FV-P4C-2B3C-2A3A FV operator credential revocation (internal, not composed, not operational)
 - **What.** The FV administrator revokes one FV operator credential through an offline ceremony (`sovereign-status-history/identity-registration-revocation.ts`), decided by AUTH-03 (`human-identity/fv-revocation.ts`). Nothing in the Host, its scripts, its deployment, the dedicated executor or its supervisor invokes it.
 - **Authority.** The administrator signs, by WebAuthn assertion (user verified, pinned RP ID and origins, advancing counter), one contract naming:

@@ -254,22 +254,48 @@ export async function appendFvRevocation(
 
 /**
  * Re-verifies, from the signed history alone, **every** `credential_revoked` row of an FV store (review L2: whatever
- * its recorder). A row is `authorized` only when it is the FV revocation ceremony's and all of what AUTH-03 decided at
- * write time holds again at its position (review L3): its stored contract recomputes to its commitment and names that
- * row's target and credential; it was made at exactly that row's position (prior head and chain digest) and time
- * (`notBefore`); there, the administrator was the FV administrator, active, with that credential active; the target was
- * a cryptographically verified FV operator, not the administrator; the challenge was unused; the counter advanced; and
- * the stored assertion verifies by the administrator's credential as it was there; and the stored row is byte-for-byte the
- * row AUTH-03 builds from that contract and assertion (publication review F1). **What `authorized` does not prove:** that
- * the row was appended within the signed window — neither the store nor the witness records a trusted append time, so a
- * holder of the store's signing key could append a genuine authorization the ceremony never used, at its exact head,
- * later (publication review F2); it still only removes authority. Anything else is `unauthorized`
- * (for example a holder of the store's signing key forging one). Either way the credential stays revoked: a revocation
- * only ever removes authority.
+ * its recorder). A row is `authorized` only when it is the FV revocation ceremony's and every condition AUTH-03 decided
+ * at write time (`verifyFvRevocationEvidence`) **that the history can still prove** holds again at its position
+ * (review L3; AUDIT-HF01 completed the parity):
+ * - the contract: it parses strictly, recomputes to its stored commitment, names this row's target and credential;
+ * - its scope: this organization and, against `expected`, this store id, deployment, FV state kind, witness id and
+ *   witness key digest (AUDIT-HF01; the store id is compared explicitly — the prior chain digest is recomputed under the
+ *   authorization's own store id, so it does not bind that id by itself);
+ * - its signed lifetime: positive and at most `FV_REVOCATION_AUTHORIZATION_MAX_LIFETIME_SECONDS` (AUDIT-HF01);
+ * - its position and time: exactly that row's prior head (sequence and chain digest), `recordedAt` = `notBefore`;
+ * - there: no unfinished operator enrolment; the administrator the FV administrator, active, with that credential
+ *   active and owned; the target a cryptographically verified FV operator (`verifyFvOperatorRoles`), not the
+ *   administrator, its credential still active, owned and exactly the approved key; the challenge unused;
+ * - the stored assertion verifies (user verified, pinned RP ID, origins and type) by the administrator's credential as
+ *   it was there, and its counter advances;
+ * - and the stored row is byte-for-byte the row AUTH-03 builds from that contract and assertion (publication review F1).
+ *
+ * `expected` must be the registration's **authenticated** binding — the values every FV ceremony uses, from the
+ * registration record as the FV ceremonies' registered-record access opens it (the pinned issuer's signature over the
+ * binding, and the registrar's pinned configuration, including the digest of the pinned witness key). A caller-chosen
+ * scope proves nothing. Without a complete one, nothing is `authorized` (fail closed). One credential can appear in
+ * both sets (a genuine revocation, then a replayed copy of its row later): a consumer asks whether it is in
+ * `authorized`, never whether it is absent from `unauthorized`.
+ *
+ * **What `authorized` does not prove (publication review F2):** *when* the row was appended. AUTH-03 checked the signed
+ * window against the ceremony's clock at write time, but neither the store nor the witness records a trusted append
+ * time (the reference witness's local `recorded_at` columns are unsigned metadata), so a holder of the store's signing
+ * key could append a genuine, in-scope authorization the ceremony never used, after its window, at its exact head while
+ * nothing else was written. `authorized` means "the administrator signed exactly this revocation, in this scope, for
+ * this position" — not "approved at the time it was appended". It still only removes authority. Anything else is
+ * `unauthorized` (for example a holder of the store's signing key forging one). Either way the credential stays revoked:
+ * a revocation only ever removes authority.
  */
-export async function verifyFvRevocations(history: readonly StoredHumanIdentityRow[], organizationId: string, relyingParty: RelyingPartyConfiguration): Promise<{ readonly authorized: ReadonlySet<string>; readonly unauthorized: ReadonlySet<string> }> {
+export async function verifyFvRevocations(
+  history: readonly StoredHumanIdentityRow[],
+  organizationId: string,
+  relyingParty: RelyingPartyConfiguration,
+  expected: FvRevocationExpectation & { readonly storeId: string },
+): Promise<{ readonly authorized: ReadonlySet<string>; readonly unauthorized: ReadonlySet<string> }> {
   const authorized = new Set<string>();
   const unauthorized = new Set<string>();
+  // AUDIT-HF01: no complete authenticated scope, nothing is authorized.
+  const scoped = isRecord(expected) && [expected.storeId, expected.deploymentId, expected.stateKind, expected.witnessId, expected.witnessKeyDigest].every((value) => typeof value === 'string' && value.length > 0);
   for (const [index, row] of history.entries()) {
     if (row.kind !== 'credential_revoked' || row.objectId === null) continue;
     let ok = false;
@@ -278,10 +304,19 @@ export async function verifyFvRevocations(history: readonly StoredHumanIdentityR
       const authorization = fvRevocationAuthorizationOf(payload.authorization);
       const prefix = history.slice(0, index);
       if (
+        scoped &&
         row.recordedBy === FV_REVOCATION_RECORDER &&
         authorization !== undefined &&
         fvRevocationAuthorizationCommitment(authorization) === payload.authorizationCommitment &&
         authorization.organizationId === organizationId &&
+        // AUDIT-HF01: the scope and the lifetime cap AUTH-03 enforced at write time.
+        authorization.storeId === expected.storeId &&
+        authorization.deploymentId === expected.deploymentId &&
+        authorization.stateKind === expected.stateKind &&
+        authorization.witnessId === expected.witnessId &&
+        authorization.witnessKeyDigest === expected.witnessKeyDigest &&
+        Date.parse(authorization.notAfter) - Date.parse(authorization.notBefore) > 0 &&
+        Date.parse(authorization.notAfter) - Date.parse(authorization.notBefore) <= FV_REVOCATION_AUTHORIZATION_MAX_LIFETIME_SECONDS * 1000 &&
         authorization.target.operatorId === row.operatorId &&
         authorization.target.credentialId === row.objectId &&
         authorization.target.operatorId !== authorization.administrator.operatorId &&
