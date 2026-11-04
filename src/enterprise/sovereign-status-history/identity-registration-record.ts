@@ -347,7 +347,12 @@ const fsyncDirectory = (path: string): void => {
  */
 function protectedOrRefused(file: string, allowMissing: boolean): void {
   let refusal = checkProtectedFile(file, { allowMissing });
-  if (refusal === 'LINKED' && releasePublicationNames(file)) refusal = checkProtectedFile(file, { allowMissing });
+  if (refusal === 'LINKED') {
+    // Publication review L1: re-checked whether or not this call released anything — a live publication may have just
+    // removed its own private name (between `link` and that removal, the record briefly has two names).
+    releasePublicationNames(file);
+    refusal = checkProtectedFile(file, { allowMissing });
+  }
   if (refusal !== undefined) throw new FvIdentityRegistrationRecordError('PATH_REFUSED', `The registration record path is refused (${refusal}).`);
 }
 
@@ -379,12 +384,6 @@ function releasePublicationNames(file: string): boolean {
 }
 
 /**
- * RACE-INV-01 (D1): initializes a new record in full under a private, owner-only, never-reused name beside the record path,
- * makes it durable, and publishes it at the path with `link` (which never replaces anything). If another ceremony
- * published first, its record is the one used. The private name is always removed; an interrupted publication leaves at
- * most an unused private file (never at the record path) or a second name `protectedOrRefused` releases.
- */
-/**
  * RACE-INV-01 (D1): releases the private second name an interrupted publication left on the record at `path` (a
  * registration killed between `link` and the removal of that name), so the record path passes its file policy again.
  * Only exactly such a name of the same file is removed; nothing else, and no content, changes.
@@ -398,6 +397,12 @@ export function releaseInterruptedRecordPublication(path: string): void {
   }
 }
 
+/**
+ * RACE-INV-01 (D1): initializes a new record in full under a private, owner-only, never-reused name beside the record path,
+ * makes it durable, and publishes it at the path with `link` (which never replaces anything). If another ceremony
+ * published first, its record is the one used. The private name is always removed; an interrupted publication leaves at
+ * most an unused private file (never at the record path) or a second name `protectedOrRefused` releases.
+ */
 async function publishInitializedRecord(file: string, organizationId: string, now: () => string): Promise<void> {
   const temporary = `${file}.init-${randomBytes(16).toString('hex')}`;
   try {

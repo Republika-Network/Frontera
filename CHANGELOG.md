@@ -15,7 +15,8 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - Authorization, ledger, witness and store logic are unchanged.
 - **Evidence.**
   - `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (6 tests, real processes; 5 of 6 fail on the pre-fix code, the sixth pins the never-adopt guard).
-  - Targeted mutants: all four killed deterministically. The lock-order mutant is killed by a deterministic behavioural test (6 of 6) and by the structure pin; the two-contender race test alone catches it in about 2 of 3 runs.
+  - Targeted mutants: all killed. The lock-order mutant is killed by a timing-dependent behavioural test (6 of 6 runs) and every time by the structure pin; the two-contender race test alone catches it in about 2 of 3 runs.
+  - Publication review: GO. L1 (a transient `PATH_REFUSED` during a live publication) is fixed. L2 (two ceremonies in one process, pre-existing, fails closed) is documented for a follow-up.
   - Independent AI review: conditional go; its three Lows are addressed.
   - Details in lifecycle doc §19.
 - **Limits.**

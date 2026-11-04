@@ -1226,14 +1226,14 @@ FV store:   EMPTY ─(2A2A, issuer)→ ADMINISTERED ─(2A2B, admin)→ ADMINIST
 - `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (6 tests, all with real, separate processes, since POSIX locks belong to a whole process):
   - publication is complete, with nothing at the record path meanwhile;
   - two contenders, started together while a third process holds the record, give exactly one prompt winner;
-  - deterministically, an opener waiting for the lock holds nothing, so a writer holding RESERVED can still commit;
+  - an opener waiting for the lock holds nothing, so a writer holding RESERVED can still commit. This test is timing-dependent: it assumes the opener entered its wait within 100 ms;
   - the wait is bounded;
   - both interrupted-publication states recover;
   - everything else stays refused.
 - On the pre-fix implementation (the `cded5c80` sources, rebuilt), 5 of the 6 fail. The sixth pins the never-adopt guard and passes on both, by design.
 - **Targeted mutants:**
   - killed deterministically by the new e2e tests: no wait; release disabled; the registrar's release removed;
-  - exclusive mode set before acquiring (the second half of D2): killed in 6 of 6 runs by the deterministic lock-order test, and by the structure pin. The two-contender test catches it only in about two runs of three (6 of 9), because the real tie needs both openers to take SHARED before either escalates, which can't be forced from outside SQLite.
+  - exclusive mode set before acquiring (the second half of D2): killed in 6 of 6 runs by the lock-order test (timing-dependent, see above), and every time by the structure pin. The two-contender test catches it only in about two runs of three (6 of 9), because the real tie needs both openers to take SHARED before either escalates, which can't be forced from outside SQLite.
 - **Independent review** (a fresh AI agent, not human): conditional go. It confirmed both D2 halves are needed (both refused in 17–21 of 25 runs for each half alone, 0 of 25 with both) and that SIGKILL during publication is recoverable (60 of 60 on the fix; 14 of 30 kills left a permanently corrupt record on the pre-fix code). Its three Lows were addressed:
   - the mutant wording above;
   - a start-skew flake risk in the contention test: contenders now start on one signal, and the winner's promptness is measured from the reader's release;
@@ -1257,5 +1257,9 @@ FV store:   EMPTY ─(2A2A, issuer)→ ADMINISTERED ─(2A2B, admin)→ ADMINIST
   - the directory is fsynced after publication.
 
   A lost `link` leaves no record (a later registration publishes anew), and a lost removal leaves the second name that is released. The order was checked by reading the code, not tested, and a filesystem that ignores `fsync` voids it.
+- **Publication review (PR #271; a fresh AI agent, not human): GO.** Findings:
+  - **L1, Low, fixed:** an opener or the registrar that saw `LINKED` during a live publication's `link`→removal instant was refused `PATH_REFUSED` if the publisher removed its name first. Both now re-check after any `LINKED`.
+  - **Wording:** the lock-order test is timing-dependent, not deterministic. Now stated.
+  - **L2, Low, pre-existing, not fixed here:** two ceremonies in **one process** can drop each other's POSIX lock. `walHeader`'s raw open and close on a record held in the same process is enough. It fails closed (fence, exit guard). It belongs in a follow-up, for example a module-level in-process mutex.
 - **`link` is required:** on a filesystem without hard links, creating a record is refused (`RECORD_UNAVAILABLE`).
 - **Liveness, not mutual exclusion,** still depends on the bounded wait. Under extreme scheduling delay, both contenders can still be refused `REGISTRAR_BUSY`. That outcome is recoverable: the record is complete and a retry registers.

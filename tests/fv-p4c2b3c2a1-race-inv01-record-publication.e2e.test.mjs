@@ -163,7 +163,9 @@ describe('FV-P4C-2B3C-2A1-RACE-INV-01 — the registration record is published c
     assert.ok(outcomes.find((o) => o.outcome === 'opened').at - releasedAt < 300, JSON.stringify({ releasedAt, outcomes }));
   });
 
-  it('D2 (deterministic): an opener waiting for the lock holds nothing while it waits — a writer holding RESERVED still commits (exclusive mode is set only once the lock is held)', async () => {
+  // Timing-dependent, not strictly deterministic (publication review): it assumes the opener entered its wait within 100 ms.
+  // Were it slower, the writer would commit first and the test would pass without exercising the wait.
+  it('D2 (lock order): an opener waiting for the lock holds nothing while it waits — a writer holding RESERVED still commits (exclusive mode is set only once the lock is held)', async () => {
     const world = registrationWorld();
     await initializedRecord(world);
     const writer = writerProcess(world.paths.record, { commitWaitMs: 250 });
