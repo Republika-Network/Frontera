@@ -88,6 +88,49 @@ jobs:
       - run: npm run build
       - run: npm run qualify:pilot
 
+  rn-conform-04-demo:
+    # RN-CONFORM-04: one run of the synthetic reference PEP demonstration (conformant → export bypass → corroborated
+    # violation → automatic suspension → signed SUSPENDED status → remediation → full revalidation → two-person
+    # reinstatement → signed ACTIVE status → verified history), captured as rn.conformance.reference-demo-report/1 plus a
+    # summary and uploaded as an artifact. Synthetic and test-only: no network, no Fileverse system, no ledger, no secret,
+    # no write permission. NOT a Fileverse certification. The same test runs inside `validate` (npm test) without writing.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Run the demonstration
+        env:
+          FRONTERA_RN_CONFORM_04_REPORT_OUT: ${{ runner.temp }}/rn-conform-04-demo/rn-conformance-reference-demo-report.json
+        run: node --test --test-reporter=spec dist/src/enterprise/__tests__/conformance-reference-demo.test.js
+      - name: Digest the report
+        working-directory: ${{ runner.temp }}/rn-conform-04-demo
+        run: |
+          test -s rn-conformance-reference-demo-report.json
+          sha256sum rn-conformance-reference-demo-report.json | tee rn-conformance-reference-demo-report.json.sha256
+          {
+            echo '### RN-CONFORM-04 synthetic reference PEP demonstration'
+            echo
+            cat rn-conformance-reference-demo-report.summary.md
+            echo
+            echo '```'
+            cat rn-conformance-reference-demo-report.json.sha256
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rn-conform-04-reference-demo-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rn-conform-04-demo/
+          if-no-files-found: error
+          retention-days: 90
+
   demo-evidence:
     # DEMO-01A: one run of the reference implementation for the three DEMO-01
     # scenarios (authorized, blocked, uncertain) on the shipped Host and the

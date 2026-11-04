@@ -63,7 +63,11 @@ describe('RN-CONFORM-02 challenge coordinator (WP-05)', () => {
     code(() => issue(c, 'G01', [c.validators.A], { integrationDigest: `sha256:${'0'.repeat(64)}` }), 'UNKNOWN_INTEGRATION');
     code(() => issue(c, 'G01', [c.validators.A], { organizationId: 'org-synthetic-beta' }), 'UNKNOWN_INTEGRATION');
     code(() => issue(c, 'G01', [c.validators.A], { deadlineSeconds: 16 * 60 }), 'MALFORMED_REQUEST');
-    code(() => issue(c, 'G03' as never, [c.validators.A]), 'MALFORMED_REQUEST');
+    // An unknown challenge type is malformed. G03/G04 exist since RN-CONFORM-04, but the synthetic-circuit profile declares
+    // CR-03/CR-04 not covered, so they are still refused for this integration — now with the more specific code.
+    code(() => issue(c, 'G09' as never, [c.validators.A]), 'MALFORMED_REQUEST');
+    code(() => issue(c, 'G03', [c.validators.A]), 'CHALLENGE_NOT_IN_PROFILE');
+    code(() => issue(c, 'G04', [c.validators.A]), 'CHALLENGE_NOT_IN_PROFILE');
     c.services().registry.quarantineValidator('validator-c', 'test');
     code(() => issue(c, 'G01', [c.validators.C]), 'VALIDATOR_NOT_ELIGIBLE');
     code(() => issue(c, 'G01', [{ ...c.validators.A, validatorId: 'validator-unknown' }]), 'VALIDATOR_NOT_ELIGIBLE');

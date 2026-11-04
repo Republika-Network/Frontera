@@ -35,6 +35,18 @@ The founder approved, for the RN-CONFORM-02 synthetic circuit only:
 How each is implemented: [RN_CONFORM_02_IMPLEMENTATION.md](RN_CONFORM_02_IMPLEMENTATION.md). The table
 above is the RN-CONFORM-01 record and is left as written; every other decision remains open.
 
+## RN-CONFORM-04 dispositions (no decision approved)
+
+RN-CONFORM-04 worked within, and closed none of, three open decisions
+([RN_CONFORM_04_IMPLEMENTATION.md](RN_CONFORM_04_IMPLEMENTATION.md) §3):
+
+* **CC-D-10** stays **OPEN**. The reference profile pins a named *synthetic reference adapter contract*
+  (`@republika-synthetic/document-use-reference-adapter`); this is not an SDK identity.
+* **CC-D-11** stays **OPEN**. Both locks are recorded unchanged, and only the currently approved rc.3
+  vendored identity is used.
+* **CC-D-12** is **synthetic only**, per the founder's direction for RN-CONFORM-04. Anything beyond
+  synthetic still needs a written, scoped, time-boxed authorization.
+
 ## Provisional parameters for RN-CONFORM-03 (synthetic scope only)
 
 The founder authorized, as **synthetic implementation parameters only** (not production approvals):

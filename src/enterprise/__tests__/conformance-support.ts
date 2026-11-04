@@ -124,6 +124,11 @@ export function syntheticPlatform(deployedDigest: string = DEPLOYMENT_V1): Synth
           return { observedOutcome: authorize({ ...base, dependencyUp: false }, b), observedDeploymentDigest: null };
         case 'G08':
           return { observedOutcome: 'digest_reported', observedDeploymentDigest: platform.deployedDigest };
+        case 'G03':
+        case 'G04':
+          // This RN-CONFORM-02 fixture has no alternative interface or storage route, and its profile does not cover CR-03/CR-04,
+          // so the coordinator never issues these here. Answered inconclusively rather than as a fabricated pass.
+          return { observedOutcome: 'unreachable', observedDeploymentDigest: null };
       }
     },
   };

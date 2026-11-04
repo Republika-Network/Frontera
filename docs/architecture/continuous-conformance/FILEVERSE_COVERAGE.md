@@ -40,3 +40,22 @@ enforcement point to challenge. RN-CONFORM-04 must therefore build a **synthetic
 Frontera that wraps the existing decision pipeline for open/export/modify, plus a deliberately bypassable
 variant, before any Fileverse-facing work. Real Fileverse enforcement remains FV-P5 and requires
 authorization ([CC-D-12](DECISION_REGISTER.md#cc-d-12)).
+
+## 4. Executable coverage — synthetic reference PEP only (RN-CONFORM-04)
+
+RN-CONFORM-04 built that synthetic reference PEP, and with it the matrix above becomes executable — **for
+the synthetic reference only**. It is not Fileverse coverage. No Fileverse system was tested, Fileverse
+enforcement (FV-P5) is still **NOT IMPLEMENTED**, and nothing here is a Fileverse certification.
+
+| Operation | Executable challenges (reference PEP) | Real FV decision pipeline exercised |
+|---|---|---|
+| Open / read (`document.open`) | G01–G07 per operation, plus G08 | FV-P2/P3/P4C via `tests/conformance-reference-real-pipeline.e2e.test.mjs` |
+| Export (`document.export`) | G01–G07 per operation, plus G08 | Same; the fixture terms restrict export → denied |
+| Metadata change (`document.modify-protected-terms`) | G01–G07 per operation, plus G08 | Same; owner-approval obligation → denied |
+| Revoke | G02 (revocation enforced within `P_rev` on the next operation) | Registrant-signed withdrawal → `REVOKED` |
+| Direct storage | G04 against the reference storage route | — |
+| Share, delete, edit content | Declared exclusions (NOT COVERED) | — |
+
+The profile is `rn.conformance.document-use-reference@0.1.0` (synthetic, pinned). The challenge, coverage
+and lifecycle records are in [RN_CONFORM_04_IMPLEMENTATION.md](RN_CONFORM_04_IMPLEMENTATION.md). CR-10 and
+CR-11 remain not covered; CR-11 remains human-reviewed.
