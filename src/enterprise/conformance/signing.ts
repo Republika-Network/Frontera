@@ -34,6 +34,10 @@ export const CONFORMANCE_SIGNING_DOMAINS = Object.freeze({
   statusRefusal: 'frontera:conformance-status-refusal:v1\n',
   /** RN-CONFORM-03: a requesting component's authentication of one signing request to the status signer (never an artifact). */
   statusSigningRequest: 'frontera:conformance-status-signing-request:v1\n',
+  /** RN-CONFORM-05: a validator's signed liveness statement. Never evidence and never a conformance claim. */
+  validatorHeartbeat: 'frontera:conformance-validator-heartbeat:v1\n',
+  /** RN-CONFORM-05: a validator's proof that it holds the private key it asks to enroll (signs a coordinator nonce). */
+  keyPossession: 'frontera:conformance-key-possession:v1\n',
 } as const);
 
 export type ConformanceSigningKind = keyof typeof CONFORMANCE_SIGNING_DOMAINS;

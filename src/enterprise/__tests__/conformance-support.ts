@@ -198,6 +198,12 @@ export const ALL_ACTIONS: Record<HumanAction, readonly ('attest' | 'approve')[]>
   'credential.reinstate': ['attest', 'approve'],
   'credential.revoke': ['attest', 'approve'],
   'validator.enroll': ['attest', 'approve'],
+  'validator.reinstate': ['attest', 'approve'],
+  'validator.revoke': ['attest', 'approve'],
+  'operator.approve': ['attest', 'approve'],
+  'operator.reinstate': ['attest', 'approve'],
+  'operator.revoke': ['attest', 'approve'],
+  'testing.authorize': ['attest', 'approve'],
 };
 
 // ---------------------------------------------------------------------------
