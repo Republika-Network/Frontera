@@ -64,7 +64,8 @@ describe('RN-CONFORM-04 — Scenarios A–D: conformant → bypass → automatic
     const n1 = nonce();
     const a1 = assertionOf(s.registry.issueOnline(s.onlineRequest(id, n1)));
     const v1 = s.verify(a1, id, { kind: 'online', nonce: n1 }, { store: online });
-    assert.deepEqual([v1.result, v1.state, v1.sequence], ['CONFORMANT', 'ACTIVE', 2]);
+    // `stateVersion` is the credential's; `sequence` is the status registry's own monotonic assertion counter.
+    assert.deepEqual([v1.result, v1.state, v1.stateVersion], ['CONFORMANT', 'ACTIVE', 2]);
     for (const operation of ['document.export', 'document.modify-protected-terms']) {
       const n = nonce();
       assert.equal(s.verify(assertionOf(s.registry.issueOnline(s.onlineRequest(id, n, operation))), id, { kind: 'online', nonce: n }, { operation }).result, 'CONFORMANT', operation);
@@ -90,7 +91,8 @@ describe('RN-CONFORM-04 — Scenarios A–D: conformant → bypass → automatic
     const n2 = nonce();
     const a2 = assertionOf(s.registry.issueOnline(s.onlineRequest(id, n2)));
     const v2 = s.verify(a2, id, { kind: 'online', nonce: n2 }, { store: online });
-    assert.deepEqual([v2.result, v2.state, v2.sequence, v2.conformant], ['NOT_CONFORMANT', 'SUSPENDED', 3, false]);
+    assert.deepEqual([v2.result, v2.state, v2.stateVersion, v2.conformant], ['NOT_CONFORMANT', 'SUSPENDED', 3, false]);
+    assert.ok((v2.sequence ?? 0) > (v1.sequence ?? 0), 'the status sequence only moves forward');
     assert.equal(s.verify(a1, id, { kind: 'online', nonce: n2 }, { store: online }).result, 'NONCE_MISMATCH');
     // The earlier stapled ACTIVE assertion: refused by a verifier that has seen the newer state; a stateless verifier still
     // accepts it until its own validUntil (≤ 15 min) — the documented bound of offline revocation, not instantaneous.
@@ -115,7 +117,8 @@ describe('RN-CONFORM-04 — Scenarios A–D: conformant → bypass → automatic
     assert.deepEqual([reinstated.state, reinstated.stateVersion], ['ACTIVE', 4]);
     const n3 = nonce();
     const v3 = s.verify(assertionOf(s.registry.issueOnline(s.onlineRequest(id, n3))), id, { kind: 'online', nonce: n3 }, { store: online });
-    assert.deepEqual([v3.result, v3.state, v3.sequence], ['CONFORMANT', 'ACTIVE', 4]);
+    assert.deepEqual([v3.result, v3.state, v3.stateVersion], ['CONFORMANT', 'ACTIVE', 4]);
+    assert.ok((v3.sequence ?? 0) > (v2.sequence ?? 0));
 
     assert.deepEqual(history(c, id), [
       '1:T1:∅→CANDIDATE:INTEGRATION_REGISTERED',

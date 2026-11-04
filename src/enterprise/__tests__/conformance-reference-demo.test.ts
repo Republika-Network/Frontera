@@ -46,7 +46,7 @@ describe('RN-CONFORM-04 — reproducible synthetic demonstration', () => {
     const online = (id: string) => {
       const n = nonce();
       const v = s.verify(assertionOf(s.registry.issueOnline(s.onlineRequest(id, n))), id, { kind: 'online', nonce: n }, { store: verifier });
-      return { result: v.result, state: v.state, sequence: v.sequence, issuedAt: v.issuedAt, validUntil: v.validUntil, evidenceFreshUntil: v.evidenceFreshUntil };
+      return { result: v.result, state: v.state, stateVersion: v.stateVersion, statusSequence: v.sequence, issuedAt: v.issuedAt, validUntil: v.validUntil, evidenceFreshUntil: v.evidenceFreshUntil };
     };
 
     // Initial conformant result.
