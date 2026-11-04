@@ -72,6 +72,16 @@ describe('FV-P4C-2B2 structure — internal, unreachable, not composed', () => {
         '../human-identity/fv-operator.js',
         '../human-identity/index.js',
       ],
+      // FV-P4C-2B3C-2A3A: the revocation ceremony, the family's fourth step: it reads FV roles and has AUTH-03's FV
+      // revocation verify and append the revocation (neither exported from AUTH-03's index); it executes nothing.
+      [join(MODULE, 'identity-registration-revocation.ts')]: [
+        '../authority-state-freshness/index.js',
+        '../human-identity/first-administrator.js',
+        '../human-identity/fv-domain.js',
+        '../human-identity/fv-operator.js',
+        '../human-identity/fv-revocation.js',
+        '../human-identity/index.js',
+      ],
     };
     for (const file of walk(MODULE)) {
       for (const specifier of specifiers(file)) {

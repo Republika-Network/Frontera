@@ -4,6 +4,24 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Added — FV-P4C-2B3C-2A3A FV operator credential revocation (internal, not composed, not operational)
+- **What.** The FV administrator revokes one FV operator credential through an offline ceremony (`sovereign-status-history/identity-registration-revocation.ts`), decided by AUTH-03 (`human-identity/fv-revocation.ts`). Nothing in the Host, its scripts, its deployment, the dedicated executor or its supervisor invokes it.
+- **Authority.** The administrator signs, by WebAuthn assertion (user verified, pinned RP ID and origins, advancing counter), one contract naming:
+  - the organization, deployment, store and witness, and the exact prior head;
+  - the administrator and its credential;
+  - the target operator, its credential, and that credential's key digest;
+  - a reason code, the request id and a window of at most 300 s.
+
+  AUTH-03 verifies it against the signed history: a current administrator, a cryptographically verified operator target with its exact credential still active, no unfinished enrolment, and an unused challenge. No Host administrator, G-02A capability or target cooperation is involved.
+- **Row.** One `credential_revoked` row in AUTH-02's owner-revocation shape. It also records the administrator credential's use, and stores the contract and the raw assertion. It is never a partial plan. `revoked` is reported only once the witness confirms the head.
+- **After revocation.** AUTH-02 refuses the credential for authentication and decisions. `verifyFvCurrentOperators` counts only operators with an active credential. `verifyFvRevocations` tells administrator-signed revocations apart from forged ones. A revocation only ever removes authority, and nothing reactivates a credential. A rolled-back store is refused by the witness.
+- **Recovery and concurrency.** The record holds progress only, and a resume re-verifies the evidence. A completed request is re-reported, and a new request for a revoked credential is refused. Revocation is refused during an unfinished enrolment, and one ceremony runs at a time.
+- **Tests.** `tests/fv-p4c2b3c2a3a-credential-revocation.e2e.test.mjs` (23) and `fv-p4c2b3c2a3a-credential-revocation-structure.test.ts` (4). **Mutants:** 19 of 23 killed; the four survivors (one unreachable, three redundant) are classified with evidence (§17.8). The publication audit found two earlier classifications wrong (the verifier's recorder and target-role checks are reachable); both are now tested.
+- **Independent AI review** (not human): no bypass. Three Lows were fixed: request-id binding, and two audit gaps in the revocation verifier.
+- **Design only (not implemented).** B3C-2A3B governance recovery: a lost or compromised administrator, the mid-plan lockout escape, lost-prepare recovery, and issuer anchoring (§18).
+- **Docs:** `docs/integration/FV_IDENTITY_REGISTRATION_AND_OPERATOR_LIFECYCLE.md` §17 and §18.
+- **Production activation: NO-GO.**
+
 ### Added — FV-P4C-2B3C-2A2B FV operator enrolment and the Host/FV administrative boundary (internal, not composed, not operational)
 - **Host/FV boundary.** Host administrator authority never implies FV authority. AUTH-02's general administration refuses an FV store, writing nothing: `createPrincipal`, `revokePrincipal`, `authorizeEnrolment`, `revokeEnrolment`, `revokeCredential`, enrolment-token registration and owner revocation (`HUMAN_IDENTITY_FV_ADMINISTRATION_REFUSED`). This is checked up front and again in each append's guard. An FV store is one opened by its exclusive owner, or one whose signed history begins with the FV administrator. Host stores are unchanged.
 - **Roles from signed rows** (`human-identity/fv-domain.ts`). `fv-administrator` is the first row, recorded by the first-administrator ceremony. `fv-operator` is a row recorded by the operator ceremony directly after the administrator's authorizing row, and `verifyFvOperatorRoles` re-verifies the stored assertion. Neither role authorizes any document action.

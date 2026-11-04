@@ -180,7 +180,9 @@ export type HumanIdentityErrorCode =
   /** FV-P4C-2B3C-2A2B: an FV operator enrolment's evidence does not verify against the store's signed history (administrator, assertion, candidate, prior head, window), or its rows conflict with it. Nothing was written. */
   | 'HUMAN_IDENTITY_FV_OPERATOR_REFUSED'
   /** FV-P4C-2B3C-2A2B: an FV operator enrolment is unfinished on this FV store; nothing else is written until it is resumed. */
-  | 'HUMAN_IDENTITY_FV_ENROLLMENT_PENDING';
+  | 'HUMAN_IDENTITY_FV_ENROLLMENT_PENDING'
+  /** FV-P4C-2B3C-2A3A: an FV operator credential revocation's evidence does not verify against the store's signed history, or conflicts with it. Nothing was written. */
+  | 'HUMAN_IDENTITY_FV_REVOCATION_REFUSED';
 
 export class HumanIdentityError extends Error {
   constructor(

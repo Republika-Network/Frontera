@@ -24,6 +24,8 @@ import { FV_ADMINISTRATOR_ROLE, FV_FIRST_ADMINISTRATOR_RECORDER } from './first-
 
 export const FV_OPERATOR_ROLE = 'fv-operator';
 export const FV_OPERATOR_RECORDER = 'fv-operator-enrollment-ceremony';
+/** FV-P4C-2B3C-2A3A: the recorder of an FV operator credential revocation (`fv-revocation.ts`). */
+export const FV_REVOCATION_RECORDER = 'fv-operator-revocation-ceremony';
 export type FvRole = typeof FV_ADMINISTRATOR_ROLE | typeof FV_OPERATOR_ROLE;
 
 function payloadOf(row: StoredHumanIdentityRow): Record<string, unknown> {

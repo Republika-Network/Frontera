@@ -9,8 +9,9 @@
 **Split (§15 of the increment prompt).** **B3C-2A1** implemented durable registration authority, genesis, the
 store-id pin and its verification by the executor. **B3C-2A2A** (the first FV administrator) is implemented in
 §15. **B3C-2A2B** (FV operators under the administrator's authority, and the Host/FV administrative boundary) is
-implemented in §16. **B3C-2A3** (revocation and governance recovery) remains **design only** (§11): nobody can be
-revoked by anything here.
+implemented in §16. **B3C-2A3A** (revoking an FV operator credential under the administrator's authority) is
+implemented in §17. **B3C-2A3B** (governance recovery, administrator revocation, interrupted enrolment) remains
+**design only** (§18).
 
 ## 1. Verified inventory (main `64b3ec7c`, PR #260 merged)
 
@@ -224,7 +225,7 @@ Unchanged: fdinfo lock verification, fail-stop, the guarded close, the status/st
 - **Binding.** Exact organization and store; another organization's or the Host's credential is unknown to the
   FV store; a duplicate is idempotent, a conflict refused.
 
-## 11. B3C-2A3 — revocation and governance recovery (design only; not implemented)
+## 11. B3C-2A3 — revocation and governance recovery (original design; operator credentials implemented as 2A3A, §17; recovery: design only, §18)
 
 - Revocation by an FV administrator's decision; exact credential and store; appended under CORE-07 (a
   prepared-but-unconfirmed revocation is never reported as done; `pending-recovery` refuses every read, so it
@@ -324,7 +325,7 @@ Outcomes, run on the final build (pinned by four e2e tests):
 **Before any activation (each is a blocker):**
 - a production registration issuer (G-02B in custody, from a governed grant), its key pinned out of band;
 - the `registration` composition option made mandatory for the dedicated executor;
-- B3C-2A3 (revocation and governance recovery);
+- B3C-2A3B (governance recovery, administrator revocation and replacement, the interrupted-enrolment escape; §18);
 - the executor requiring an enrolled FV administrator and FV operators, and anything that trusts the operator role
   using `verifyFvOperatorRoles` (§16; nothing requires either yet);
 - B3C-2 backup and restore, covering the registration record and ledger (evidence and replay protection;
@@ -950,3 +951,209 @@ One ceremony runs at a time per registration: the record's exclusive lock gives 
 This remains internal and non-operational. Nothing new is reachable from the Host, the executor or its supervisor; the executor gate is unchanged; `bootstrapExecution` stays `disabled`.
 
 **Production activation: NO-GO.**
+
+## 17. B3C-2A3A: FV operator credential revocation (implemented; internal and non-operational)
+
+B3C-2A3 was split. **2A3A** (revoking an FV operator credential) is implemented here. **2A3B** (governance recovery,
+administrator revocation and the interrupted-enrolment escape) is **design only** (§18).
+
+Code:
+- `human-identity/fv-revocation.ts`: AUTH-03 verifies and appends a revocation, and provides the current-authority verifiers.
+- `sovereign-status-history/identity-registration-revocation.ts`: the offline ceremony.
+
+Nothing in the Host, its scripts, its deployment, the dedicated executor or its supervisor reaches either, and neither is exported from an index (structure tests pin all of this).
+
+### 17.1 Semantics (what this is, and is not)
+
+| Operation | In 2A3A |
+|---|---|
+| **Revoke one FV operator credential** | **Yes.** It is an append-only `credential_revoked` row. The history keeps the enrolment and every earlier signature as historical evidence |
+| Principal deactivation, role removal | No. The principal and its signed role row remain, but with no active credential the operator has no **current** authority |
+| Administrator revocation or replacement | No (§18). The administrator is never a target |
+| Credential replacement or rotation | No. An FV operator has **one** credential: the operator ceremony refuses a second for an existing principal (`CANDIDATE_EXISTS`). A fully revoked operator cannot be re-enrolled under the same operator id; a new id needs a new administrator authorization |
+| Reactivation | None exists. A revoked credential stays revoked |
+
+### 17.2 Authority
+
+The FV administrator signs a WebAuthn assertion over the commitment to `frontera.fv-operator-revocation-authorization.v1`. The assertion must be user verified, with the pinned RP ID and origins and an advancing counter. The contract covers:
+- the action `frontera.fv-bootstrap-identity.revoke-operator-credential` and the request id (`fvrev-…`);
+- the organization, deployment, FV state kind, store id, witness id and key digest;
+- the store's **exact prior head**;
+- the administrator and its credential;
+- the target: operator id, credential id, and the digest of that credential's key, so the target is never silently replaced;
+- a reason code (`compromised`, `lost`, `offboarded` or `other`);
+- a window of at most 300 s, whose start is the row's time.
+
+The target operator takes no part, and no possession of the revoked credential is needed.
+
+**AUTH-03 decides it** (`verifyFvRevocationEvidence`) against the store's own verified history, at that exact head:
+- no unfinished operator enrolment;
+- the administrator's role, from signed rows, with an active principal and its named credential **currently active**;
+- the target is a cryptographically verified FV operator (`verifyFvOperatorRoles`), its own named credential, with exactly the approved key, and is not the administrator;
+- the assertion and its counter, with the challenge unused;
+- while nothing is written yet: the credential still active (`ALREADY_REVOKED`) and the window open.
+
+No Host administrator, Host session, raw principal id, flag, registration issuer or G-02A capability is involved. The ledger is never touched (tested).
+
+### 17.3 The signed row
+
+The revocation is **one** `credential_revoked` row, appended only onto the exact prior head. It uses AUTH-02's own owner-revocation shape, so AUTH-02's projection both revokes the target and records the asserting administrator credential's use and counter. It also carries:
+- the consumed challenge digest (single use);
+- the commitment, **the signed contract** and **the administrator's raw assertion**, so it can be re-verified from the store alone.
+
+A single row is never a partial plan, so it adds no resume deadlock and no interleaving. `revoked` is reported only when the verified store holds it **and** a fresh witness read shows that head committed with nothing pending.
+
+### 17.4 Current-state verification
+
+- **AUTH-02's projection** makes the revoked credential unusable at once, for authentication and for human and bootstrap decisions (tested).
+- **`verifyFvCurrentOperators`** counts only verified operators whose principal is active and that still hold an active credential. That is current authority, distinct from historical membership (`verifyFvOperatorRoles`, which still verifies). A revoked credential never counts, whether an administrator revoked it or a forged row did.
+- **`verifyFvRevocations`** re-verifies every FV revocation row from the store alone. A revocation is *authorized* when its stored contract recomputes, names that row's target, was made at exactly that row's position, and its stored assertion verifies under the administrator's credential as it was there. Otherwise it is *unauthorized*, for example a holder of the store's signing key forging one. Either way the credential stays revoked: **a revocation only ever removes authority**.
+- **The administrator's current state is required.** If its credential is revoked (in 2A3A only by a forged row, since the administrator is never a target), it authorizes neither a revocation nor an enrolment (tested).
+- **Freshness:** each decision reads the store's verified history under CORE-07 freshness. A rolled-back store never revives a revoked credential: the witness refuses it (tested).
+
+### 17.5 Replay and idempotency
+
+| Case | Result |
+|---|---|
+| The same request after completion | `revoked` re-reported, nothing appended (also after later rows) |
+| A new request for a revoked credential | `ALREADY_REVOKED` |
+| The same request id again | `REQUEST_PENDING` |
+| A reused assertion for another target | `ASSERTION_INVALID` |
+| A stale head (anything written since) | `STALE_HEAD` |
+| An expired window with nothing written | `WINDOW_CLOSED` |
+| Another organization or store | `SCOPE_MISMATCH` |
+| A nonexistent, or another operator's, credential | `TARGET_CREDENTIAL_UNKNOWN` |
+| A substituted key | `TARGET_MISMATCH` |
+| A counter at or below the stored one | `COUNTER_REGRESSION` |
+
+### 17.6 Crash, concurrency and enrolment interaction
+
+- **Crashes (SIGKILL):**
+  - after the administrator's proof, before the intent: nothing to resume (`NO_REQUEST`);
+  - after the intent: a resume completes it while the window is open and the head unchanged; otherwise it must be authorized again;
+  - after the row, before completion is reported: a resume confirms it.
+- **Witness answers:**
+  - a finalize that never reached the witness: `pending`, never `revoked`, and a resume confirms;
+  - a prepare the witness applied, its answer lost: `pending`, then refused (`AUTHORITY_FRESHNESS_PENDING_RECOVERY`). This is the existing CORE-07 limit, which fails closed.
+- **Forged records:** a rewritten, deleted or forged-complete record is refused or ignored, and the genuine evidence completes. The record holds progress only.
+- **Ordering rule:** one ceremony at a time per registration (`REGISTRAR_BUSY`, tested with real processes).
+  - **A revocation during an unfinished operator enrolment** is refused (`ENROLLMENT_PENDING`; AUTH-03 `PLAN_INCOMPLETE`). The enrolment is resumed first, then the revocation proceeds (tested at each partial-plan boundary).
+  - **A revocation is one row,** so it never leaves the store mid-plan, and an enrolment after it simply authorizes at the new head.
+  - **A revocation racing an authentication,** or any other write, finds its head stale and must be authorized again.
+- **A store file replaced under a paused ceremony:** nothing reaches the witness, and a resume gives `STORE_FILE_MISMATCH`.
+
+### 17.7 Limits
+
+- **The store's signing key is a trust root.** Its holder can forge a revocation. That forgery only *removes* authority, which is a denial of service that `verifyFvRevocations` reports as unauthorized. The holder could also revoke the administrator's credential, after which nothing can be administered until §18.
+- **WebAuthn:** attestation `none` for the administrator's original credential, and software passkeys in the tests. This is not a production assurance claim.
+- **The administrator is a single trust root,** with no revocation, replacement or recovery in 2A3A (§18).
+- **The mid-plan lockout of §16.7 is unchanged:** a revocation cannot release it.
+- **The executor is unchanged:** nothing becomes operational, and `bootstrapExecution` stays `disabled` (tested).
+
+### 17.8 Evidence
+
+- **Tests.**
+  - `tests/fv-p4c2b3c2a3a-credential-revocation.e2e.test.mjs`: 23 tests, with real child processes paused or SIGKILLed, a real witness and real AUTH-02 authentication.
+  - `fv-p4c2b3c2a3a-credential-revocation-structure.test.ts`: 4 tests.
+  - Existing structure pins gained exact, commented exceptions for the new family member. No assertion was removed.
+- **Regression:** the focused suites (2A3A, 2A2B, 2A2A, HF01, 2A1, B3C-3, B3B, B3C-1, FV-EXEC-LOCK-01, all structure tests, AUTH-02/03/04, CORE-07, G-02A, PROD-02) and every gate pass on the final tree. The counts are in the CHANGELOG entry.
+- **Targeted mutants: 19 of 23 killed.** They ran on the compiled code in a separate copy, and every file was restored and hash-checked.
+  - **Killed:**
+    - the administrator's current state;
+    - Host revocation of an FV store;
+    - an operator as the authority;
+    - the organization binding;
+    - target ownership;
+    - the target's key digest;
+    - the administrator's signature;
+    - the counter;
+    - the stale head;
+    - the expired window;
+    - the verifier's signature re-check;
+    - the verifier's recorder check and its target-role re-check. Both were first classified redundant or unreachable, but the publication audit showed them reachable. A signing-key holder can append a *genuinely administrator-signed* revocation outside the ceremony, or of a principal that is no verified operator; without these checks the audit would label it authorized. Both are now tested;
+    - current authority ignoring revocation;
+    - an already-revoked credential;
+    - revocation over an unfinished plan;
+    - `revoked` without the witness readback;
+    - the store fence;
+    - bootstrap enabled.
+  - **Surviving (4), each with its evidence against the final code:**
+    - **The consumed-challenge check: C, unreachable.** The challenge derives from a commitment that includes the prior head, so it cannot already be in that history.
+    - **The verifier's position check: B, redundant.** It is redundant with the chain-digest check; removing both is killed by the stale-approval test.
+    - **The append guard: B, redundant.** The head is pinned by the verification, and the store is held exclusively.
+    - **"The administrator is never a target": B, redundant.** The administrator never holds a verified operator role, so the target role check refuses first (tested).
+- **Independent review** (a fresh read-only AI agent; **not a human review**). It found no authority bypass and no way to revive a revoked credential, and raised three Lows, all fixed and tested:
+  - **L1:** a recorded intent's request id was not bound to its evidence. A record writer could re-file one request's evidence under another id; it now must match.
+  - **L2:** the revocation verifier ignored `credential_revoked` rows from other recorders. Every such row on an FV store is now judged, and a row from another recorder counts as unauthorized.
+  - **L3:** the verifier re-checked less than AUTH-03 did at write time. It now also re-checks the target's verified operator role, that the target is not the administrator, the active administrator principal, the challenge, the counter and the signed time.
+
+  Info, documented in §17.6–§17.7: a recorded revocation goes stale if an enrolment lands first, and must be authorized again; a forged counter-raising row needs the signing key.
+
+## 18. B3C-2A3B: governance recovery and interrupted enrolment (design only; NOT implemented)
+
+Nothing in this section exists in code. It is the design B3C-2A3B must implement and review.
+
+### 18.1 Trust-anchor inventory
+
+| Anchor | Today | Can it recover governance? |
+|---|---|---|
+| Registration issuer (pinned keys, G-02A) | Authorizes registration and the first administrator | **Yes, by design**, through a separate, narrowly scoped recovery capability. It must never become a general administrator |
+| FV administrator credential | The sole administrative root | No; this is what is lost or compromised |
+| Store signing key (CORE-02) | Signs every row | **No.** A store signature is not administrator consent; it is a trust root for integrity only |
+| CORE-07 witness | Proves the current head | Proves state; grants nothing |
+| Host administrators, FV operators, local configuration, the registration record | — | **Never** (no self-promotion) |
+
+### 18.2 Threats and proposed answers
+
+- **A. Lost administrator credential.** The registration issuer signs a single-use `…recover-administrator` capability. It is bound to:
+  - the registration and store, and the current witnessed head;
+  - the lost administrator's principal and credential;
+  - a new administrator candidate, who proves possession first, as in 2A2A.
+
+  AUTH-03 appends a revocation of the old administrator credential and a new administrator credential row. A new rule recognizes **one** current administrator credential, the latest issuer-authorized one. That is required: today "administrator" means the sequence-1 row.
+
+  Acceptance: no FV operator or Host administrator can do this; a stale-head capability is refused; the old credential authorizes nothing afterwards; a replay is refused.
+- **B. Compromised administrator credential.** The holder of a compromised credential cannot be trusted to authorize its own revocation, so:
+  - **Suspension:** an issuer-signed `…suspend-administrator` capability appends a revocation row for that credential. Every authorization then fails closed.
+  - **Replacement:** follows A.
+
+  Open question for review: whether a quorum of verified operators could co-sign a suspension (*not* a promotion). The default is no.
+- **C. Mid-plan lockout (§16.7).** An issuer-signed `…abandon-enrolment` capability is bound to the unfinished plan's commitment and the witnessed head. It appends a signed abandonment row that closes the plan, so the detector treats it as finished and its principal as never enrolled. It covers:
+  - a lost or corrupted progress record;
+  - a changed relying-party origin, deployment binding or witness key;
+  - an unusable administrator credential;
+  - a forged but consistent plan start.
+
+  There is never a `--force`, `--reset` or `--adopt`. Acceptance: the abandoned principal has no role and no credential; a resume of the abandoned plan is refused; AUTH-02 writes resume.
+- **D. A lost CORE-07 prepare answer.** Recovery must first prove the state from the independently trusted witness. Either:
+  - the witness holds a prepared successor the store lacks: the local commit was lost, so the local history is authoritative and the witness pending entry is resolved by an issuer-signed, witness-verified **abort** of that pending entry; or
+  - the store holds it: CORE-07 already finalizes.
+
+  This needs a CORE-07 witness operation reviewed on its own. Restoring a store from backup is B3C-2B/2C, and independent continuity is FV-P4D: out of scope.
+- **E. Issuer anchoring of the first administrator.** Today the administrator's credential is anchored only by the store signing key: row 1 pins the plan digest, but the issuer signed only the person, not the key. 2A3B should either:
+  - re-verify the 2A2A intent's issuer-signed capability plus the attestation from the registration record, and pin the record's intent digest in a witnessed row; or
+  - require a resume-style issuer confirmation of the credential digest.
+
+  Either way, *store-signature validity* stays separate from *administrator consent*.
+
+### 18.3 State machine (proposed)
+
+```
+FV store:   EMPTY ─(2A2A, issuer)→ ADMINISTERED ─(2A2B, admin)→ ADMINISTERED+OPERATORS
+                                        │                    │ (2A3A, admin) operator credential REVOKED
+                                        │ (2A3B, issuer) administrator SUSPENDED ─(2A3B, issuer)→ RE-ADMINISTERED
+            MID-PLAN ─(resume)→ ADMINISTERED+OPERATORS
+            MID-PLAN ─(2A3B, issuer abandon)→ ADMINISTERED+OPERATORS (plan closed, principal inert)
+            PENDING-RECOVERY (CORE-07) ─(2A3B, issuer + witness proof)→ previous state
+```
+
+### 18.4 Acceptance gates for 2A3B
+
+- **Real processes and a real witness:** SIGKILL at each new row, and a lost prepare or finalize for each.
+- **Mutants:** every issuer check, head binding and single-use rule is killed.
+- **Refused attempts:** recovery by an operator, a Host administrator, the store key alone, the record alone, or a stale capability.
+- **Containment:** a compromised administrator credential can be suspended without its holder's cooperation, and the suspension holds across rollback (witness).
+- **Abandonment:** an abandoned plan's principal has no authority.
+- **Review:** independent review, then human security review of the new issuer powers.
+
+**Dependencies:** B3C-2B/2C (backup and restore of the store, record and ledger), FV-P4D (continuity independent of the witness's restore domain), and a production issuer in custody (G-02B). None is implemented here.
