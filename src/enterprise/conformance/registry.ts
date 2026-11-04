@@ -411,7 +411,7 @@ export function createConformanceRegistry(deps: {
       // Only what the integration itself registered: its synthetic fixtures, its covered operations, its profile's challenges.
       const fixtures = new Set(rec.testEndpoints.filter((e) => e.environment === 'synthetic').map((e) => e.fixtureRef));
       const operations = new Set([...rec.coveredOperations, DEPLOYMENT_ATTESTATION_OPERATION]);
-      const types = new Set(profile.definition.requirements.map((r) => r.challengeType).filter((t): t is string => t !== null));
+      const types = new Set<string>(profile.definition.requirements.flatMap((r) => (r.challengeType === null ? [] : [r.challengeType])));
       if (!read.fixtureRefs.every((f) => fixtures.has(f)) || !read.operations.every((o) => operations.has(o)) || !read.challengeTypes.every((t) => types.has(t))) {
         throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', 'outside what the integration registered');
       }

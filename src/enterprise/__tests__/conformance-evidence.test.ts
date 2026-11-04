@@ -217,12 +217,12 @@ describe('RN-CONFORM-02 evidence acceptance (WP-06, WP-07)', () => {
     expectD(beforeRevocation, 'AUTHORIZATION_REVOKED');
     // Expired between issuance and a delayed submission (a short authorization of its own).
     const now = d.clock.ms();
-    const short = d.services().registry.prepareTestingAuthorization({
+    const shortAuth = d.services().registry.prepareTestingAuthorization({
       authorizationId: 'auth-short-window', supersedes: null, organizationId: ORG_A, integrationDigest: d.integration.integrationDigest, purpose: 'CONFORMANCE',
       fixtureRefs: ['fixture-synthetic-pep-v1'], operations: ['document.open'], challengeTypes: ['G01'], notBefore: d.clock.now(), notAfter: new Date(now + 120_000).toISOString(),
       maxChallengesPerHour: 10, maxConcurrentChallenges: 10, maxTotalChallenges: null,
     });
-    d.services().registry.authorizeTesting(short.record, approvalsFor(d, short.prepared));
+    d.services().registry.authorizeTesting(shortAuth.record, approvalsFor(d, shortAuth.prepared));
     const shortChallenge = d.services().coordinator.issue({ idempotencyKey: 'short-1', organizationId: ORG_A, integrationDigest: d.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: 'fixture-synthetic-pep-v1', assignedValidatorIds: [DA.validatorId], deadlineSeconds: 60, authorizationId: 'auth-short-window', purpose: 'CONFORMANCE' });
     const lateRaw = observe(d, DA, shortChallenge);
     d.clock.advance(121);

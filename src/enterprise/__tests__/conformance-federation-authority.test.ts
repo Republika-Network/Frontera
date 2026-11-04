@@ -41,7 +41,7 @@ import {
   requalify,
   scheduleOne,
   standardFederation,
-  type Federation,
+  type Federation, REFERENCE_SCOPE
 } from './conformance-federation-support.js';
 
 /**
@@ -402,7 +402,7 @@ describe('Independent review regressions (C-1, C-3, C-4)', () => {
     const { f } = await activeAndAged('c1-tenant');
     const second = f.c.services().registry.registerIntegrationVersion(referenceIntegrationInput(f.c.profileDigest, { integrationId: 'integration-second-tenant' }));
     const now = f.c.clock.ms();
-    const auth = f.registry.prepareTestingAuthorization({ authorizationId: 'auth-second', organizationId: ORG_A, integrationDigest: second.integrationDigest, purpose: 'CONFORMANCE', fixtureRefs: [REFERENCE_FIXTURE_REF], notBefore: new Date(now).toISOString(), notAfter: new Date(now + 30 * 86_400_000).toISOString() });
+    const auth = f.registry.prepareTestingAuthorization({ authorizationId: 'auth-second', organizationId: ORG_A, integrationDigest: second.integrationDigest, purpose: 'CONFORMANCE', supersedes: null, ...REFERENCE_SCOPE, notBefore: new Date(now).toISOString(), notAfter: new Date(now + 30 * 86_400_000).toISOString() });
     f.registry.authorizeTesting(auth.record, fedDecisions(f, auth.prepared, f.c.humans.alice, f.c.humans.bob));
     const blocker = f.scheduler.schedule({ purpose: 'DISPUTE', authorizationId: 'auth-second', challengeType: 'G01', operation: 'document.export', fixtureRef: REFERENCE_FIXTURE_REF, requiredOperators: 1, jobKey: 'c1-blocker' });
     assert.ok(blocker.scheduled);

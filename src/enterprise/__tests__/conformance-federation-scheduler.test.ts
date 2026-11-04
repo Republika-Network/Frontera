@@ -11,7 +11,7 @@ import { signConformancePayload } from '../conformance/signing.js';
 import { ORG_A, deterministicRandom } from './conformance-support.js';
 import { REFERENCE_FIXTURE_REF } from './conformance-reference-pep.js';
 import { cleanupReferenceCircuits } from './conformance-reference-support.js';
-import { FED_AUTHORIZATION, FED_OPERATORS, beat, drain, evidencePort, fedDecisions, runtimeFor, scheduleOne, standardFederation, type FederatedValidator, type Federation } from './conformance-federation-support.js';
+import { FED_AUTHORIZATION, FED_OPERATORS, beat, drain, evidencePort, fedDecisions, runtimeFor, scheduleOne, standardFederation, type FederatedValidator, type Federation, REFERENCE_SCOPE } from './conformance-federation-support.js';
 
 /**
  * RN-CONFORM-05 — WP-05/06/07/08/17: heartbeats and health, the durable scheduler, leases and fencing, operator-aware
@@ -150,7 +150,7 @@ describe('RN-CONFORM-05 — operator-aware assignment (WP-08)', () => {
     );
     // Authorizing a fixture the integration never registered is refused at the source.
     assert.throws(() =>
-      f.registry.prepareTestingAuthorization({ authorizationId: 'auth-bad', organizationId: 'org-synthetic-alpha', integrationDigest: f.c.integration.integrationDigest, purpose: 'CONFORMANCE', fixtureRefs: ['https-customer-tenant'], notBefore: f.c.clock.now(), notAfter: '2027-01-01T00:00:00.000Z' }),
+      f.registry.prepareTestingAuthorization({ authorizationId: 'auth-bad', organizationId: 'org-synthetic-alpha', integrationDigest: f.c.integration.integrationDigest, purpose: 'CONFORMANCE', supersedes: null, ...REFERENCE_SCOPE, fixtureRefs: ['https-customer-tenant'], notBefore: f.c.clock.now(), notAfter: '2027-01-01T00:00:00.000Z' }),
     );
     f.c.clock.advance(31 * 86_400);
     beat(f);

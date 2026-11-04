@@ -30,7 +30,7 @@ import {
   runtimeFor,
   scheduleOne,
   standardFederation,
-  type Federation,
+  type Federation, REFERENCE_SCOPE
 } from './conformance-federation-support.js';
 import { REFERENCE_FIXTURE_REF } from './conformance-reference-pep.js';
 
@@ -393,7 +393,8 @@ describe('RN-CONFORM-05 — the validator runtime boundary (WP-09/10)', () => {
       organizationId: ORG_A,
       integrationDigest: f.c.integration.integrationDigest,
       purpose: 'CONFORMANCE',
-      fixtureRefs: [REFERENCE_FIXTURE_REF],
+      supersedes: null,
+      ...REFERENCE_SCOPE,
       notBefore: f.c.clock.now(),
       notAfter: '2027-01-01T00:00:00.000Z',
     });
@@ -404,7 +405,7 @@ describe('RN-CONFORM-05 — the validator runtime boundary (WP-09/10)', () => {
     );
     // The integration digest of organization A does not exist under organization B: no cross-tenant authorization.
     assert.throws(
-      () => f.registry.prepareTestingAuthorization({ authorizationId: 'auth-cross-2', organizationId: 'org-synthetic-beta', integrationDigest: record.integrationDigest, purpose: 'CONFORMANCE', fixtureRefs: [REFERENCE_FIXTURE_REF], notBefore: record.notBefore, notAfter: record.notAfter }),
+      () => f.registry.prepareTestingAuthorization({ authorizationId: 'auth-cross-2', organizationId: 'org-synthetic-beta', integrationDigest: record.integrationDigest, purpose: 'CONFORMANCE', supersedes: null, ...REFERENCE_SCOPE, notBefore: record.notBefore, notAfter: record.notAfter }),
       (e: unknown) => e instanceof FederationError && e.code === 'UNKNOWN_INTEGRATION',
     );
     // A runtime never executes for a target outside its authorization, even with a valid coordinator signature.
