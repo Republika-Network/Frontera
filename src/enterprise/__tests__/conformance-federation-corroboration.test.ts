@@ -7,6 +7,7 @@ import { after, describe, it } from 'node:test';
 import type { ObservationPayload, SignedChallenge } from '../conformance/contracts.js';
 import { FEDERATION_TIMING, type ScheduledJob } from '../conformance/federation-contracts.js';
 import { FederationError } from '../conformance/federation-registry.js';
+import { authenticateStoredObservation } from '../conformance/evidence.js';
 import { signConformancePayload } from '../conformance/signing.js';
 import { ORG_A, deterministicRandom } from './conformance-support.js';
 import { createValidatorRuntime, openValidatorOutbox } from '../conformance/federation-validator-runtime.js';
@@ -130,12 +131,15 @@ describe('RN-CONFORM-05 — federated corroboration scenarios (WP-13)', () => {
     await drain(f);
     assert.equal(cr01(f, id).protectiveTransition, null);
     // Investigation: one other operator → conformant → CONFLICTING (never a clean pass, never a suspension yet).
+    f.c.clock.advance(5);
     f.scheduler.planFollowUps(FED_AUTHORIZATION, REFERENCE_FIXTURE_REF);
     await drain(f);
     const disputed = cr01(f, id);
     assert.equal(categoryOf(disputed)?.category, 'CONFLICTING');
     assert.equal(disputed.protectiveTransition, null);
     // Dispute: the third distinct operator → conformant → resolved by ≥ 2 other operators.
+    // Resolution needs conformant observations strictly AFTER the violation (engine rule), so time moves on.
+    f.c.clock.advance(5);
     const dispute = f.scheduler.planFollowUps(FED_AUTHORIZATION, REFERENCE_FIXTURE_REF).find((r) => r.scheduled && r.job.purpose === 'DISPUTE');
     assert.ok(dispute?.scheduled);
     await drain(f);
@@ -256,6 +260,27 @@ describe('RN-CONFORM-05 — automatic quarantine and controlled release (WP-11)'
     assert.equal(f.registry.validatorState('vb1'), 'ACTIVE');
     const kinds = f.fed.listEvents().filter((e) => e.subjectId === 'vb1').map((e) => e.kind);
     assert.ok(kinds.includes('REQUALIFICATION_PASSED') && kinds.includes('VALIDATOR_REINSTATED'));
+  });
+
+  it('regression (compatibility fix): a quarantine in the acceptance millisecond withdraws the evidence — it never makes it look tampered', async () => {
+    const { f, id } = await activeAndAged('fed-same-ms', false);
+    const signed = f.c.services().coordinator.issue({ idempotencyKey: 'same-ms-1', organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: ['vb1.k1'], deadlineSeconds: 300 });
+    const b = f.validators.get('vb1')!;
+    assert.equal((await b.runtime.receive(signed)).status, 'ACCEPTED');
+    const row = f.c.store.getObservationForChallengeValidator(signed.challenge.challengeId, 'vb1.k1')!;
+    // The contradiction arrives in the SAME millisecond: evidence acceptance quarantines vb1.k1 at the acceptance instant.
+    const contradiction = { ...(JSON.parse(row.submissionJson) as { observation: ObservationPayload }).observation, eventId: 'same-ms-contradiction', observedOutcome: 'allowed' as const, outcomeClass: 'violation' as const };
+    assert.deepEqual(f.c.services().evidence.submitObservation(JSON.stringify({ observation: contradiction, validatorSignature: signConformancePayload('observation', contradiction, b.key) })), { accepted: false, reason: 'VALIDATOR_CONFLICT' });
+    assert.equal(f.c.store.getValidator('vb1.k1')?.quarantinedAtMs, row.acceptedAtMs);
+    assert.equal(authenticateStoredObservation(f.c.store, f.c.profiles, row, f.c.coordinatorPublicKeyPem), null, 'the row was accepted before the quarantine: it is not forged');
+    const s = referenceStatus(f.c);
+    const nonce = randomBytes(32).toString('base64url');
+    const verdict = s.verify(assertionOf(s.registry.issueOnline(s.onlineRequest(id, nonce))), id, { kind: 'online', nonce });
+    assert.notEqual(verdict.detail, 'EVIDENCE_TAMPERED');
+    s.close();
+    // Live acceptance keeps the inclusive boundary: a submission at the quarantine instant is still refused.
+    const late = { ...contradiction, eventId: 'same-ms-late' };
+    assert.deepEqual(f.c.services().evidence.submitObservation(JSON.stringify({ observation: late, validatorSignature: signConformancePayload('observation', late, b.key) })), { accepted: false, reason: 'VALIDATOR_QUARANTINED' });
   });
 
   it('persistent AUTHENTICATED protocol violations quarantine; forged signature failures never do', async () => {

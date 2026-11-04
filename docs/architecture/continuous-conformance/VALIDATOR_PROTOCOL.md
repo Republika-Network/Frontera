@@ -18,6 +18,22 @@ engine (D4) and the credential lifecycle (D5). Envelopes are defined in
 * Validator states: `enrolled → active ↔ quarantined → revoked`. Auto-quarantine on self-contradiction
   (pattern: X `SourceTrustRegistry`) or on repeated signature/binding defects; release from quarantine
   and revocation need two human decisions.
+* **RN-CONFORM-05 clarifications (implemented, synthetic):**
+  * *Keys are generations.* A rotation or a quarantine release enrolls a new key generation as its own
+    immutable validator identity (`<validatorId>.k<n>`) under the **same** operator; the previous generation
+    keeps its key forever (history stays verifiable), is never reassigned, and a quarantined or revoked
+    generation never returns. Release from quarantine = new generation + two humans (`validator.enroll`) +
+    two humans (`validator.reinstate`) + a requalification challenge.
+  * *Only authenticated defects are attributable.* Auto-quarantine counts contradictions and protocol defects
+    that can only be produced with the validator's own valid signature (binding, assignment, subject, profile;
+    equivocating heartbeats). **Signature failures are not attributed to the claimed validator** — anyone can
+    send bytes naming a validator id — so "repeated signature defects" above is read as *authenticated*
+    defects only (normative correction).
+  * *Heartbeats* are signed in their own domain (`frontera:conformance-validator-heartbeat:v1`), session-bound
+    and monotonic; they decide assignability only and can never lift a quarantine.
+  * The `corroboration: 'single-operator'` label is **not** yet carried in status assertions; every record is
+    synthetic-designated instead. A production status contract must carry an equivalent before CC-D-02 closes.
+  See [RN_CONFORM_05_IMPLEMENTATION.md](RN_CONFORM_05_IMPLEMENTATION.md).
 
 ## 2. Challenge lifecycle
 

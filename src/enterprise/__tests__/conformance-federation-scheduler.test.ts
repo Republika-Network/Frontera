@@ -212,7 +212,7 @@ describe('RN-CONFORM-05 — durable jobs, leases and fencing (WP-06/07)', () => 
 
   it('worker crash after dispatch + lost acknowledgement + coordinator restart: same challenge, same signed bytes, one vote', async () => {
     const f = standardFederation();
-    const job = jobOf(scheduleOne(f, 'G01', 'document.open', 2));
+    const job = jobOf(scheduleOne(f, 'G01', 'document.open', 2, { exclude: [FED_OPERATORS.C] }));
     // The B validator's submission commits but its acknowledgement is lost (the port throws after the commit).
     const b = f.validators.get(job.assignments.find((a) => a.operatorId === FED_OPERATORS.B)!.validatorId)!;
     const real = evidencePort(f.c);
@@ -237,7 +237,7 @@ describe('RN-CONFORM-05 — durable jobs, leases and fencing (WP-06/07)', () => 
 
   it('delivery retries keep the challenge identity and deadline; observations after the lease expired still count once', async () => {
     const f = standardFederation();
-    const job = jobOf(scheduleOne(f, 'G01', 'document.open', 2));
+    const job = jobOf(scheduleOne(f, 'G01', 'document.open', 2, { exclude: [FED_OPERATORS.C] }));
     const bId = job.assignments.find((a) => a.operatorId === FED_OPERATORS.B)!.validatorId;
     f.down.add(bId);
     const first = await f.worker('w1').runOnce();
@@ -262,7 +262,7 @@ describe('RN-CONFORM-05 — durable jobs, leases and fencing (WP-06/07)', () => 
 
   it('a validator revoked while its job is active loses the assignment; the job closes without fabricating its vote', async () => {
     const f = standardFederation();
-    const job = jobOf(scheduleOne(f, 'G01', 'document.open', 2));
+    const job = jobOf(scheduleOne(f, 'G01', 'document.open', 2, { exclude: [FED_OPERATORS.C] }));
     const b = job.assignments.find((a) => a.operatorId === FED_OPERATORS.B)!;
     f.down.add(b.validatorId);
     await f.worker('w1').runOnce();

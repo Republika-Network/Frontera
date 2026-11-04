@@ -47,6 +47,19 @@ RN-CONFORM-04 worked within, and closed none of, three open decisions
 * **CC-D-12** is **synthetic only**, per the founder's direction for RN-CONFORM-04. Anything beyond
   synthetic still needs a written, scoped, time-boxed authorization.
 
+## RN-CONFORM-05 disposition (synthetic implementation only; no decision approved)
+
+* **CC-D-02** stays **OPEN** for production. RN-CONFORM-05 implements, for synthetic use only, the provisional
+  architecture the founder specified: Republika and future legal operators may each run validators; all
+  validators of one operator are one corroboration source; ≥ 2 distinct eligible operators confirm, ≥ 3 resolve a
+  dispute (CC-D-03 unchanged); independence is established administratively by two-person operator approval,
+  never inferred from keys; every operator record is `SYNTHETIC-FEDERATION-NON-PRODUCTION` with
+  `independenceVerification: NOT_VERIFIED`. Still to be decided by the founder: operator agreement model,
+  eligibility and identity verification, conflict-of-interest policy, legal responsibility, liability, operating
+  geography, minimum operational security, financial and commercial terms
+  ([RN_CONFORM_05_IMPLEMENTATION.md](RN_CONFORM_05_IMPLEMENTATION.md) §4).
+* CC-D-12 remains synthetic only; no other decision changes.
+
 ## Provisional parameters for RN-CONFORM-03 (synthetic scope only)
 
 The founder authorized, as **synthetic implementation parameters only** (not production approvals):

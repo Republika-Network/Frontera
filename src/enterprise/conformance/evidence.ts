@@ -245,14 +245,22 @@ export function checkObservationAuthority(
   signature: unknown,
   atMs: number,
   coordinatorPublicKeyPem: string,
+  options: { readonly storedRow?: boolean } = {},
 ): { readonly ok: true; readonly validator: StoredValidator; readonly challenge: ChallengePayload } | { readonly ok: false; readonly reason: EvidenceRejection } {
   const no = (reason: EvidenceRejection) => ({ ok: false, reason }) as const;
   // 2 — known validator.
   const validator = store.getValidator(observation.validatorId);
   if (validator === undefined) return no('UNKNOWN_VALIDATOR');
   // 3 — status and key validity (the key is the enrolled one; a submitted key id is only a claim).
-  if (validator.keyRevokedAtMs !== null && validator.keyRevokedAtMs <= atMs) return no('VALIDATOR_REVOKED');
-  if (validator.quarantinedAtMs !== null && validator.quarantinedAtMs <= atMs) return no('VALIDATOR_QUARANTINED');
+  // RN-CONFORM-05 compatibility fix: re-authenticating a STORED row, a status event stamped in the same millisecond as
+  // the row's acceptance happened after it (live acceptance refuses at `<=`, so a row with that acceptance time could
+  // only have committed before the event). Without this, the automatic VALIDATOR_CONFLICT quarantine — or any protective
+  // quarantine/revocation landing in the acceptance millisecond — made already-accepted evidence look tampered and left
+  // the credential's status failing closed (EVIDENCE_TAMPERED) for the whole evaluation horizon. Exclusion of the
+  // validator's evidence from later evaluations (`loadEngineInput`) is unchanged.
+  const statusApplies = (eventMs: number | null) => eventMs !== null && (options.storedRow === true ? eventMs < atMs : eventMs <= atMs);
+  if (statusApplies(validator.keyRevokedAtMs)) return no('VALIDATOR_REVOKED');
+  if (statusApplies(validator.quarantinedAtMs)) return no('VALIDATOR_QUARANTINED');
   const observedMs = toMs(observation.observedAt);
   const keyFrom = toMs(validator.record.keyValidFrom);
   const keyUntil = toMs(validator.record.keyValidUntil);
@@ -347,7 +355,7 @@ export function authenticateStoredObservation(
   }
   if (!isTimestamp(row.acceptedAt) || row.acceptedAtMs !== toMs(row.acceptedAt)) return 'COLUMN_MISMATCH';
   const o = submission.observation;
-  const authority = checkObservationAuthority(store, profiles, o, submission.validatorSignature, row.acceptedAtMs, coordinatorPublicKeyPem);
+  const authority = checkObservationAuthority(store, profiles, o, submission.validatorSignature, row.acceptedAtMs, coordinatorPublicKeyPem, { storedRow: true });
   if (!authority.ok) return authority.reason;
   const columnsMatch =
     row.eventId === o.eventId && row.challengeId === o.challengeId && row.validatorId === o.validatorId && row.operatorId === authority.validator.record.operatorId &&
