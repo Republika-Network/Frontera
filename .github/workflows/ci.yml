@@ -131,6 +131,51 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  rn-conform-05-demo:
+    # RN-CONFORM-05: one run of the synthetic federation demonstration (two synthetic operators, proof-of-possession
+    # enrollment, signed heartbeats, durable operator-aware scheduling, corroborated bypass → automatic suspension →
+    # signed SUSPENDED status, validator outage and lease recovery, contradiction quarantine, key rotation, two-person
+    # quarantine release with requalification, full revalidation and two-person credential reinstatement), captured as
+    # rn.conformance.federation-demo-report/1 plus a summary. Synthetic and test-only: in-process transport, no network,
+    # no external system, no secret, no write permission. NOT evidence of independent validators. The same test runs
+    # inside `validate` (npm test) without writing.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Run the demonstration
+        env:
+          FRONTERA_RN_CONFORM_05_REPORT_OUT: ${{ runner.temp }}/rn-conform-05-demo/rn-conformance-federation-demo-report.json
+        run: node --test --test-reporter=spec dist/src/enterprise/__tests__/conformance-federation-demo.test.js
+      - name: Digest the report
+        working-directory: ${{ runner.temp }}/rn-conform-05-demo
+        run: |
+          test -s rn-conformance-federation-demo-report.json
+          sha256sum rn-conformance-federation-demo-report.json | tee rn-conformance-federation-demo-report.json.sha256
+          {
+            echo '### RN-CONFORM-05 synthetic federation demonstration'
+            echo
+            cat rn-conformance-federation-demo-report.summary.md
+            echo
+            echo '```'
+            cat rn-conformance-federation-demo-report.json.sha256
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rn-conform-05-federation-demo-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rn-conform-05-demo/
+          if-no-files-found: error
+          retention-days: 90
+
   demo-evidence:
     # DEMO-01A: one run of the reference implementation for the three DEMO-01
     # scenarios (authorized, blocked, uncertain) on the shipped Host and the
