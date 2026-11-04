@@ -364,3 +364,52 @@ jobs:
           path: apps/authority-web/dist/
           if-no-files-found: error
           retention-days: 30
+
+  rn-conform-05-v2-migration:
+    # RN-CONFORM-05: migration regression on a REAL historical rn.conformance.store/2 database. The fixture is produced
+    # by the historical code itself (RN-CONFORM-04 merge e47582dd, checked out and built separately) through its own
+    # insertion paths; the current code then migrates it and verifies that no historical row changed, history and
+    # evidence still verify, LEGACY operators cannot add a new vote, and the properties survive a restart. Synthetic,
+    # no network beyond npm ci, no secret, no write permission.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      V2_COMMIT: e47582ddd3bbb4e117a46daca912904a32ebdd24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Check out and build the historical /2 code
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/v2" "$V2_COMMIT"
+          cd "$RUNNER_TEMP/v2"
+          npm ci
+          npm run build
+      - name: Generate the v2 fixture with the historical code
+        env:
+          V2_ROOT: ${{ runner.temp }}/v2
+          OUT_DIR: ${{ runner.temp }}/v2-fixture
+        run: node scripts/conformance/rn-conform-05-v2-fixture.mjs
+      - name: Migrate and verify with the current code
+        env:
+          FRONTERA_RN_CONFORM_05_V2_FIXTURE: ${{ runner.temp }}/v2-fixture
+        run: |
+          node --test --test-reporter=spec dist/src/enterprise/__tests__/conformance-migration-historical.test.js 2>&1 | tee "$RUNNER_TEMP/v2-fixture/migration-test.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -q "^# skipped 0" "$RUNNER_TEMP/v2-fixture/migration-test.log" || grep -q "skipped 0" "$RUNNER_TEMP/v2-fixture/migration-test.log"
+          cd "$RUNNER_TEMP/v2-fixture" && sha256sum fixture.v2.sqlite fixture.v2.json | tee fixture.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rn-conform-05-v2-migration-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/v2-fixture/
+          if-no-files-found: error
+          retention-days: 90
+
