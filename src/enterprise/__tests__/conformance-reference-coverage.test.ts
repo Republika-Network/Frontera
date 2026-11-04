@@ -140,7 +140,7 @@ describe('RN-CONFORM-04 WP-03/WP-05 — every bypass variant is detected by its 
       const coverage = referenceCoverage(c, credential.credentialId);
       for (const control of DETECTED_BY[id]) {
         for (const r of coverage.filter((x) => x.requirementId === control)) {
-          const expected = control === 'CR-08' || r.operation === DEFECTIVE ? 'FAILED' : 'ACCEPTED';
+          const expected: string = control === 'CR-08' || r.operation === DEFECTIVE ? 'FAILED' : 'ACCEPTED';
           assert.equal(r.classification, expected, `${control} ${r.operation}`);
         }
       }

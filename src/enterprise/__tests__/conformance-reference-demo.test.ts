@@ -101,7 +101,7 @@ describe('RN-CONFORM-04 — reproducible synthetic demonstration', () => {
       '12_revalidation': { measured: true, observations: revalidation.length, allAccepted: revalidation.every((r) => r.accepted) },
       '13_twoPersonApproval': { measured: true, approvers: approvals.map((d) => ({ principalId: d.decision.principalId, role: d.decision.role })) },
       '14_reinstatedStatus': { measured: true, state: reinstated.state, stateVersion: reinstated.stateVersion, status: reinstatedStatus },
-      '15_verifiedHistory': { measured: true, valid: history.valid, transitions: history.transitions.map((r: TransitionRecord) => `${r.stateVersion}:${r.transitionCode}:${r.from ?? '∅'}→${r.to}:${r.reasonCode}`) },
+      '15_verifiedHistory': { measured: true, valid: history.valid, transitions: history.valid ? history.transitions.map((r: TransitionRecord) => `${r.stateVersion}:${r.transitionCode}:${r.from ?? '∅'}→${r.to}:${r.reasonCode}`) : [] },
     };
 
     // The report is evidence of the story above, so its load-bearing claims are asserted, not just printed.

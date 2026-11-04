@@ -89,7 +89,7 @@ export const AUTHORITY_PUBLIC_KEY_PEM = createPublicKey(AUTHORITY_KEY).export({ 
 export const FORGER_KEY = referenceTestKey('reference-forger');
 
 type Flat = Readonly<Record<string, string | number>>;
-const canonicalFlat = (value: Flat): string => JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
+const canonicalFlat = (value: object): string => JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
 const sha256 = (text: string | Uint8Array): string => createHash('sha256').update(text).digest('hex');
 export const referenceDigest = (value: Flat): string => `sha256:${sha256(canonicalFlat(value))}`;
 
