@@ -20,7 +20,7 @@ import {
 import { verifyTwoPersonAuthority, type SyntheticHumanDirectory } from './human-authority.js';
 import { profileKey, sdkSupported, type ConformanceProfileDefinition, type ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceStore, ConsumedDecision } from './sqlite-conformance-store.js';
-import { ConformanceStoreError } from './sqlite-conformance-store.js';
+import { ConformanceStoreError, operatorEligibleAt } from './sqlite-conformance-store.js';
 import { deriveConformanceKeyId } from './signing.js';
 
 /**
@@ -57,7 +57,9 @@ export type RegistryRefusal =
   | 'KEY_NOT_PUBLIC'
   | 'KEY_REUSED'
   | 'VALIDATOR_CONFLICT'
-  | 'APPROVAL_REFUSED';
+  | 'APPROVAL_REFUSED'
+  | 'OPERATOR_NOT_ELIGIBLE'
+  | 'TRANSITION_NOT_ALLOWED';
 
 export class ConformanceRegistryError extends Error {
   readonly code: RegistryRefusal;
@@ -135,6 +137,18 @@ export interface ConformanceRegistry {
   revokeValidatorKey(validatorId: string, reason: string): void;
   /** Protective, no approval. Release from quarantine is not implemented in RN-CONFORM-02. */
   quarantineValidator(validatorId: string, reason: string): void;
+  /**
+   * RN-CONFORM-05 (P2-5): authoritative operator status. A registered operator is NOT eligible until two humans approve
+   * it; only an eligible operator can enroll validators or contribute observations (enforced by trigger as well).
+   */
+  prepareOperatorAction(operatorId: string, kind: 'approve' | 'reinstate'): { readonly action: 'operator.approve' | 'operator.reinstate'; readonly organizationId: string; readonly subjectRef: string; readonly actionBindingDigest: string };
+  approveOperator(operatorId: string, decisions: readonly unknown[]): void;
+  reinstateOperator(operatorId: string, decisions: readonly unknown[]): void;
+  /** Protective, no approval. */
+  quarantineOperator(operatorId: string, reason: string): void;
+  /** Protective, no approval, terminal. */
+  revokeOperator(operatorId: string, reason: string): void;
+  operatorEligible(operatorId: string): boolean;
 }
 
 export function createConformanceRegistry(deps: {
@@ -144,6 +158,32 @@ export function createConformanceRegistry(deps: {
   readonly humans: SyntheticHumanDirectory;
 }): ConformanceRegistry {
   const { store, profiles, clock, humans } = deps;
+  const storeRefusal = (error: unknown): never => {
+    if (error instanceof ConformanceStoreError && error.code === 'CONFLICT') throw new ConformanceRegistryError('APPROVAL_REFUSED', 'ALREADY_CONSUMED');
+    if (error instanceof ConformanceStoreError && error.code === 'INVARIANT_REFUSED') throw new ConformanceRegistryError('TRANSITION_NOT_ALLOWED', error.detail);
+    throw error;
+  };
+  const operatorTransition = (operatorId: string, kind: 'approve' | 'reinstate', decisions: readonly unknown[]) => {
+    if (store.getOperator(operatorId) === undefined) throw new ConformanceRegistryError('UNKNOWN_OPERATOR');
+    const prepared = registry.prepareOperatorAction(operatorId, kind);
+    const authority = verifyTwoPersonAuthority(humans, decisions, { ...prepared, now: clock.now() }, store.isDecisionConsumed);
+    if (!authority.authorized) throw new ConformanceRegistryError('APPROVAL_REFUSED', authority.denial);
+    const consumed: ConsumedDecision[] = authority.refs.map((ref, index) => ({ ref, signed: authority.signed[index]!, action: prepared.action, organizationId: prepared.organizationId, subjectRef: prepared.subjectRef }));
+    try {
+      store.appendOperatorEvent(operatorId, kind === 'approve' ? 'APPROVED' : 'REINSTATED', toMs(clock.now()), kind === 'approve' ? 'TWO_PERSON_APPROVAL' : 'TWO_PERSON_REINSTATEMENT', prepared.actionBindingDigest, consumed);
+    } catch (error) {
+      storeRefusal(error);
+    }
+  };
+  const protectiveOperatorEvent = (operatorId: string, kind: 'QUARANTINED' | 'REVOKED', reason: string) => {
+    if (store.getOperator(operatorId) === undefined) throw new ConformanceRegistryError('UNKNOWN_OPERATOR');
+    if (typeof reason !== 'string' || reason.length === 0 || reason.length > 200) throw new ConformanceRegistryError('MALFORMED_INPUT', 'reason');
+    try {
+      store.appendOperatorEvent(operatorId, kind, toMs(clock.now()), reason, null, []);
+    } catch (error) {
+      storeRefusal(error);
+    }
+  };
   const translate = <T>(fn: () => T, conflict: RegistryRefusal): T => {
     try {
       return fn();
@@ -156,7 +196,7 @@ export function createConformanceRegistry(deps: {
     }
   };
 
-  return Object.freeze<ConformanceRegistry>({
+  const registry: ConformanceRegistry = Object.freeze<ConformanceRegistry>({
     registerProfile(definition: ConformanceProfileDefinition): string {
       const resolved = profiles.resolve(definition.profileId, definition.profileVersion);
       if (!resolved.ok) throw new ConformanceRegistryError('UNKNOWN_PROFILE', profileKey(definition.profileId, definition.profileVersion));
@@ -290,6 +330,8 @@ export function createConformanceRegistry(deps: {
         if (existing.bindingDigest === bindingDigest) return { record: existing.record, bindingDigest };
         throw new ConformanceRegistryError('VALIDATOR_CONFLICT', 'validator id already enrolled with different material');
       }
+      // RN-CONFORM-05 (P2-5): a new validator identity never restores the vote of an operator that is not eligible.
+      if (!operatorEligibleAt(store.listOperatorEvents(record.operatorId), toMs(clock.now()))) throw new ConformanceRegistryError('OPERATOR_NOT_ELIGIBLE', record.operatorId);
       if (store.getValidatorByKeyId(record.keyId) !== undefined) throw new ConformanceRegistryError('KEY_REUSED');
       const authority = verifyTwoPersonAuthority(
         humans,
@@ -314,6 +356,31 @@ export function createConformanceRegistry(deps: {
       return { record, bindingDigest };
     },
 
+    prepareOperatorAction(operatorId: string, kind: 'approve' | 'reinstate') {
+      if (!isIdentifier(operatorId)) throw new ConformanceRegistryError('MALFORMED_INPUT');
+      const fromSeq = store.listOperatorEvents(operatorId).length;
+      const action = kind === 'approve' ? ('operator.approve' as const) : ('operator.reinstate' as const);
+      return Object.freeze({
+        action,
+        organizationId: CONFORMANCE_NETWORK_ORGANIZATION,
+        subjectRef: `operator:${operatorId}`,
+        actionBindingDigest: conformanceDigest({ schema: 'rn.conformance.operator-action/1', action, operatorId, fromSeq, synthetic: true }),
+      });
+    },
+    approveOperator(operatorId: string, decisions: readonly unknown[]) {
+      operatorTransition(operatorId, 'approve', decisions);
+    },
+    reinstateOperator(operatorId: string, decisions: readonly unknown[]) {
+      operatorTransition(operatorId, 'reinstate', decisions);
+    },
+    quarantineOperator(operatorId: string, reason: string) {
+      protectiveOperatorEvent(operatorId, 'QUARANTINED', reason);
+    },
+    revokeOperator(operatorId: string, reason: string) {
+      protectiveOperatorEvent(operatorId, 'REVOKED', reason);
+    },
+    operatorEligible: (operatorId: string) => operatorEligibleAt(store.listOperatorEvents(operatorId), toMs(clock.now())),
+
     revokeValidatorKey(validatorId: string, reason: string) {
       if (store.getValidator(validatorId) === undefined) throw new ConformanceRegistryError('MALFORMED_INPUT', 'unknown validator');
       store.appendValidatorEvent(validatorId, 'KEY_REVOKED', toMs(clock.now()), reason);
@@ -324,4 +391,5 @@ export function createConformanceRegistry(deps: {
       store.appendValidatorEvent(validatorId, 'QUARANTINED', toMs(clock.now()), reason);
     },
   });
+  return registry;
 }

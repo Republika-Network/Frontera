@@ -196,6 +196,12 @@ describe('RN-CONFORM-02 evidence acceptance (WP-06, WP-07)', () => {
     const C = c.validators.C;
     expect(observe(c, C, issue(c, 'G01', [C]), { deposit: false }), 'EVIDENCE_MISSING');
 
+    // 3b — RN-CONFORM-05: an operator quarantined after the challenge was issued contributes no new observation.
+    const cChallenge = issue(c, 'G01', [C]);
+    const cRaw = observe(c, C, cChallenge);
+    c.services().registry.quarantineOperator('op-synthetic-c', 'operator quarantined (test)');
+    expect(cRaw, 'OPERATOR_NOT_ELIGIBLE');
+
     for (const reason of EVIDENCE_REJECTIONS) assert.ok(seen.has(reason), `rejection ${reason} has a test`);
 
     // Rejections are retained with safe metadata only.

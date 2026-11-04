@@ -20,7 +20,7 @@ import { verifyChallenge } from './coordinator.js';
 import { classifyOutcome } from './engine.js';
 import type { ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceClock } from './registry.js';
-import { ConformanceStoreError, type ConformanceStore, type StoredObservationRow, type StoredValidator } from './sqlite-conformance-store.js';
+import { ConformanceStoreError, type ConformanceStore, type StoredObservationRow, type StoredValidator, operatorEligibleAt, operatorEligibleForStoredRow } from './sqlite-conformance-store.js';
 import { verifyConformanceSignature } from './signing.js';
 
 /**
@@ -55,6 +55,8 @@ export const EVIDENCE_REJECTIONS = Object.freeze([
   'VALIDATOR_REVOKED',
   'VALIDATOR_QUARANTINED',
   'KEY_NOT_VALID',
+  // 3b — RN-CONFORM-05: the validator's operator must be eligible (authoritative operator status)
+  'OPERATOR_NOT_ELIGIBLE',
   // 4 — signature
   'SIGNATURE_MISMATCH',
   // 5 — challenge
@@ -261,6 +263,9 @@ export function checkObservationAuthority(
   const statusApplies = (eventMs: number | null) => eventMs !== null && (options.storedRow === true ? eventMs < atMs : eventMs <= atMs);
   if (statusApplies(validator.keyRevokedAtMs)) return no('VALIDATOR_REVOKED');
   if (statusApplies(validator.quarantinedAtMs)) return no('VALIDATOR_QUARANTINED');
+  // RN-CONFORM-05 (P2-5): operator authority is enforced here (and by the observation trigger), not only by a scheduler.
+  const operatorEvents = store.listOperatorEvents(validator.record.operatorId);
+  if (!(options.storedRow === true ? operatorEligibleForStoredRow(operatorEvents, atMs) : operatorEligibleAt(operatorEvents, atMs))) return no('OPERATOR_NOT_ELIGIBLE');
   const observedMs = toMs(observation.observedAt);
   const keyFrom = toMs(validator.record.keyValidFrom);
   const keyUntil = toMs(validator.record.keyValidUntil);

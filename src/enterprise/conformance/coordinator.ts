@@ -14,7 +14,7 @@ import {
 } from './contracts.js';
 import type { ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceClock } from './registry.js';
-import { ConformanceStoreError, type ConformanceStore } from './sqlite-conformance-store.js';
+import { ConformanceStoreError, operatorEligibleAt, type ConformanceStore } from './sqlite-conformance-store.js';
 import { signConformancePayload, verifyConformanceSignature } from './signing.js';
 
 /**
@@ -136,7 +136,9 @@ export function createChallengeCoordinator(deps: {
           (validator.quarantinedAtMs === null || validator.quarantinedAtMs > nowMs) &&
           (validator.keyRevokedAtMs === null || validator.keyRevokedAtMs > nowMs) &&
           toMs(validator.record.keyValidFrom) <= nowMs &&
-          toMs(validator.record.keyValidUntil) >= deadlineMs;
+          toMs(validator.record.keyValidUntil) >= deadlineMs &&
+          // RN-CONFORM-05 (P2-5): never a challenge for a validator whose operator is not eligible now.
+          operatorEligibleAt(store.listOperatorEvents(validator.record.operatorId), nowMs);
         if (!usable) throw new ChallengeCoordinatorError('VALIDATOR_NOT_ELIGIBLE', validatorId);
       }
 

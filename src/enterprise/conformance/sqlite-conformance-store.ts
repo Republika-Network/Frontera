@@ -66,8 +66,13 @@ import { canonicalizeConformance } from './canonical.js';
  * and signature, so such tampering is detected — not prevented.
  */
 
-/** `/2`: RN-CONFORM-03 status assertions and anchor intents. A `/1` file is refused (synthetic stores are never migrated). */
-export const CONFORMANCE_STORE_SCHEMA_VERSION = 'rn.conformance.store/2';
+/**
+ * `/3` (RN-CONFORM-05): authoritative operator status (`cc_operator_events`), enforced at enrollment and observation
+ * acceptance. `/2` (RN-CONFORM-03): status assertions and anchor intents. A `/2` file is refused with
+ * SCHEMA_MIGRATION_REQUIRED and converted only by the explicit `migrateConformanceStore`; a `/1` file is refused.
+ */
+export const CONFORMANCE_STORE_SCHEMA_VERSION = 'rn.conformance.store/3';
+export const CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION = 'rn.conformance.store/2';
 
 const TWO_HUMANS = (action: string, consumedFor: string, binding: string, subject: string) => `(
   (SELECT COUNT(DISTINCT d.principal_id) FROM cc_consumed_decisions d WHERE d.consumed_for = ${consumedFor} AND d.action = '${action}' AND d.action_binding_digest IS ${binding} AND d.subject_ref = ${subject}) >= 2
@@ -107,6 +112,7 @@ const IDENTITY_KEYS: Readonly<Record<string, readonly (readonly string[])[]>> = 
   cc_anchor_intents: [['intent_id'], ['transition_id']],
   cc_heads: [['credential_id']],
 });
+const OPERATOR_EVENT_KEYS: readonly (readonly string[])[] = [['operator_id', 'seq']];
 
 /**
  * `INSERT OR REPLACE` deletes the conflicting row without firing DELETE triggers (unless the
@@ -114,14 +120,71 @@ const IDENTITY_KEYS: Readonly<Record<string, readonly (readonly string[])[]>> = 
  * an insert into an update. A BEFORE INSERT trigger runs before any of those conflict resolutions, so
  * every identity key of every table is checked here and a duplicate always aborts.
  */
+const duplicateGuard = (table: string, uniques: readonly (readonly string[])[]) => {
+  const clauses = uniques.map((cols) => `(${cols.map((c) => `t.${c} = NEW.${c}`).join(' AND ')})`).join(' OR ');
+  return `CREATE TRIGGER ${table}_no_duplicate BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:duplicate ${table}') WHERE EXISTS (SELECT 1 FROM ${table} t WHERE ${clauses}); END;`;
+};
 const DUPLICATE_GUARDS = Object.entries(IDENTITY_KEYS)
-  .map(([table, uniques]) => {
-    const clauses = uniques.map((cols) => `(${cols.map((c) => `t.${c} = NEW.${c}`).join(' AND ')})`).join(' OR ');
-    return `CREATE TRIGGER ${table}_no_duplicate BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:duplicate ${table}') WHERE EXISTS (SELECT 1 FROM ${table} t WHERE ${clauses}); END;`;
-  })
+  .map(([table, uniques]) => duplicateGuard(table, uniques))
   .join('\n');
 
-const SCHEMA = `
+/** RN-CONFORM-05: an operator is eligible exactly when its latest status event is APPROVED or REINSTATED (none = ineligible). */
+const OPERATOR_ELIGIBLE = (operatorExpr: string) =>
+  `(COALESCE((SELECT e.kind FROM cc_operator_events e WHERE e.operator_id = ${operatorExpr} ORDER BY e.seq DESC LIMIT 1), 'NONE') IN ('APPROVED', 'REINSTATED'))`;
+
+/** The two `/2` triggers `/3` replaces, verbatim (the migration verifies and drops exactly these). */
+const ENROLLED_TRIGGER_V2 = `CREATE TRIGGER cc_validators_enrolled BEFORE INSERT ON cc_validators BEGIN
+  SELECT RAISE(ABORT, 'cc:unknown operator') WHERE NOT EXISTS (SELECT 1 FROM cc_operators o WHERE o.operator_id = NEW.operator_id AND o.synthetic = 1);
+  SELECT RAISE(ABORT, 'cc:enrollment requires two humans') WHERE NOT ${TWO_HUMANS('validator.enroll', "'validator:' || NEW.validator_id", 'NEW.binding_digest', 'NEW.validator_id')};
+END;`;
+const ATTRIBUTED_TRIGGER_V2 = `CREATE TRIGGER cc_observations_attributed BEFORE INSERT ON cc_observations BEGIN
+  SELECT RAISE(ABORT, 'cc:observation operator mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_validators v WHERE v.validator_id = NEW.validator_id AND v.operator_id = NEW.operator_id);
+  SELECT RAISE(ABORT, 'cc:observation challenge mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_challenges c WHERE c.challenge_id = NEW.challenge_id AND c.organization_id = NEW.organization_id AND c.integration_digest = NEW.integration_digest AND c.control_id = NEW.control_id AND c.operation = NEW.operation AND c.profile_id = NEW.profile_id AND c.profile_version = NEW.profile_version);
+  SELECT RAISE(ABORT, 'cc:observation evidence missing') WHERE NOT EXISTS (SELECT 1 FROM cc_evidence_packages e WHERE e.evidence_digest = NEW.evidence_digest AND e.organization_id = NEW.organization_id);
+END;`;
+const ENROLLED_TRIGGER_V3 = `CREATE TRIGGER cc_validators_enrolled BEFORE INSERT ON cc_validators BEGIN
+  SELECT RAISE(ABORT, 'cc:unknown operator') WHERE NOT EXISTS (SELECT 1 FROM cc_operators o WHERE o.operator_id = NEW.operator_id AND o.synthetic = 1);
+  SELECT RAISE(ABORT, 'cc:operator not eligible') WHERE NOT ${OPERATOR_ELIGIBLE('NEW.operator_id')};
+  SELECT RAISE(ABORT, 'cc:enrollment requires two humans') WHERE NOT ${TWO_HUMANS('validator.enroll', "'validator:' || NEW.validator_id", 'NEW.binding_digest', 'NEW.validator_id')};
+END;`;
+const ATTRIBUTED_TRIGGER_V3 = `CREATE TRIGGER cc_observations_attributed BEFORE INSERT ON cc_observations BEGIN
+  SELECT RAISE(ABORT, 'cc:observation operator mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_validators v WHERE v.validator_id = NEW.validator_id AND v.operator_id = NEW.operator_id);
+  SELECT RAISE(ABORT, 'cc:observation operator not eligible') WHERE NOT ${OPERATOR_ELIGIBLE('NEW.operator_id')};
+  SELECT RAISE(ABORT, 'cc:observation challenge mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_challenges c WHERE c.challenge_id = NEW.challenge_id AND c.organization_id = NEW.organization_id AND c.integration_digest = NEW.integration_digest AND c.control_id = NEW.control_id AND c.operation = NEW.operation AND c.profile_id = NEW.profile_id AND c.profile_version = NEW.profile_version);
+  SELECT RAISE(ABORT, 'cc:observation evidence missing') WHERE NOT EXISTS (SELECT 1 FROM cc_evidence_packages e WHERE e.evidence_digest = NEW.evidence_digest AND e.organization_id = NEW.organization_id);
+END;`;
+const PREV_OPERATOR_KIND = `(SELECT e.kind FROM cc_operator_events e WHERE e.operator_id = NEW.operator_id ORDER BY e.seq DESC LIMIT 1)`;
+/** `/3` additions: the authoritative operator status log, append-only, sequential, monotonic, REVOKED terminal. */
+const OPERATOR_STATUS_SCHEMA_V3 = `
+CREATE TABLE cc_operator_events (
+  operator_id TEXT NOT NULL REFERENCES cc_operators (operator_id),
+  seq INTEGER NOT NULL CHECK (seq >= 1),
+  kind TEXT NOT NULL CHECK (kind IN ('APPROVED', 'REINSTATED', 'QUARANTINED', 'REVOKED', 'LEGACY')),
+  at_ms INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  binding_digest TEXT,
+  PRIMARY KEY (operator_id, seq)
+);
+CREATE TRIGGER cc_operator_events_no_update BEFORE UPDATE ON cc_operator_events BEGIN SELECT RAISE(ABORT, 'cc:immutable cc_operator_events'); END;
+CREATE TRIGGER cc_operator_events_no_delete BEFORE DELETE ON cc_operator_events BEGIN SELECT RAISE(ABORT, 'cc:immutable cc_operator_events'); END;
+${duplicateGuard('cc_operator_events', OPERATOR_EVENT_KEYS)}
+CREATE TRIGGER cc_operator_events_valid BEFORE INSERT ON cc_operator_events BEGIN
+  SELECT RAISE(ABORT, 'cc:unknown operator') WHERE NOT EXISTS (SELECT 1 FROM cc_operators o WHERE o.operator_id = NEW.operator_id AND o.synthetic = 1);
+  SELECT RAISE(ABORT, 'cc:operator history gap') WHERE NEW.seq <> COALESCE((SELECT MAX(e.seq) FROM cc_operator_events e WHERE e.operator_id = NEW.operator_id), 0) + 1;
+  SELECT RAISE(ABORT, 'cc:operator history moves backwards') WHERE NEW.at_ms < COALESCE((SELECT MAX(e.at_ms) FROM cc_operator_events e WHERE e.operator_id = NEW.operator_id), 0);
+  SELECT RAISE(ABORT, 'cc:operator transition not allowed') WHERE NOT (
+    (NEW.kind = 'APPROVED' AND COALESCE(${PREV_OPERATOR_KIND}, 'NONE') IN ('NONE', 'LEGACY'))
+    OR (NEW.kind = 'REINSTATED' AND COALESCE(${PREV_OPERATOR_KIND}, 'NONE') = 'QUARANTINED')
+    OR (NEW.kind = 'QUARANTINED' AND COALESCE(${PREV_OPERATOR_KIND}, 'NONE') IN ('APPROVED', 'REINSTATED', 'LEGACY'))
+    OR (NEW.kind = 'REVOKED' AND COALESCE(${PREV_OPERATOR_KIND}, 'NONE') <> 'REVOKED')
+    OR (NEW.kind = 'LEGACY' AND ${PREV_OPERATOR_KIND} IS NULL)
+  );
+  SELECT RAISE(ABORT, 'cc:operator approval requires two humans') WHERE NEW.kind = 'APPROVED' AND NOT ${TWO_HUMANS('operator.approve', "'operator:' || NEW.operator_id || ':' || NEW.seq", 'NEW.binding_digest', "'operator:' || NEW.operator_id")};
+  SELECT RAISE(ABORT, 'cc:operator reinstatement requires two humans') WHERE NEW.kind = 'REINSTATED' AND NOT ${TWO_HUMANS('operator.reinstate', "'operator:' || NEW.operator_id || ':' || NEW.seq", 'NEW.binding_digest', "'operator:' || NEW.operator_id")};
+END;
+`;
+
+const SCHEMA_V2 = `
 CREATE TABLE cc_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   schema_version TEXT NOT NULL,
@@ -377,15 +440,8 @@ CREATE TRIGGER cc_integrations_bound BEFORE INSERT ON cc_integrations BEGIN
   SELECT RAISE(ABORT, 'cc:integration version gap') WHERE NEW.integration_version <> COALESCE((SELECT MAX(i.integration_version) FROM cc_integrations i WHERE i.integration_id = NEW.integration_id), 0) + 1;
   SELECT RAISE(ABORT, 'cc:integration identity changed') WHERE EXISTS (SELECT 1 FROM cc_integrations i WHERE i.integration_id = NEW.integration_id AND (i.platform_id <> NEW.platform_id OR i.organization_id <> NEW.organization_id));
 END;
-CREATE TRIGGER cc_validators_enrolled BEFORE INSERT ON cc_validators BEGIN
-  SELECT RAISE(ABORT, 'cc:unknown operator') WHERE NOT EXISTS (SELECT 1 FROM cc_operators o WHERE o.operator_id = NEW.operator_id AND o.synthetic = 1);
-  SELECT RAISE(ABORT, 'cc:enrollment requires two humans') WHERE NOT ${TWO_HUMANS('validator.enroll', "'validator:' || NEW.validator_id", 'NEW.binding_digest', 'NEW.validator_id')};
-END;
-CREATE TRIGGER cc_observations_attributed BEFORE INSERT ON cc_observations BEGIN
-  SELECT RAISE(ABORT, 'cc:observation operator mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_validators v WHERE v.validator_id = NEW.validator_id AND v.operator_id = NEW.operator_id);
-  SELECT RAISE(ABORT, 'cc:observation challenge mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_challenges c WHERE c.challenge_id = NEW.challenge_id AND c.organization_id = NEW.organization_id AND c.integration_digest = NEW.integration_digest AND c.control_id = NEW.control_id AND c.operation = NEW.operation AND c.profile_id = NEW.profile_id AND c.profile_version = NEW.profile_version);
-  SELECT RAISE(ABORT, 'cc:observation evidence missing') WHERE NOT EXISTS (SELECT 1 FROM cc_evidence_packages e WHERE e.evidence_digest = NEW.evidence_digest AND e.organization_id = NEW.organization_id);
-END;
+${ENROLLED_TRIGGER_V2}
+${ATTRIBUTED_TRIGGER_V2}
 -- Review P2-B: a violation record exists only as the projection of its own violation observation, written by the trigger
 -- below; a raw writer cannot plant one in advance to collide with (and so suppress) the honest record.
 CREATE TRIGGER cc_confirmed_violations_bound BEFORE INSERT ON cc_confirmed_violations BEGIN
@@ -537,13 +593,48 @@ CREATE TRIGGER cc_heads_update_guard BEFORE UPDATE ON cc_heads BEGIN
 END;
 `;
 
-const TABLES = Object.freeze([
+/** `/3` = `/2` with the two operator-gated triggers replaced, plus the operator status log. */
+const SCHEMA = `${SCHEMA_V2.replace(ENROLLED_TRIGGER_V2, () => ENROLLED_TRIGGER_V3).replace(ATTRIBUTED_TRIGGER_V2, () => ATTRIBUTED_TRIGGER_V3)}${OPERATOR_STATUS_SCHEMA_V3}`;
+
+const TABLES_V2 = Object.freeze([
   'cc_meta', 'cc_profiles', 'cc_platforms', 'cc_integrations', 'cc_operators', 'cc_consumed_decisions', 'cc_validators', 'cc_validator_events',
   'cc_challenges', 'cc_evidence_packages', 'cc_observations', 'cc_confirmed_violations', 'cc_rejections', 'cc_credentials', 'cc_evaluations', 'cc_transitions', 'cc_heads',
   'cc_status_assertions', 'cc_anchor_intents',
 ]);
+const TABLES = Object.freeze([...TABLES_V2, 'cc_operator_events']);
 
-export type ConformanceStoreErrorCode = 'CAS_CONFLICT' | 'INVARIANT_REFUSED' | 'CONFLICT' | 'NOT_FOUND' | 'CORRUPT' | 'BUSY' | 'OPEN_REFUSED';
+export type ConformanceStoreErrorCode = 'CAS_CONFLICT' | 'INVARIANT_REFUSED' | 'CONFLICT' | 'NOT_FOUND' | 'CORRUPT' | 'BUSY' | 'OPEN_REFUSED' | 'SCHEMA_MIGRATION_REQUIRED' | 'ALREADY_CURRENT';
+
+export const OPERATOR_EVENT_KINDS = Object.freeze(['APPROVED', 'REINSTATED', 'QUARANTINED', 'REVOKED', 'LEGACY'] as const);
+export type OperatorEventKind = (typeof OPERATOR_EVENT_KINDS)[number];
+export interface OperatorStatusEvent {
+  readonly seq: number;
+  readonly kind: OperatorEventKind;
+  readonly atMs: number;
+}
+const ELIGIBLE_KINDS: readonly OperatorEventKind[] = ['APPROVED', 'REINSTATED'];
+const statusAt = (events: readonly OperatorStatusEvent[], atMs: number, inclusive: boolean): OperatorEventKind | null => {
+  let latest: OperatorStatusEvent | null = null;
+  for (const e of events) if ((inclusive ? e.atMs <= atMs : e.atMs < atMs) && (latest === null || e.seq > latest.seq)) latest = e;
+  return latest === null ? null : latest.kind;
+};
+/** Eligible now (live decisions and evaluation-time exclusion): the latest event at or before `atMs` grants eligibility. */
+export function operatorEligibleAt(events: readonly OperatorStatusEvent[], atMs: number): boolean {
+  const kind = statusAt(events, atMs, true);
+  return kind !== null && ELIGIBLE_KINDS.includes(kind);
+}
+/**
+ * Re-authentication of a STORED row accepted at `acceptedAtMs`: the row was inserted only while the trigger saw an
+ * eligible operator, so it passes if the operator was eligible at that instant under either order of events stamped in
+ * the same millisecond (F-0), or if it predates the operator's LEGACY marker (accepted before the `/2` → `/3` migration).
+ */
+export function operatorEligibleForStoredRow(events: readonly OperatorStatusEvent[], acceptedAtMs: number): boolean {
+  const first = [...events].sort((a, b) => a.seq - b.seq)[0];
+  if (first !== undefined && first.kind === 'LEGACY' && acceptedAtMs <= first.atMs) return true;
+  const inclusive = statusAt(events, acceptedAtMs, true);
+  const exclusive = statusAt(events, acceptedAtMs, false);
+  return (inclusive !== null && ELIGIBLE_KINDS.includes(inclusive)) || (exclusive !== null && ELIGIBLE_KINDS.includes(exclusive));
+}
 
 export class ConformanceStoreError extends Error {
   readonly code: ConformanceStoreErrorCode;
@@ -686,6 +777,9 @@ export interface ConformanceStore {
   getValidator(validatorId: string): StoredValidator | undefined;
   getValidatorByKeyId(keyId: string): StoredValidator | undefined;
   appendValidatorEvent(validatorId: string, kind: 'KEY_REVOKED' | 'QUARANTINED', atMs: number, reason: string): void;
+  /** RN-CONFORM-05: appends one authoritative operator status event (APPROVED/REINSTATED need two consumed humans, by trigger). Returns its sequence. */
+  appendOperatorEvent(operatorId: string, kind: Exclude<OperatorEventKind, 'LEGACY'>, atMs: number, reason: string, bindingDigest: string | null, decisions: readonly ConsumedDecision[]): number;
+  listOperatorEvents(operatorId: string): readonly OperatorStatusEvent[];
   isDecisionConsumed(decisionId: string): boolean;
   listConsumedDecisions(consumedFor: string): readonly { ref: HumanDecisionRef; decisionJson: string; action: string; subjectRef: string; organizationId: string }[];
   insertChallenge(signed: SignedChallenge): void;
@@ -751,20 +845,89 @@ function expectedTriggers(db: Database.Database): string[] {
   );
 }
 
-let canonicalTriggerSet: string[] | undefined;
+const canonicalSets = new Map<string, string[]>();
 
-/** The exact trigger names this schema creates, computed once from an in-memory database. */
-function schemaTriggers(): string[] {
-  if (canonicalTriggerSet === undefined) {
+/** The exact table/index/trigger set a schema text creates, computed once from an in-memory database. */
+function schemaSetOf(schema: string): string[] {
+  let set = canonicalSets.get(schema);
+  if (set === undefined) {
     const probe = new Database(':memory:');
     try {
-      probe.exec(SCHEMA);
-      canonicalTriggerSet = expectedTriggers(probe);
+      probe.exec(schema);
+      set = expectedTriggers(probe);
     } finally {
       probe.close();
     }
+    canonicalSets.set(schema, set);
   }
-  return canonicalTriggerSet;
+  return set;
+}
+const schemaTriggers = () => schemaSetOf(SCHEMA);
+
+const metaOf = (db: Database.Database) =>
+  db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cc_meta'").get() === undefined
+    ? undefined
+    : (db.prepare('SELECT schema_version, synthetic FROM cc_meta WHERE id = 1').get() as { schema_version: string; synthetic: number } | undefined);
+
+/**
+ * RN-CONFORM-05: the explicit, one-way `/2` → `/3` conversion. Never run implicitly. One IMMEDIATE transaction: it
+ * verifies the file is EXACTLY the `/2` schema (a tampered or partial file is refused), replaces the two operator-gated
+ * triggers, adds the operator status log, records one LEGACY event per existing operator (not eligible: it only
+ * preserves the historical acceptance of rows accepted before it) and bumps the version. No existing row is rewritten.
+ * `faultAfterSchema` is TEST-ONLY (an interrupted run must leave the file exactly `/2`).
+ */
+export function migrateConformanceStore(path: string, options: { readonly now?: () => number; readonly faultAfterSchema?: () => void } = {}): { readonly from: string; readonly to: string; readonly legacyOperators: number } {
+  const file = resolve(path);
+  if (!existsSync(file)) throw new ConformanceStoreError('OPEN_REFUSED', 'no store exists at that path');
+  const db = new Database(file, { fileMustExist: true });
+  try {
+    db.pragma('foreign_keys = ON');
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = FULL');
+    const meta = metaOf(db);
+    if (meta?.schema_version === CONFORMANCE_STORE_SCHEMA_VERSION) throw new ConformanceStoreError('ALREADY_CURRENT', 'the store is already at the current schema');
+    if (meta?.schema_version !== CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION || meta.synthetic !== 1) throw new ConformanceStoreError('CORRUPT', 'not a synthetic rn.conformance.store/2 file');
+    if (db.pragma('quick_check', { simple: true }) !== 'ok') throw new ConformanceStoreError('CORRUPT', 'integrity check failed');
+    if (JSON.stringify(expectedTriggers(db)) !== JSON.stringify(schemaSetOf(SCHEMA_V2))) throw new ConformanceStoreError('CORRUPT', 'the /2 tables or triggers differ from the /2 schema; refusing to migrate');
+    const at = (options.now ?? Date.now)();
+    let legacyOperators = 0;
+    db.transaction(() => {
+      const metaGuard = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'cc_meta_no_update'").get() as { sql: string }).sql;
+      db.exec('DROP TRIGGER cc_validators_enrolled; DROP TRIGGER cc_observations_attributed;');
+      db.exec(ENROLLED_TRIGGER_V3);
+      db.exec(ATTRIBUTED_TRIGGER_V3);
+      db.exec(OPERATOR_STATUS_SCHEMA_V3);
+      const operators = db.prepare('SELECT operator_id FROM cc_operators ORDER BY operator_id').all() as { operator_id: string }[];
+      const insert = db.prepare("INSERT INTO cc_operator_events (operator_id, seq, kind, at_ms, reason, binding_digest) VALUES (?, 1, 'LEGACY', ?, 'MIGRATED_FROM_STORE_V2', NULL)");
+      for (const o of operators) insert.run(o.operator_id, at);
+      legacyOperators = operators.length;
+      options.faultAfterSchema?.();
+      db.exec('DROP TRIGGER cc_meta_no_update;');
+      db.prepare('UPDATE cc_meta SET schema_version = ? WHERE id = 1').run(CONFORMANCE_STORE_SCHEMA_VERSION);
+      db.exec(metaGuard);
+      if (JSON.stringify(expectedTriggers(db)) !== JSON.stringify(schemaTriggers())) throw new ConformanceStoreError('CORRUPT', 'the migrated schema does not equal /3');
+    }).immediate();
+    return Object.freeze({ from: CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION, to: CONFORMANCE_STORE_SCHEMA_VERSION, legacyOperators });
+  } finally {
+    db.close();
+  }
+}
+
+/** TEST-ONLY migration fixture: creates an empty synthetic `/2` store exactly as RN-CONFORM-03/04 code did. */
+export function createConformanceStoreV2Fixture(path: string): void {
+  const file = resolve(path);
+  if (existsSync(file)) throw new ConformanceStoreError('OPEN_REFUSED', 'a store already exists at that path');
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const db = new Database(file);
+  try {
+    db.pragma('journal_mode = WAL');
+    db.transaction(() => {
+      db.exec(SCHEMA_V2);
+      db.prepare('INSERT INTO cc_meta (id, schema_version, synthetic) VALUES (1, ?, 1)').run(CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION);
+    }).immediate();
+  } finally {
+    db.close();
+  }
 }
 
 export function openConformanceStore(path: string, options: OpenOptions = {}): ConformanceStore {
@@ -785,6 +948,11 @@ export function openConformanceStore(path: string, options: OpenOptions = {}): C
         db.prepare('INSERT INTO cc_meta (id, schema_version, synthetic) VALUES (1, ?, 1)').run(CONFORMANCE_STORE_SCHEMA_VERSION);
       }).immediate();
     } else {
+      // A /2 file is never opened (its triggers do not enforce operator status) and never migrated implicitly.
+      const previous = metaOf(db);
+      if (previous?.schema_version === CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION) {
+        throw new ConformanceStoreError('SCHEMA_MIGRATION_REQUIRED', `${CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION} store: convert it explicitly with migrateConformanceStore() before opening`);
+      }
       for (const table of TABLES) {
         if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) === undefined) throw new ConformanceStoreError('CORRUPT', `missing table ${table}`);
       }
@@ -975,6 +1143,22 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
           const next = ((db.prepare('SELECT MAX(seq) AS s FROM cc_validator_events WHERE validator_id = ?').get(validatorId) as { s: number | null }).s ?? 0) + 1;
           db.prepare('INSERT INTO cc_validator_events (validator_id, seq, kind, at_ms, reason) VALUES (?, ?, ?, ?, ?)').run(validatorId, next, kind, atMs, reason);
         }).immediate(),
+      ),
+    appendOperatorEvent: (operatorId: string, kind: Exclude<OperatorEventKind, 'LEGACY'>, atMs: number, reason: string, bindingDigest: string | null, decisions: readonly ConsumedDecision[]) =>
+      run(() =>
+        db.transaction((): number => {
+          const next = ((db.prepare('SELECT MAX(seq) AS s FROM cc_operator_events WHERE operator_id = ?').get(operatorId) as { s: number | null }).s ?? 0) + 1;
+          consume(decisions, `operator:${operatorId}:${next}`, new Date(atMs).toISOString());
+          db.prepare('INSERT INTO cc_operator_events (operator_id, seq, kind, at_ms, reason, binding_digest) VALUES (?, ?, ?, ?, ?, ?)').run(operatorId, next, kind, atMs, reason, bindingDigest);
+          return next;
+        }).immediate(),
+      ),
+    listOperatorEvents: (operatorId: string) =>
+      Object.freeze(
+        (db.prepare('SELECT seq, kind, at_ms FROM cc_operator_events WHERE operator_id = ? ORDER BY seq').all(operatorId) as { seq: number; kind: string; at_ms: number }[]).map((r) => {
+          if (!(OPERATOR_EVENT_KINDS as readonly string[]).includes(r.kind)) throw new ConformanceStoreError('CORRUPT', 'unknown operator event kind');
+          return Object.freeze({ seq: r.seq, kind: r.kind as OperatorEventKind, atMs: r.at_ms });
+        }),
       ),
     isDecisionConsumed: (decisionId: string) => db.prepare('SELECT 1 FROM cc_consumed_decisions WHERE decision_id = ?').get(decisionId) !== undefined,
     listConsumedDecisions: (consumedFor: string) =>
