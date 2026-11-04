@@ -253,11 +253,11 @@ export function checkObservationAuthority(
   if (validator === undefined) return no('UNKNOWN_VALIDATOR');
   // 3 — status and key validity (the key is the enrolled one; a submitted key id is only a claim).
   // RN-CONFORM-05 compatibility fix: re-authenticating a STORED row, a status event stamped in the same millisecond as
-  // the row's acceptance happened after it (live acceptance refuses at `<=`, so a row with that acceptance time could
-  // only have committed before the event). Without this, the automatic VALIDATOR_CONFLICT quarantine — or any protective
-  // quarantine/revocation landing in the acceptance millisecond — made already-accepted evidence look tampered and left
-  // the credential's status failing closed (EVIDENCE_TAMPERED) for the whole evaluation horizon. Exclusion of the
-  // validator's evidence from later evaluations (`loadEngineInput`) is unchanged.
+  // the row's acceptance happened after it (live acceptance refuses an event at or before the acceptance instant, so a
+  // row with that acceptance time could only have committed before the event). Without this, the automatic
+  // VALIDATOR_CONFLICT quarantine (or another protective quarantine or revocation in the acceptance millisecond) made
+  // already-accepted evidence look tampered and left the credential's status failing closed (EVIDENCE_TAMPERED) for
+  // the whole evaluation horizon. Exclusion of the validator's evidence from later evaluations is unchanged.
   const statusApplies = (eventMs: number | null) => eventMs !== null && (options.storedRow === true ? eventMs < atMs : eventMs <= atMs);
   if (statusApplies(validator.keyRevokedAtMs)) return no('VALIDATOR_REVOKED');
   if (statusApplies(validator.quarantinedAtMs)) return no('VALIDATOR_QUARANTINED');
