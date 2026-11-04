@@ -65,3 +65,9 @@ sparse-array canonicalization fix (RN-02 F-1).
 
 $SOBE, staking, slashing, rewards (out of scope permanently, DECISION_REGISTER.md:77–83); Mainnet; changing the
 Founding Assessment NO-GO (separate Assurance track, CC-D-08).
+
+## Progress log (verified progress only)
+
+| Date | Item | State | Evidence |
+|---|---|---|---|
+| 2026-11-04 | P1-01 authoritative testing authorization (G-01, G-02, rate/volume part of G-33) | **Implemented, synthetic, PR open — not merged.** Store `/4`, coordinator + evidence + lifecycle enforcement, requalification reservation, `/3` → `/4` migration verified on a historical-code fixture. Not a pilot authorization: P1-08 still supplies the real authorization source. Level 2 remains NO-GO. | [RN_CONFORM_07_IMPLEMENTATION.md](RN_CONFORM_07_IMPLEMENTATION.md) |
