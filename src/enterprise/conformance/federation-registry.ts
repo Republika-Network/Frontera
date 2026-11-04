@@ -207,7 +207,7 @@ export function createFederationRegistry(deps: {
   readonly clock: { now(): string };
   readonly random: RandomSource;
   /** TEST-ONLY fault injection: runs after the conformance-store enrollment commits and before the federation row (crash between stores). */
-  readonly faults?: { readonly afterConformanceEnrollment?: () => void };
+  readonly faults?: { readonly afterConformanceEnrollment?: () => void; readonly beforeReinstatementCommit?: () => void };
 }): FederationRegistry {
   const { fed, store, conformance, profiles, humans, clock, random } = deps;
   const nowMs = () => {
@@ -739,9 +739,47 @@ export function createFederationRegistry(deps: {
         event('REQUALIFICATION_SCHEDULED', at, 'validator', validatorId, { generation, result: 'FAILED' });
         throw new FederationError('REQUALIFICATION_FAILED', job === undefined ? 'unknown requalification job' : `job ${job.state}`);
       }
-      fed.atomically(() => {
-        fed.appendGenerationState(validatorId, generation, 'ACTIVE', at, 'REQUALIFIED');
-        fed.appendValidatorState(validatorId, 'ACTIVE', at, 'REINSTATED_AFTER_REQUALIFICATION', []);
+      if (job === undefined || auth === undefined || candidateObs === undefined || referenceObs === undefined) throw new FederationError('REQUALIFICATION_FAILED', 'incomplete requalification');
+      const j = job;
+      const mirror = auth;
+      const evidence = [candidateObs, referenceObs] as const;
+      // RN-CONFORM-07A (K-2): the AUTHORITATIVE requalification authorization — never only the federation mirror — must
+      // still cover this work at the decision. The decisive check and the transition run under the conformance store's
+      // write lock, so a revocation either committed before the check (and refuses) or commits after the reinstatement.
+      const authoritativeDefect = (): string | null => {
+        const a = store.getTestingAuthorization(j.authorizationId);
+        if (a === undefined) return 'AUTHORIZATION_UNKNOWN';
+        const r = a.record;
+        if (r.purpose !== 'VALIDATOR_REQUALIFICATION' || r.organizationId !== j.organizationId || r.integrationDigest !== j.integrationDigest) return 'AUTHORIZATION_SUBJECT_MISMATCH';
+        if (!r.fixtureRefs.includes(j.fixtureRef) || !r.operations.includes(j.operation) || !(r.challengeTypes as readonly string[]).includes(j.challengeType)) return 'AUTHORIZATION_SCOPE_MISMATCH';
+        if (mirror.recordDigest !== a.authorizationDigest) return 'AUTHORIZATION_MIRROR_DIVERGES';
+        if (a.revokedSeq !== null) return 'AUTHORIZATION_REVOKED';
+        const now = nowMs();
+        if (now > a.notAfterMs || now < a.notBeforeMs) return 'AUTHORIZATION_EXPIRED';
+        const challenge = j.challengeId === null ? undefined : store.getChallenge(j.challengeId);
+        if (challenge === undefined || toMs(challenge.challenge.issuedAt) < a.notBeforeMs || toMs(challenge.challenge.deadline) > a.notAfterMs) return 'AUTHORIZATION_WINDOW';
+        const association = store.getChallengeAuthorization(challenge.challenge.challengeId);
+        if (association?.authorizationId !== j.authorizationId || association.purpose !== 'VALIDATOR_REQUALIFICATION') return 'EVIDENCE_BINDING';
+        for (const o of evidence) {
+          const p = store.getObservationPurpose(o.eventId);
+          if (p === undefined || p.purpose !== 'VALIDATOR_REQUALIFICATION' || p.authorizationId !== j.authorizationId) return 'EVIDENCE_BINDING';
+        }
+        return null;
+      };
+      const refuse = (defect: string): never => {
+        event('REQUALIFICATION_SCHEDULED', at, 'validator', validatorId, { generation, result: 'FAILED', reason: defect });
+        throw new FederationError('REQUALIFICATION_FAILED', defect);
+      };
+      const early = authoritativeDefect();
+      if (early !== null) refuse(early);
+      deps.faults?.beforeReinstatementCommit?.();
+      store.underWriteLock(() => {
+        const defect = authoritativeDefect();
+        if (defect !== null) refuse(defect);
+        fed.atomically(() => {
+          fed.appendGenerationState(validatorId, generation, 'ACTIVE', at, 'REQUALIFIED');
+          fed.appendValidatorState(validatorId, 'ACTIVE', at, 'REINSTATED_AFTER_REQUALIFICATION', []);
+        });
       });
       event('REQUALIFICATION_PASSED', at, 'validator', validatorId, { generation, jobId: requalificationJobId });
       event('VALIDATOR_REINSTATED', at, 'validator', validatorId, { generation });

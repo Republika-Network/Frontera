@@ -996,6 +996,12 @@ export interface ConformanceStore {
   /** Protective, terminal. Returns the revocation's order sequence. */
   revokeTestingAuthorization(authorizationId: string, atMs: number, reason: string): number;
   getChallengeAuthorization(challengeId: string): StoredChallengeAuthorization | undefined;
+  /**
+   * RN-CONFORM-07A: runs `fn` while holding this store's write lock (one IMMEDIATE transaction). A revocation (or any
+   * other write) either committed before `fn` runs — and `fn` sees it — or commits after `fn` returns. `fn` must not
+   * write to this store; it is used to make a decision recorded elsewhere (the federation store) linearizable.
+   */
+  underWriteLock<T>(fn: () => T): T;
   /** The unrevoked authorization of (organization, integration version, purpose) whose window reaches past `fromMs`, if any. */
   liveTestingAuthorizationId(organizationId: string, integrationDigest: string, purpose: TestingAuthorizationPurpose, fromMs: number): string | undefined;
   /** Whether some authorization already supersedes `authorizationId`. */
@@ -1529,6 +1535,25 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
           .get(organizationId, integrationDigest, purpose, fromMs) as { authorization_id: string } | undefined
       )?.authorization_id,
     isTestingAuthorizationSuperseded: (authorizationId: string) => db.prepare('SELECT 1 FROM cc_testing_authorizations WHERE supersedes = ?').get(authorizationId) !== undefined,
+    underWriteLock: <T>(fn: () => T): T => {
+      // The callback's own errors (a refused decision) pass through unchanged; only SQLite failures are mapped.
+      let failure: { readonly error: unknown } | null = null;
+      try {
+        return db
+          .transaction((): T => {
+            try {
+              return fn();
+            } catch (error) {
+              failure = { error };
+              throw error;
+            }
+          })
+          .immediate();
+      } catch (error) {
+        if (failure !== null) throw (failure as { readonly error: unknown }).error;
+        throw mapError(error);
+      }
+    },
     getChallengeAuthorization: (challengeId: string) => {
       const r = db.prepare('SELECT authorization_id, authorization_digest, purpose, issued_seq FROM cc_challenge_authorizations WHERE challenge_id = ?').get(challengeId) as
         | { authorization_id: string | null; authorization_digest: string | null; purpose: string; issued_seq: number }
