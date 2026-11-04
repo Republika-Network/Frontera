@@ -37,12 +37,13 @@ describe('FV-P4C-2B3C-2A2A structure — the first-administrator enrolment is in
     // FV-P4C-2B3C-2A2B: AUTH-03's FV roles and FV operator rows (the role constant, the credential digest and the
     // epoch expiry), and the operator ceremony (the credential digest, and this ceremony's registered-store access).
     const OPERATOR_CEREMONY = join(MODULE, 'identity-registration-operator.ts');
-    assert.deepEqual(rowUsers.map((f) => relative(ROOT, f)).sort(), [CEREMONY, join(IDENTITY, 'fv-domain.ts'), join(IDENTITY, 'fv-operator.ts'), OPERATOR_CEREMONY].map((f) => relative(ROOT, f)).sort(), 'only the ceremonies of this family and AUTH-03’s FV modules import the first-administrator modules');
+    // FV-P4C-2B3C-2A3A: AUTH-03's FV revocation (the credential digest) and its ceremony (the digest, and the registered-store access).
+    assert.deepEqual(rowUsers.map((f) => relative(ROOT, f)).sort(), [CEREMONY, join(IDENTITY, 'fv-domain.ts'), join(IDENTITY, 'fv-operator.ts'), join(IDENTITY, 'fv-revocation.ts'), OPERATOR_CEREMONY, join(MODULE, 'identity-registration-revocation.ts')].map((f) => relative(ROOT, f)).sort(), 'only the ceremonies of this family and AUTH-03’s FV modules import the first-administrator modules');
     assert.equal(/first-administrator/.test(read(join(IDENTITY, 'index.ts'))), false, 'not exported from the AUTH-03 index');
     assert.equal(/first-administrator|FirstAdministrator/.test(read(join(MODULE, 'index.ts'))), false, 'not exported from the module index');
     const internals = productionSources().filter((p) => /fvRegistrarInternals/.test(read(p)));
     // FV-P4C-2B3C-2A2B: and the operator-enrolment ceremony of the same family.
-    assert.deepEqual(internals.map((f) => relative(MODULE, f)).sort(), ['identity-registration-first-administrator.ts', 'identity-registration-operator.ts', 'identity-registration.ts'], 'the registrar’s helpers reach only this family’s ceremonies');
+    assert.deepEqual(internals.map((f) => relative(MODULE, f)).sort(), ['identity-registration-first-administrator.ts', 'identity-registration-operator.ts', 'identity-registration-revocation.ts', 'identity-registration.ts'], 'the registrar’s helpers reach only this family’s ceremonies');
     for (const name of ['dedicated-executor.ts', 'dedicated-executor-main.ts', 'dedicated-executor-supervisor.ts', 'dedicated-executor-protocol.ts', 'protected-host-composition.ts']) {
       assert.equal(/FirstAdministrator|first-administrator/.test(read(join(MODULE, name))), false, name);
     }

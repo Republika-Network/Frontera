@@ -21,7 +21,8 @@ describe('AUTH-02 structure — the human identity module', () => {
   it('is the module the tests expect', () => {
     // FV-P4C-2B3C-2A2A: `first-administrator.ts`, the FV store's first administrator (its own structure test).
     // FV-P4C-2B3C-2A2B: `fv-domain.ts` (FV roles from signed rows) and `fv-operator.ts` (FV operators under the administrator's assertion).
-    assert.deepEqual(files.map((file) => file.slice(MODULE.length + 1)).sort(), ['chain.ts', 'contracts.ts', 'decision-challenge.ts', 'first-administrator.ts', 'fv-domain.ts', 'fv-operator.ts', 'index.ts', 'relying-party.ts', 'service.ts', 'sqlite-human-identity-store.ts', 'webauthn.ts']);
+    // FV-P4C-2B3C-2A3A: `fv-revocation.ts` (FV operator credential revocation under the administrator's assertion).
+    assert.deepEqual(files.map((file) => file.slice(MODULE.length + 1)).sort(), ['chain.ts', 'contracts.ts', 'decision-challenge.ts', 'first-administrator.ts', 'fv-domain.ts', 'fv-operator.ts', 'fv-revocation.ts', 'index.ts', 'relying-party.ts', 'service.ts', 'sqlite-human-identity-store.ts', 'webauthn.ts']);
   });
 
   it('imports only node builtins, its own files, better-sqlite3, the WebAuthn library, the operator principal type and (AUTH-03) the CORE-02 signer and CORE-07 freshness boundaries', () => {

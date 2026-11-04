@@ -57,7 +57,8 @@ describe('FV-P4C-2B3C-2A2B structure — Host administration never reaches an FV
     assert.equal(/import [^;]*from '\.\/service\.js'/.test(domain), false, 'a leaf');
     // The consumer rule: no production source decides on the structural operator role; only verifyFvOperatorRoles reads it.
     const consumers = productionSources().filter((p) => p !== DOMAIN && /fvRolesOf\(/.test(read(p)));
-    assert.deepEqual(consumers.map((f) => relative(ROOT, f)).sort(), [CEREMONY, ROWS].map((f) => relative(ROOT, f)).sort());
+    // FV-P4C-2B3C-2A3A: AUTH-03's FV revocation and its ceremony read the administrator role too (the operator role only through verifyFvOperatorRoles).
+    assert.deepEqual(consumers.map((f) => relative(ROOT, f)).sort(), [CEREMONY, ROWS, join(IDENTITY, 'fv-revocation.ts'), join(MODULE, 'identity-registration-revocation.ts')].map((f) => relative(ROOT, f)).sort());
     for (const file of consumers) {
       const uses = [...read(file).matchAll(/[^\n]*fvRolesOf\([^\n]*/g)].map((m) => m[0]).filter((line) => !/^\s*(\*|\/\/|import )/.test(line));
       for (const use of uses) assert.ok(/'fv-administrator'/.test(use) || /for \(const \[operatorId, role\] of fvRolesOf\(history\)\)/.test(use), `${relative(ROOT, file)}: ${use}`);
@@ -72,7 +73,8 @@ describe('FV-P4C-2B3C-2A2B structure — the operator enrolment is internal, uni
     const outside = [...productionSources().filter((p) => !p.startsWith(join(MODULE, 'identity-registration'))), ...walk(join(ROOT, 'scripts'), (p) => /\.(m?js|ts|sh)$/.test(p)), ...walk(join(ROOT, 'deploy'), () => true), join(ROOT, 'Dockerfile'), join(ROOT, 'package.json')].filter((file) => existsSync(file) && NAMES.test(read(file)));
     assert.deepEqual(outside.map((f) => relative(ROOT, f)), []);
     const rowUsers = productionSources().filter((p) => p !== ROWS && /fv-operator\.js'/.test(read(p)));
-    assert.deepEqual(rowUsers.map((f) => relative(ROOT, f)), [relative(ROOT, CEREMONY)], 'only the ceremony imports AUTH-03’s FV operator rows');
+    // FV-P4C-2B3C-2A3A: AUTH-03's FV revocation (the role verifier, the chain digest) and its ceremony (the role verifier).
+    assert.deepEqual(rowUsers.map((f) => relative(ROOT, f)).sort(), [CEREMONY, join(IDENTITY, 'fv-revocation.ts'), join(MODULE, 'identity-registration-revocation.ts')].map((f) => relative(ROOT, f)).sort(), 'only the operator and revocation ceremonies and AUTH-03’s FV revocation import AUTH-03’s FV operator rows');
     assert.equal(/fv-operator|fv-domain/.test(read(join(IDENTITY, 'index.ts'))), false, 'not exported from the AUTH-03 index');
     assert.equal(/FvOperator|identity-registration-operator/.test(read(join(MODULE, 'index.ts'))), false, 'not exported from the module index');
     for (const name of ['dedicated-executor.ts', 'dedicated-executor-main.ts', 'dedicated-executor-supervisor.ts', 'dedicated-executor-protocol.ts', 'protected-host-composition.ts']) {
@@ -80,7 +82,8 @@ describe('FV-P4C-2B3C-2A2B structure — the operator enrolment is internal, uni
     }
     assert.match(read(join(MODULE, 'dedicated-executor-main.ts')), /compose: undefined,/, 'the production entry still composes nothing');
     const registeredAccess = productionSources().filter((p) => /fvRegisteredStoreAccess/.test(read(p)));
-    assert.deepEqual(registeredAccess.map((f) => relative(MODULE, f)).sort(), ['identity-registration-first-administrator.ts', 'identity-registration-operator.ts']);
+    // FV-P4C-2B3C-2A3A: and the revocation ceremony of the same family.
+    assert.deepEqual(registeredAccess.map((f) => relative(MODULE, f)).sort(), ['identity-registration-first-administrator.ts', 'identity-registration-operator.ts', 'identity-registration-revocation.ts']);
   });
 
   it('AUTH-03 decides: the administrator’s role from signed rows, its assertion over the commitment, the candidate’s proof, the prior head; each append guarded onto that exact head', () => {
