@@ -16,7 +16,6 @@ import { createConformanceProfileRegistry } from '../conformance/profile.js';
 import { CONFORMANCE_NETWORK_ORGANIZATION, ConformanceRegistryError, createConformanceRegistry } from '../conformance/registry.js';
 import { signConformancePayload } from '../conformance/signing.js';
 import {
-  CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION,
   CONFORMANCE_STORE_SCHEMA_VERSION,
   ConformanceStoreError,
   createConformanceStoreV2Fixture,
@@ -29,6 +28,7 @@ import { ALL_ACTIONS, ORG_A, T0, decide, manualClock, syntheticHuman, syntheticV
 import { REFERENCE_FIXTURE_REF } from './conformance-reference-pep.js';
 import { assertionOf, cleanupReferenceCircuits, referenceIntegrationInput, referenceStatus } from './conformance-reference-support.js';
 import {
+  FED_AUTHORIZATION,
   FED_OPERATORS,
   FED_REQUALIFICATION_AUTHORIZATION,
   activeFederatedCredential,
@@ -56,7 +56,7 @@ const refused = (code: string) => (e: unknown) =>
   (e instanceof ConformanceRegistryError && e.code === code) || (e instanceof FederationError && e.code === code) || (e instanceof ConformanceStoreError && e.code === code);
 
 const issueTo = (f: Federation, cvids: readonly string[], key: string, operation = 'document.open'): SignedChallenge =>
-  f.c.services().coordinator.issue({ idempotencyKey: key, organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation, fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: cvids, deadlineSeconds: 600 });
+  f.c.services().coordinator.issue({ idempotencyKey: key, organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation, fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: cvids, deadlineSeconds: 600, authorizationId: FED_AUTHORIZATION, purpose: 'CONFORMANCE' });
 
 /** Submits a contradiction of the stored observation of `cvid` for `challengeId`, signed with `key`. */
 function contradict(f: Federation, challengeId: string, cvid: string, key: Parameters<typeof signConformancePayload>[2], eventId: string) {
@@ -202,7 +202,7 @@ describe('P2-5 — operator authority is enforced by the authoritative RN-CONFOR
     } finally {
       store2.close();
     }
-    assert.throws(() => coordinator.issue({ idempotencyKey: 'p25-after-restart', organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: ['va2.k1'], deadlineSeconds: 300 }));
+    assert.throws(() => coordinator.issue({ idempotencyKey: 'p25-after-restart', organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: ['va2.k1'], deadlineSeconds: 300, authorizationId: FED_AUTHORIZATION, purpose: 'CONFORMANCE' }));
   });
 
   it('two self-registered (unapproved) operator ids cannot enroll validators, so they can never fabricate a VERIFIED_SUCCESS', () => {
@@ -292,7 +292,7 @@ describe('P2-5 — schema /3 and the explicit /2 → /3 migration', () => {
     raw.close();
     assert.throws(() => openConformanceStore(path), refused('SCHEMA_MIGRATION_REQUIRED'));
     const result = migrateConformanceStore(path, { now: () => Date.parse(T0) });
-    assert.deepEqual(result, { from: CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION, to: CONFORMANCE_STORE_SCHEMA_VERSION, legacyOperators: 1 });
+    assert.deepEqual([result.from, result.to, result.legacyOperators], ['rn.conformance.store/2', CONFORMANCE_STORE_SCHEMA_VERSION, 1]);
     assert.throws(() => migrateConformanceStore(path), refused('ALREADY_CURRENT'));
     const store = openConformanceStore(path);
     try {
@@ -367,19 +367,23 @@ describe('Codex P2 — durable job recovery and requalification isolation', () =
     assert.equal(f.registry.validatorState('vb1'), 'ACTIVE');
   });
 
-  it('a credential created on the probation fixture before dispatch cancels the job; created before completion, it voids the requalification', async () => {
+  it('RN-CONFORM-07 (S-1): a credential can never be created on the probation fixture — before dispatch or before completion', async () => {
+    // RN-CONFORM-05 rechecked "credentialed probation target" at dispatch and at completion; RN-CONFORM-07 makes the
+    // state unreachable: the store refuses any credential on an integration that ever had a VALIDATOR_REQUALIFICATION
+    // authorization (cc_credentials_purpose_reserved). The scheduler and completion rechecks remain as defence in depth.
     const a = await pendingRequalification('p2-requal-dispatch');
-    a.f.c.services().lifecycle.registerCandidate({ organizationId: a.f.requalification.organizationId, integrationDigest: a.f.requalification.integrationDigest });
+    assert.throws(() => a.f.c.services().lifecycle.registerCandidate({ organizationId: a.f.requalification.organizationId, integrationDigest: a.f.requalification.integrationDigest }));
+    assert.equal(a.f.c.store.hasCredentialForIntegration(a.f.requalification.organizationId, a.f.requalification.integrationDigest), false);
     const out = await a.f.worker('w-requal').process(a.jobId);
-    assert.deepEqual([out.outcome, 'detail' in out ? out.detail : null], ['CANCELLED', 'REQUALIFICATION_TARGET_CREDENTIALED']);
-    assert.equal(a.f.c.store.listObservations(a.f.requalification.organizationId, a.f.requalification.integrationDigest).length, 0, 'no probation evidence lands on a credentialed integration');
-    assert.equal(a.f.scheduler.scheduleRequalification({ validatorId: 'vb1', generation: 2, authorizationId: FED_REQUALIFICATION_AUTHORIZATION, challengeType: 'G01', operation: 'document.export', fixtureRef: REFERENCE_FIXTURE_REF }).scheduled, false);
+    assert.notEqual(out.outcome, 'CANCELLED');
 
     const b = await pendingRequalification('p2-requal-complete');
     await drain(b.f);
-    b.f.c.services().lifecycle.registerCandidate({ organizationId: b.f.requalification.organizationId, integrationDigest: b.f.requalification.integrationDigest });
-    assert.throws(() => b.f.registry.completeReinstatement('vb1', 2, b.jobId), refused('REQUALIFICATION_FAILED'));
-    assert.equal(b.f.registry.validatorState('vb1'), 'QUARANTINED');
+    assert.throws(() => b.f.c.services().lifecycle.registerCandidate({ organizationId: b.f.requalification.organizationId, integrationDigest: b.f.requalification.integrationDigest }));
+    b.f.registry.completeReinstatement('vb1', 2, b.jobId);
+    assert.equal(b.f.registry.validatorState('vb1'), 'ACTIVE');
+    // The probation observations are VALIDATOR_REQUALIFICATION evidence, never CONFORMANCE.
+    for (const row of b.f.c.store.listObservations(b.f.requalification.organizationId, b.f.requalification.integrationDigest)) assert.equal(b.f.c.store.getObservationPurpose(row.eventId)?.purpose, 'VALIDATOR_REQUALIFICATION');
   });
 
   it('a normal requalification still works end to end (fixture without credential)', async () => {

@@ -149,10 +149,13 @@ describe('RN-CONFORM-05 — migration of a REAL historical rn.conformance.store/
     assert.deepEqual(tableDigests(path), before);
     // Only the two operator-gated triggers were replaced; every other /2 object is identical, and the operator log is new.
     const masterAfter = masterOf(path);
-    const replaced = new Set(['trigger:cc_validators_enrolled', 'trigger:cc_observations_attributed']);
-    const keep = (m: string) => !replaced.has(m.split(':').slice(0, 2).join(':'));
-    assert.deepEqual(masterAfter.filter((m) => keep(m) && !m.includes('cc_operator_events')), masterBefore.filter(keep));
-    assert.ok(masterAfter.some((m) => m.startsWith('table:cc_operator_events:')));
+    // Every /2 object is still present byte-for-byte, except the triggers the /3 and /4 steps deliberately replace
+    // (operator gating, RN-CONFORM-05; authorization gating and conformance-only violation records, RN-CONFORM-07).
+    const replaced = new Set(['trigger:cc_validators_enrolled', 'trigger:cc_observations_attributed', 'trigger:cc_observations_record_violation']);
+    const nameOf = (m: string) => m.split(':').slice(0, 2).join(':');
+    for (const m of masterBefore) if (!replaced.has(nameOf(m))) assert.ok(masterAfter.includes(m), `${nameOf(m)} unchanged`);
+    for (const r of replaced) assert.ok(masterAfter.some((m) => nameOf(m) === r), `${r} present`);
+    for (const t of ['cc_operator_events', 'cc_testing_authorizations', 'cc_challenge_authorizations', 'cc_observation_purposes', 'cc_order']) assert.ok(masterAfter.some((m) => m.startsWith(`table:${t}:`)), t);
 
     const clock = manualClock(new Date(migrationAt + 60_000).toISOString());
     for (const attempt of ['first-open', 'after-restart']) {
@@ -167,7 +170,7 @@ describe('RN-CONFORM-05 — migration of a REAL historical rn.conformance.store/
         assert.throws(() => registry.enrollValidator(prep.record, enrollmentDecisions({ humans }, fresh.validatorId, prep.bindingDigest, clock.now())), (e: unknown) => e instanceof ConformanceRegistryError && e.code === 'OPERATOR_NOT_ELIGIBLE');
         const coordinator = createChallengeCoordinator({ store, profiles, clock, random: deterministicRandom(`v2-${attempt}`), coordinatorKey: testKey('coordinator') });
         const historical = r.observations.find((o) => o.validatorId !== r.revokedValidator) as FixtureRecord['observations'][number];
-        assert.throws(() => coordinator.issue({ idempotencyKey: `v2-new-${attempt}`, organizationId: r.organizationId, integrationDigest: r.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: 'fixture-pep-v1', assignedValidatorIds: [historical.validatorId], deadlineSeconds: 300 }), (e: unknown) => e instanceof Error && /VALIDATOR_NOT_ELIGIBLE/.test(e.message));
+        assert.throws(() => coordinator.issue({ idempotencyKey: `v2-new-${attempt}`, organizationId: r.organizationId, integrationDigest: r.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: 'fixture-pep-v1', assignedValidatorIds: [historical.validatorId], deadlineSeconds: 300, authorizationId: 'auth-none', purpose: 'CONFORMANCE' }), (e: unknown) => e instanceof Error && /VALIDATOR_NOT_ELIGIBLE/.test(e.message));
         const evidence = createEvidenceService({ store, profiles, clock, coordinatorPublicKeyPem: r.coordinatorPublicKeyPem });
         const row = store.getObservation(historical.eventId)!;
         const replay = { ...(JSON.parse(row.submissionJson) as { observation: ObservationPayload; validatorSignature: unknown }) };

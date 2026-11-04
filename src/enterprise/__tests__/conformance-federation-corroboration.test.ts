@@ -112,6 +112,8 @@ describe('RN-CONFORM-05 — federated corroboration scenarios (WP-13)', () => {
       fixtureRef: REFERENCE_FIXTURE_REF,
       assignedValidatorIds: cvids,
       deadlineSeconds: 600,
+      authorizationId: FED_AUTHORIZATION,
+      purpose: 'CONFORMANCE',
     });
     for (const v of operatorAValidators) assert.equal((await f.validators.get(v)!.runtime.receive(signed)).status, 'ACCEPTED');
     const result = cr01(f, id);
@@ -268,7 +270,7 @@ describe('RN-CONFORM-05 — automatic quarantine and controlled release (WP-11)'
 
   it('regression (compatibility fix): a quarantine in the acceptance millisecond withdraws the evidence — it never makes it look tampered', async () => {
     const { f, id } = await activeAndAged('fed-same-ms', false);
-    const signed = f.c.services().coordinator.issue({ idempotencyKey: 'same-ms-1', organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: ['vb1.k1'], deadlineSeconds: 300 });
+    const signed = f.c.services().coordinator.issue({ idempotencyKey: 'same-ms-1', organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: ['vb1.k1'], deadlineSeconds: 300, authorizationId: FED_AUTHORIZATION, purpose: 'CONFORMANCE' });
     const b = f.validators.get('vb1')!;
     assert.equal((await b.runtime.receive(signed)).status, 'ACCEPTED');
     const row = f.c.store.getObservationForChallengeValidator(signed.challenge.challengeId, 'vb1.k1')!;
@@ -337,7 +339,7 @@ describe('RN-CONFORM-05 — automatic quarantine and controlled release (WP-11)'
 
 describe('RN-CONFORM-05 — the validator runtime boundary (WP-09/10)', () => {
   const issueTo = (f: Federation, cvids: readonly string[], key = `rt-${Math.random()}`) =>
-    f.c.services().coordinator.issue({ idempotencyKey: key.replace('.', '-'), organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: cvids, deadlineSeconds: 300 });
+    f.c.services().coordinator.issue({ idempotencyKey: key.replace('.', '-'), organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: cvids, deadlineSeconds: 300, authorizationId: FED_AUTHORIZATION, purpose: 'CONFORMANCE' });
 
   it('refuses tampered, foreign-coordinator, misassigned, expired and malformed challenges before executing anything', async () => {
     const f = standardFederation('fed-rt');
@@ -407,7 +409,7 @@ describe('RN-CONFORM-05 — the validator runtime boundary (WP-09/10)', () => {
     );
     // A runtime never executes for a target outside its authorization, even with a valid coordinator signature.
     const v = f.validators.get('vb1')!;
-    const signed = f.c.services().coordinator.issue({ idempotencyKey: 'cross-tenant-1', organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: ['vb1.k1'], deadlineSeconds: 300 });
+    const signed = f.c.services().coordinator.issue({ idempotencyKey: 'cross-tenant-1', organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: ['vb1.k1'], deadlineSeconds: 300, authorizationId: FED_AUTHORIZATION, purpose: 'CONFORMANCE' });
     v.outbox.close();
     const other = runtimeFor(f, v, { create: false, fixtureRefs: [REFERENCE_FIXTURE_REF] });
     other.outbox.close();

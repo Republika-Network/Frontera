@@ -101,7 +101,7 @@ describe('RN-CONFORM-05 — reproducible synthetic federation demonstration', ()
     const recoveredObservations = f.c.store.listObservations(ORG_A, f.c.integration.integrationDigest).filter((o) => o.challengeId === recoveredJob.challengeId).length;
 
     // Stage 10 — quarantine: va2 signs two contradictory observations for one challenge.
-    const q = f.c.services().coordinator.issue({ idempotencyKey: 'demo-va2-challenge', organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: ['va2.k1'], deadlineSeconds: 300 });
+    const q = f.c.services().coordinator.issue({ idempotencyKey: 'demo-va2-challenge', organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF, assignedValidatorIds: ['va2.k1'], deadlineSeconds: 300, authorizationId: FED_AUTHORIZATION, purpose: 'CONFORMANCE' });
     const va2 = f.validators.get('va2')!;
     await va2.runtime.receive(q);
     const firstObs = f.c.store.getObservationForChallengeValidator(q.challenge.challengeId, 'va2.k1')!;
