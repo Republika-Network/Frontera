@@ -4,6 +4,17 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Tests — FV-P4C-2B3C-2A1-RACE-INV-01-TEST-HF01 post-merge regression coverage (tests and documentation only)
+- **What.** Regression coverage that was written after PR #271 had already been squash-merged (commit `5b23e8e9` on #271's branch, never part of `main`), landed separately, and hardened. **No production code changes.**
+- **Added to `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs`** (now 8 tests):
+  - the opener's L1 re-check: a record seen `LINKED` while a live publication removes its private name is re-checked and opened;
+  - the re-check adopts nothing, including a private-pattern file of another inode, which is kept with its inode unchanged, and a mixed case where only the publication's own name is released.
+- **Monotonic timing.** Every elapsed-time measurement uses `performance.now()`, with no cross-process wall-clock comparison. The thresholds are unchanged.
+- **Mutation evidence (executed, then killed).** 6 distinct mutations, executed as 7 runs, all killed:
+  - deterministically by E2E tests: no wait; release disabled; registrar's release removed; opener's L1 re-check reverted; release's same-inode check bypassed;
+  - the lock-order mutation: every time by a structural pin, and by a timing-dependent E2E test.
+- **Review.** Independent AI review only; **not** human security approval.
+
 ### Fixed — FV-P4C-2B3C-2A1-RACE-INV-01 registration record publication and lock acquisition (internal, not operational)
 - **Incident.** Main CI (`cded5c80`) failed the B3C-2A1 two-process registration race: one `REGISTRAR_BUSY`, one `RECORD_CORRUPT`, no registration.
 - **Root cause.** Two defects in `identity-registration-record.ts`. Both were reproduced deterministically and in bounded unmodified races: 7 failures in 40 before the fix, 0 in 80 after.
@@ -13,11 +24,12 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - A new record is initialized under a private name and published with `link` (never over anything). A publication's leftover second name is released, and nothing else is adopted.
   - The lock is acquired in normal mode with a bounded 500 ms wait, then kept in exclusive mode.
   - Authorization, ledger, witness and store logic are unchanged.
-- **Evidence.**
-  - `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (6 tests, real processes; 5 of 6 fail on the pre-fix code, the sixth pins the never-adopt guard).
-  - Targeted mutants: all killed. The lock-order mutant is killed by a timing-dependent behavioural test (6 of 6 runs) and every time by the structure pin; the two-contender race test alone catches it in about 2 of 3 runs.
-  - Publication review: GO. L1 (a transient `PATH_REFUSED` during a live publication) is fixed. L2 (two ceremonies in one process, pre-existing, fails closed) is documented for a follow-up.
-  - Independent AI review: conditional go; its three Lows are addressed.
+- **Evidence (as merged in #271, `b51df3d2`).**
+  - `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs`: 6 tests, real processes. 5 fail on the pre-fix code; the sixth pins the never-adopt guard.
+  - Mutants executed, all killed: no wait, exclusive mode set before acquiring, release disabled, registrar's release removed. The lock-order mutant is caught every time by a structural pin, and by a timing-dependent E2E test.
+  - The opener's L1 re-check had no regression test in #271; it is added by the follow-up below.
+  - Independent AI reviews (fresh agents; **not** human security approval): GO, and conditional go on the final delta. Human security review is still required.
+  - L2 (two ceremonies in one process; pre-existing; fails closed; not reachable today) is documented for a follow-up.
   - Details in lifecycle doc §19.
 - **Limits.**
   - A record path already left schema-less by D1 stays refused. Removing it is an operator decision on the evidence listed in §19; nothing is automated.

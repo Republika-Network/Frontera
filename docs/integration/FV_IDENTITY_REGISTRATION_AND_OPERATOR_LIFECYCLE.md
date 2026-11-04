@@ -1223,17 +1223,41 @@ FV store:   EMPTY ─(2A2A, issuer)→ ADMINISTERED ─(2A2B, admin)→ ADMINIST
 
 **Evidence after the fix:**
 - The same unmodified races ran 40 + 40 times with a single winner every time; the loser got `REGISTRAR_BUSY` or `ALREADY_REGISTERED`. No ties, no corrupt record.
-- `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (6 tests, all with real, separate processes, since POSIX locks belong to a whole process):
+- **As merged in PR #271** (squash `b51df3d2`, identical in tree to the reviewed head `1566970e`): `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` with 6 tests, all using real, separate processes (POSIX locks belong to a whole process):
   - publication is complete, with nothing at the record path meanwhile;
   - two contenders, started together while a third process holds the record, give exactly one prompt winner;
   - an opener waiting for the lock holds nothing, so a writer holding RESERVED can still commit. This test is timing-dependent: it assumes the opener entered its wait within 100 ms;
   - the wait is bounded;
   - both interrupted-publication states recover;
   - everything else stays refused.
-- On the pre-fix implementation (the `cded5c80` sources, rebuilt), 5 of the 6 fail. The sixth pins the never-adopt guard and passes on both, by design.
-- **Targeted mutants:**
-  - killed deterministically by the new e2e tests: no wait; release disabled; the registrar's release removed;
-  - exclusive mode set before acquiring (the second half of D2): killed in 6 of 6 runs by the lock-order test (timing-dependent, see above), and every time by the structure pin. The two-contender test catches it only in about two runs of three (6 of 9), because the real tie needs both openers to take SHARED before either escalates, which can't be forced from outside SQLite.
+
+  On the pre-fix implementation (the `cded5c80` sources, rebuilt), 5 of the 6 fail. The sixth pins the never-adopt guard and passes on both, by design.
+
+  Mutants executed for #271, all killed:
+  - no wait;
+  - exclusive mode set before acquiring;
+  - publication release disabled;
+  - the registrar's release removed.
+
+  The opener's L1 re-check (added in #271's second commit) **had no regression test in #271**.
+- **Post-merge follow-up (RACE-INV-01-TEST-HF01; tests and documentation only, a separate PR; not part of #271's squash).** It adds:
+  - **L1:** a record seen `LINKED` while a live publication removes its own private name is re-checked and opened. The instant is deterministic: the "publisher" removes the name during the release's directory scan.
+  - **The re-check adopts nothing:** a foreign second name; a private-pattern file of another inode (kept, inode unchanged); a real publication name beside a foreign-inode pattern file (only the publication's name is released, the record opens, and the other file is untouched); a symlink; another organization's record; a schema-less file.
+  - **Monotonic timing:** every elapsed-time measurement uses `performance.now()` in the measuring process, with no cross-process wall-clock comparison, after a wall clock was seen stepping backwards on WSL. The thresholds are unchanged.
+
+  The file now has 8 tests.
+- **Mutation evidence, by kind** (all on the compiled code in an isolated copy, restored and verified identical):
+
+  | Mutation | Detected by | Result |
+  |---|---|---|
+  | No wait | E2E, deterministic | Killed |
+  | Publication release disabled | E2E, deterministic | Killed |
+  | Registrar's release removed | E2E, deterministic | Killed |
+  | Opener's L1 re-check reverted | The L1 E2E test, deterministic | Killed in every run (4 of 4 for #271's follow-up review, 4 of 4 here); fails with exactly the pre-fix `PATH_REFUSED (LINKED)` |
+  | Release's same-inode check bypassed | The adopts-nothing E2E test, deterministic | Killed in every run (4 of 4) |
+  | Exclusive mode set before acquiring | **Structural pin:** every time. **Timing-dependent E2E** (lock-order test): 6 of 6 runs. The two-contender test alone: about 2 of 3 | Killed |
+
+  That is 6 distinct mutations, executed as 7 runs: the lock-order mutation runs once against the lock-order test alone and once against the contention tests. All 7 runs were killed.
 - **Independent review** (a fresh AI agent, not human): conditional go. It confirmed both D2 halves are needed (both refused in 17–21 of 25 runs for each half alone, 0 of 25 with both) and that SIGKILL during publication is recoverable (60 of 60 on the fix; 14 of 30 kills left a permanently corrupt record on the pre-fix code). Its three Lows were addressed:
   - the mutant wording above;
   - a start-skew flake risk in the contention test: contenders now start on one signal, and the winner's promptness is measured from the reader's release;

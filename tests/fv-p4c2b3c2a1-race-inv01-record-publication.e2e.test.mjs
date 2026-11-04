@@ -7,10 +7,11 @@
 // Real code; other processes hold real SQLite locks (POSIX locks are per process, as in production). Synthetic data only.
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { closeSync, existsSync, linkSync, lstatSync, openSync, readdirSync } from 'node:fs';
+import fs, { closeSync, existsSync, linkSync, lstatSync, openSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 
 import { openFvRegistrationRecord } from '../dist/src/enterprise/sovereign-status-history/identity-registration-record.js';
 import { registerFvIdentity } from '../dist/src/enterprise/sovereign-status-history/identity-registration.js';
@@ -35,14 +36,15 @@ function openerProcess(file, org) {
       let input = '';
       await new Promise((go) => { const onData = (chunk) => { input += chunk; if (input.includes('go\\n')) { process.stdin.off('data', onData); go(); } }; process.stdin.on('data', onData); process.stdin.resume(); });
       process.stdout.write('opening\\n');
-      const startedAt = Date.now();
+      const { performance } = require('node:perf_hooks');
+      const startedAt = performance.now();
       try {
         const record = await openFvRegistrationRecord(${JSON.stringify(file)}, { organizationId: ${JSON.stringify(org)}, now: () => new Date().toISOString(), create: false });
-        process.stdout.write(JSON.stringify({ outcome: 'opened', waitedMs: Date.now() - startedAt, at: Date.now() }) + '\\n');
+        process.stdout.write(JSON.stringify({ outcome: 'opened', waitedMs: Math.round(performance.now() - startedAt) }) + '\\n');
         process.stdin.on('end', () => { record.close(); process.exit(0); });
         process.stdin.resume();
       } catch (error) {
-        process.stdout.write(JSON.stringify({ outcome: error.code ?? String(error), message: String(error.message), waitedMs: Date.now() - startedAt }) + '\\n');
+        process.stdout.write(JSON.stringify({ outcome: error.code ?? String(error), message: String(error.message), waitedMs: Math.round(performance.now() - startedAt) }) + '\\n');
         process.exit(0);
       }
     });`;
@@ -114,15 +116,36 @@ function writerProcess(file, { commitWaitMs }) {
       input += chunk;
       if (!input.includes('commit\\n')) return;
       db.pragma('busy_timeout = ' + ${JSON.stringify(commitWaitMs)});
-      const startedAt = Date.now();
+      const startedAt = require('node:perf_hooks').performance.now();
       let outcome = 'committed';
       try { db.exec('COMMIT'); } catch (error) { outcome = error.code ?? String(error); try { db.exec('ROLLBACK'); } catch {} }
-      process.stdout.write(JSON.stringify({ outcome, tookMs: Date.now() - startedAt }) + '\\n');
+      process.stdout.write(JSON.stringify({ outcome, tookMs: Math.round(require('node:perf_hooks').performance.now() - startedAt) }) + '\\n');
       db.close();
       process.exit(0);
     });
     process.stdin.resume();`;
   return lineProcess(code);
+}
+/**
+ * Publication review L1 — the live-publication instant, made deterministic: on the next scan of `directory` (the release
+ * reading the directory for a private name), the "publisher" removes `privateName` right after the listing was taken,
+ * exactly as a publication removing its own name between `link` and that removal. Returns the restore function and what
+ * happened. The compiled opener reads `fs.readdirSync` from the module object at each call, so this reaches the real code.
+ */
+function publisherRemovesDuringRelease(directory, privateName) {
+  const original = fs.readdirSync;
+  const seen = { scans: 0, removedDuringRelease: false };
+  fs.readdirSync = function (path, ...rest) {
+    const listing = original.call(this, path, ...rest);
+    if (path === directory && !seen.removedDuringRelease) {
+      seen.scans += 1;
+      seen.listedPrivateName = listing.includes(privateName.slice(directory.length + 1));
+      fs.unlinkSync(privateName);
+      seen.removedDuringRelease = true;
+    }
+    return listing;
+  };
+  return { seen, restore: () => (fs.readdirSync = original) };
 }
 const sleep = (ms) => new Promise((settle) => setTimeout(settle, ms));
 
@@ -152,15 +175,17 @@ describe('FV-P4C-2B3C-2A1-RACE-INV-01 — the registration record is published c
     await sleep(50);
     reader.release();
     await reader.line((l) => l === 'released');
-    const releasedAt = Date.now();
-    const outcomes = await Promise.all(openers.map(async (o) => JSON.parse(await o.line((l) => l.startsWith('{')))));
+    // Monotonic, in this process only (TEST-HF01): a wall clock can step backwards (seen on WSL), and two processes'
+    // clocks are not compared. Each outcome is stamped when this process receives it.
+    const releasedAt = performance.now();
+    const outcomes = await Promise.all(openers.map(async (o) => ({ ...JSON.parse(await o.line((l) => l.startsWith('{'))), receivedAfterReleaseMs: Math.round(performance.now() - releasedAt) })));
     openers.forEach((o) => o.release());
     await Promise.all([reader, ...openers].map((o) => o.exited));
     assert.deepEqual(outcomes.map((o) => o.outcome).sort(), ['BUSY', 'opened'], JSON.stringify(outcomes));
     // Promptly: the losing contender released what it took at once (normal locking mode while acquiring), so the winner
     // acquired soon after the reader let go — not only after the other contender's whole wait ran out, which is how
     // two openers starting together both ran out of time and were both refused.
-    assert.ok(outcomes.find((o) => o.outcome === 'opened').at - releasedAt < 300, JSON.stringify({ releasedAt, outcomes }));
+    assert.ok(outcomes.find((o) => o.outcome === 'opened').receivedAfterReleaseMs < 300, JSON.stringify(outcomes));
   });
 
   // Timing-dependent, not strictly deterministic (publication review): it assumes the opener entered its wait within 100 ms.
@@ -201,9 +226,9 @@ describe('FV-P4C-2B3C-2A1-RACE-INV-01 — the registration record is published c
     await other.line((l) => l === 'ready');
     other.send('go\n');
     await other.line((l) => l === 'opening');
-    const startedAt = Date.now();
+    const startedAt = performance.now();
     const outcome = JSON.parse(await other.line((l) => l.startsWith('{')));
-    const waited = Date.now() - startedAt;
+    const waited = Math.round(performance.now() - startedAt);
     other.release();
     await other.exited;
     record.close();
@@ -226,6 +251,100 @@ describe('FV-P4C-2B3C-2A1-RACE-INV-01 — the registration record is published c
     const outcome = await register(second, witness);
     assert.deepEqual([outcome.outcome, existsSync(privateName), lstatSync(second.paths.record).nlink], ['registered', false, 1], JSON.stringify(outcome));
     assert.equal((await witnessRows(witness.databasePath)).filter((r) => r.state_kind === FV_DOMAIN).length, 2);
+  });
+
+  it('L1: a record seen LINKED while a live publication removes its own private name is re-checked and opened — not refused (the release found nothing to remove)', async () => {
+    const world = registrationWorld();
+    await initializedRecord(world);
+    const before = lstatSync(world.paths.record);
+    // The instant between a publication's `link` and its removal of the private name: the record has two names.
+    const privateName = `${world.paths.record}.init-${'c'.repeat(32)}`;
+    linkSync(world.paths.record, privateName);
+    assert.equal(lstatSync(world.paths.record).nlink, 2);
+    const hook = publisherRemovesDuringRelease(world.dir, privateName);
+    let outcome;
+    try {
+      const record = await openFvRegistrationRecord(world.paths.record, { organizationId: world.org, now, create: false });
+      record.close();
+      outcome = 'opened';
+    } catch (error) {
+      outcome = `${error.code}: ${error.message}`;
+    } finally {
+      hook.restore();
+    }
+    const after = lstatSync(world.paths.record);
+    // The publisher's name was listed and removed during the opener's release, before its final policy decision; the
+    // opener then re-checked the same, single-named record and opened it. (Before the fix: PATH_REFUSED (LINKED).)
+    assert.deepEqual(
+      [hook.seen.scans, hook.seen.listedPrivateName, existsSync(privateName), outcome, after.nlink, after.ino === before.ino],
+      [1, true, false, 'opened', 1, true],
+    );
+  });
+
+  it('L1: the re-check adopts nothing — a foreign second name, a private-pattern name of another file, a symlinked record, another organization’s record and a schema-less file stay refused', async () => {
+    const refusalOf = (world, organizationId = world.org) =>
+      openFvRegistrationRecord(world.paths.record, { organizationId, now, create: false }).then(
+        (record) => (record.close(), 'opened'),
+        (error) => `${error.code}${/\(([A-Z_]+)\)/.exec(error.message)?.[0] ?? ''}`,
+      );
+    const results = {};
+    // A foreign second name, while a "publisher" removes a private-pattern name of ANOTHER file during the release.
+    const foreign = registrationWorld();
+    await initializedRecord(foreign);
+    linkSync(foreign.paths.record, join(foreign.dir, 'fv-registration.sqlite.backup'));
+    const otherFile = `${foreign.paths.record}.init-${'d'.repeat(32)}`;
+    writeFileSync(otherFile, '', { mode: 0o600 });
+    const hook = publisherRemovesDuringRelease(foreign.dir, otherFile);
+    try {
+      results.foreignSecondName = await refusalOf(foreign);
+    } finally {
+      hook.restore();
+    }
+    // A private-pattern name that is another file, beside a record that has a foreign second name: not released, and
+    // that file is untouched (TEST-HF01: a name matching the pattern is never enough to remove a file).
+    const wrongInode = registrationWorld();
+    await initializedRecord(wrongInode);
+    linkSync(wrongInode.paths.record, join(wrongInode.dir, 'elsewhere'));
+    const foreignPattern = `${wrongInode.paths.record}.init-${'e'.repeat(32)}`;
+    writeFileSync(foreignPattern, 'not a publication', { mode: 0o600 });
+    const foreignBefore = lstatSync(foreignPattern);
+    results.wrongInode = await refusalOf(wrongInode);
+    results.wrongInodeFileKept = existsSync(foreignPattern) && lstatSync(foreignPattern).ino === foreignBefore.ino;
+    // Both at once: a real publication's second name (same file) and a private-pattern name of another file. Only the
+    // publication's own name is released; the record is then single-named and opens; the other file is untouched.
+    const mixed = registrationWorld();
+    await initializedRecord(mixed);
+    const ownName = `${mixed.paths.record}.init-${'a'.repeat(32)}`;
+    linkSync(mixed.paths.record, ownName);
+    const otherName = `${mixed.paths.record}.init-${'f'.repeat(32)}`;
+    writeFileSync(otherName, 'not a publication', { mode: 0o600 });
+    const otherBefore = lstatSync(otherName);
+    results.mixed = await refusalOf(mixed);
+    results.mixedReleasedOwnKeptOther = !existsSync(ownName) && existsSync(otherName) && lstatSync(otherName).ino === otherBefore.ino && lstatSync(mixed.paths.record).nlink === 1;
+    // A symlink at the record path.
+    const linked = registrationWorld();
+    await initializedRecord(linked);
+    const target = join(linked.dir, 'real.sqlite');
+    fs.renameSync(linked.paths.record, target);
+    symlinkSync(target, linked.paths.record);
+    results.symlink = await refusalOf(linked);
+    // Another organization's record, and a schema-less file.
+    const otherOrg = registrationWorld();
+    await initializedRecord(otherOrg);
+    results.otherOrganization = await refusalOf(otherOrg, `${otherOrg.org}-other`);
+    const empty = registrationWorld();
+    closeSync(openSync(empty.paths.record, 'wx', 0o600));
+    results.schemaLess = await refusalOf(empty);
+    assert.deepEqual(results, {
+      foreignSecondName: 'PATH_REFUSED(LINKED)',
+      wrongInode: 'PATH_REFUSED(LINKED)',
+      wrongInodeFileKept: true,
+      mixed: 'opened',
+      mixedReleasedOwnKeptOther: true,
+      symlink: 'PATH_REFUSED(LINKED)',
+      otherOrganization: 'CORRUPT',
+      schemaLess: 'CORRUPT',
+    });
   });
 
   it('anything else at the record path stays refused, never adopted: an empty file (RECORD_CORRUPT), a second name that is not a publication’s (PATH_REFUSED); nothing consumed, nothing anchored', async () => {
