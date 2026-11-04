@@ -7,8 +7,7 @@ import type { FederationHealth } from './federation-health.js';
 import type { FederationRegistry } from './federation-registry.js';
 import { FederationStoreError, type FederationStore } from './federation-store.js';
 import type { ConformanceProfileRegistry } from './profile.js';
-import { positivelyEligible } from './lifecycle.js';
-import { operatorEligibleAt, type ConformanceStore } from './sqlite-conformance-store.js';
+import { operatorEligibleAt, positivelyEligible, type ConformanceStore } from './sqlite-conformance-store.js';
 import type { TestingAuthorizationPurpose } from './testing-authorization.js';
 
 /**

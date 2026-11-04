@@ -789,6 +789,17 @@ export function operatorEligibleAt(events: readonly OperatorStatusEvent[], atMs:
   return kind !== null && ELIGIBLE_KINDS.includes(kind);
 }
 /**
+ * RN-CONFORM-07A: may this (authenticated, CONFORMANCE-purpose) observation support a POSITIVE decision now? Only while
+ * the authorization it was accepted under is unrevoked and unexpired at `atMs`. LEGACY (pre-/4) evidence never is.
+ */
+export function positivelyEligible(store: ConformanceStore, eventId: string, atMs: number): boolean {
+  const purpose = store.getObservationPurpose(eventId);
+  if (purpose === undefined || purpose.purpose !== 'CONFORMANCE' || purpose.authorizationId === null) return false;
+  const authorization = store.getTestingAuthorization(purpose.authorizationId);
+  return authorization !== undefined && authorization.revokedSeq === null && atMs <= authorization.notAfterMs;
+}
+
+/**
  * Re-authentication of a STORED row accepted at `acceptedAtMs`: the row was inserted only while the trigger saw an
  * eligible operator, so it passes if the operator was eligible at that instant under either order of events stamped in
  * the same millisecond (F-0), or if it predates the operator's LEGACY marker (accepted before the `/2` → `/3` migration).

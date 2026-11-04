@@ -24,7 +24,7 @@ import { authenticateStoredObservation, toAccepted } from './evidence.js';
 import { verifyTwoPersonAuthority, type HumanAuthorityDenial, type SyntheticHumanDirectory } from './human-authority.js';
 import type { ConformanceProfileDefinition, ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceClock } from './registry.js';
-import { ConformanceStoreError, type ConformanceStore, type ConsumedDecision, type EvaluationCommit, operatorEligibleAt } from './sqlite-conformance-store.js';
+import { ConformanceStoreError, type ConformanceStore, type ConsumedDecision, type EvaluationCommit, operatorEligibleAt, positivelyEligible } from './sqlite-conformance-store.js';
 import { signConformancePayload } from './signing.js';
 
 /**
@@ -114,16 +114,7 @@ export function evaluationHorizonMs(profile: ConformanceProfileDefinition): numb
  * re-authenticated from its signed submission under the acceptance contract (finding 5); rows that fail
  * are never evaluated and are counted in `unauthenticated`, which the verifier treats as tampering.
  */
-/**
- * RN-CONFORM-07A: may this (authenticated, CONFORMANCE-purpose) observation support a POSITIVE decision now? Only while
- * the authorization it was accepted under is unrevoked and unexpired at `atMs`. LEGACY (pre-/4) evidence never is.
- */
-export function positivelyEligible(store: ConformanceStore, eventId: string, atMs: number): boolean {
-  const purpose = store.getObservationPurpose(eventId);
-  if (purpose === undefined || purpose.purpose !== 'CONFORMANCE' || purpose.authorizationId === null) return false;
-  const authorization = store.getTestingAuthorization(purpose.authorizationId);
-  return authorization !== undefined && authorization.revokedSeq === null && atMs <= authorization.notAfterMs;
-}
+export { positivelyEligible } from './sqlite-conformance-store.js';
 
 export function loadEngineInput(
   store: ConformanceStore,
