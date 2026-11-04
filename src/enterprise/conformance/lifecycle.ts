@@ -24,7 +24,7 @@ import { authenticateStoredObservation, toAccepted } from './evidence.js';
 import { verifyTwoPersonAuthority, type HumanAuthorityDenial, type SyntheticHumanDirectory } from './human-authority.js';
 import type { ConformanceProfileDefinition, ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceClock } from './registry.js';
-import { ConformanceStoreError, type ConformanceStore, type ConsumedDecision, type EvaluationCommit, operatorEligibleAt } from './sqlite-conformance-store.js';
+import { ConformanceStoreError, type ConformanceStore, type ConsumedDecision, type EvaluationCommit, operatorEligibleAt, positivelyEligible } from './sqlite-conformance-store.js';
 import { signConformancePayload } from './signing.js';
 
 /**
@@ -114,6 +114,8 @@ export function evaluationHorizonMs(profile: ConformanceProfileDefinition): numb
  * re-authenticated from its signed submission under the acceptance contract (finding 5); rows that fail
  * are never evaluated and are counted in `unauthenticated`, which the verifier treats as tampering.
  */
+export { positivelyEligible } from './sqlite-conformance-store.js';
+
 export function loadEngineInput(
   store: ConformanceStore,
   profiles: ConformanceProfileRegistry,
@@ -122,7 +124,7 @@ export function loadEngineInput(
   now: string,
   coordinatorPublicKeyPem: string,
   options: { readonly maxObservations?: number } = {},
-): { loaded: LoadedCredential; input: EngineInput; unauthenticated: readonly string[] } | undefined {
+): { loaded: LoadedCredential; input: EngineInput; unauthenticated: readonly string[]; positivelyIneligible: readonly string[] } | undefined {
   const credential = store.getCredential(organizationId, credentialId);
   const head = store.getHead(organizationId, credentialId);
   if (credential === undefined || head === undefined) return undefined;
@@ -150,15 +152,32 @@ export function loadEngineInput(
     // RN-CONFORM-05 (P2-5): a validator whose operator is not eligible now contributes nothing (same withdrawal rule as a quarantine).
     else if (!operatorEligibleAt(store.listOperatorEvents(v.record.operatorId), nowMs)) excluded.add(validatorId);
   }
+  // RN-CONFORM-07A (K-1). Three predicates, never conflated:
+  //  - historical authenticity: `authenticateStoredObservation` above (a later revocation never changes it);
+  //  - protective eligibility: an authenticated CONFORMANCE-purpose observation (violations keep their protective
+  //    force — corroboration, investigation, SR-1/SR-4 — under the unchanged engine rules);
+  //  - positive eligibility: additionally, the observation's OWN authorization is, at this evaluation, unrevoked and
+  //    unexpired. A replacement authorization never re-qualifies evidence accepted under its revoked predecessor.
+  // A CANDIDATE or SUSPENDED credential is evaluated for a positive decision (issuance, reinstatement), so a conformant
+  // observation that is not positively eligible is withheld from it; violations and inconclusive observations are kept,
+  // which can only make the outcome more protective. An ACTIVE credential keeps the RN-CONFORM-07 behaviour (founder
+  // decision pending, RN_CONFORM_07_IMPLEMENTATION.md §3.1): withholding its evidence would turn withdrawn consent into an
+  // SR-2 suspension, i.e. a false protective transition.
+  const conformanceRows = rows.filter((row) => store.getObservationPurpose(row.eventId)?.purpose === 'CONFORMANCE');
+  const positiveDecision = head.state !== 'ACTIVE';
+  const positivelyIneligible = conformanceRows.filter((row) => row.outcomeClass === 'conformant' && !positivelyEligible(store, row.eventId, nowMs)).map((row) => row.eventId);
+  const withheld = new Set(positiveDecision ? positivelyIneligible : []);
+  const engineRows = conformanceRows.filter((row) => !withheld.has(row.eventId));
   return {
+    positivelyIneligible,
     loaded: { credential, head, integration: integration.record, profile: profile.definition },
     input: {
       profile: profile.definition,
       integration: { integrationDigest: credential.integrationDigest, sdk: integration.record.sdk },
       coveredOperations: credential.coveredOperations,
-      // RN-CONFORM-07 (S-1, AUTH-11): only CONFORMANCE-purpose evidence ever reaches the engine. Requalification and
-      // pre-/4 LEGACY observations stay authentic and auditable but are never counted for a credential.
-      observations: rows.filter((row) => store.getObservationPurpose(row.eventId)?.purpose === 'CONFORMANCE').map(toAccepted),
+      // RN-CONFORM-07 (S-1, AUTH-11): only CONFORMANCE-purpose evidence ever reaches the engine; RN-CONFORM-07A (K-1):
+      // for a positive decision, only positively eligible conformant evidence (see `positivelyEligible`).
+      observations: engineRows.map(toAccepted),
       excludedValidatorIds: [...excluded].sort(),
       evaluatedAt: now,
       credentialState: head.state,

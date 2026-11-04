@@ -789,6 +789,17 @@ export function operatorEligibleAt(events: readonly OperatorStatusEvent[], atMs:
   return kind !== null && ELIGIBLE_KINDS.includes(kind);
 }
 /**
+ * RN-CONFORM-07A: may this (authenticated, CONFORMANCE-purpose) observation support a POSITIVE decision now? Only while
+ * the authorization it was accepted under is unrevoked and unexpired at `atMs`. LEGACY (pre-/4) evidence never is.
+ */
+export function positivelyEligible(store: ConformanceStore, eventId: string, atMs: number): boolean {
+  const purpose = store.getObservationPurpose(eventId);
+  if (purpose === undefined || purpose.purpose !== 'CONFORMANCE' || purpose.authorizationId === null) return false;
+  const authorization = store.getTestingAuthorization(purpose.authorizationId);
+  return authorization !== undefined && authorization.revokedSeq === null && atMs <= authorization.notAfterMs;
+}
+
+/**
  * Re-authentication of a STORED row accepted at `acceptedAtMs`: the row was inserted only while the trigger saw an
  * eligible operator, so it passes if the operator was eligible at that instant under either order of events stamped in
  * the same millisecond (F-0), or if it predates the operator's LEGACY marker (accepted before the `/2` → `/3` migration).
@@ -996,6 +1007,12 @@ export interface ConformanceStore {
   /** Protective, terminal. Returns the revocation's order sequence. */
   revokeTestingAuthorization(authorizationId: string, atMs: number, reason: string): number;
   getChallengeAuthorization(challengeId: string): StoredChallengeAuthorization | undefined;
+  /**
+   * RN-CONFORM-07A: runs `fn` while holding this store's write lock (one IMMEDIATE transaction). A revocation (or any
+   * other write) either committed before `fn` runs — and `fn` sees it — or commits after `fn` returns. `fn` must not
+   * write to this store; it is used to make a decision recorded elsewhere (the federation store) linearizable.
+   */
+  underWriteLock<T>(fn: () => T): T;
   /** The unrevoked authorization of (organization, integration version, purpose) whose window reaches past `fromMs`, if any. */
   liveTestingAuthorizationId(organizationId: string, integrationDigest: string, purpose: TestingAuthorizationPurpose, fromMs: number): string | undefined;
   /** Whether some authorization already supersedes `authorizationId`. */
@@ -1529,6 +1546,27 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
           .get(organizationId, integrationDigest, purpose, fromMs) as { authorization_id: string } | undefined
       )?.authorization_id,
     isTestingAuthorizationSuperseded: (authorizationId: string) => db.prepare('SELECT 1 FROM cc_testing_authorizations WHERE supersedes = ?').get(authorizationId) !== undefined,
+    underWriteLock: <T>(fn: () => T): T => {
+      // Review 07A #3: nested, better-sqlite3 would open a SAVEPOINT and take no lock — refuse instead.
+      if (db.inTransaction) throw new ConformanceStoreError('INVARIANT_REFUSED', 'underWriteLock cannot be nested');
+      // The callback's own errors (a refused decision) pass through unchanged; only SQLite failures are mapped.
+      let failure: { readonly error: unknown } | null = null;
+      try {
+        return db
+          .transaction((): T => {
+            try {
+              return fn();
+            } catch (error) {
+              failure = { error };
+              throw error;
+            }
+          })
+          .immediate();
+      } catch (error) {
+        if (failure !== null) throw (failure as { readonly error: unknown }).error;
+        throw mapError(error);
+      }
+    },
     getChallengeAuthorization: (challengeId: string) => {
       const r = db.prepare('SELECT authorization_id, authorization_digest, purpose, issued_seq FROM cc_challenge_authorizations WHERE challenge_id = ?').get(challengeId) as
         | { authorization_id: string | null; authorization_digest: string | null; purpose: string; issued_seq: number }
