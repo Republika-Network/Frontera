@@ -159,7 +159,7 @@ export interface FederationRegistry {
   prepareTestingAuthorization(input: TestingAuthorizationInput): { readonly record: TestingAuthorization; readonly prepared: PreparedFederationAction };
   authorizeTesting(record: TestingAuthorization, decisions: readonly unknown[]): void;
   /** Protective: revokes the authoritative authorization; the scheduler and coordinator refuse it from now on. */
-  revokeTesting(authorizationId: string, reason: string): void;
+  revokeTesting(organizationId: string, authorizationId: string, reason: string): void;
 
   /** Whether `validatorId` may be assigned work now that must stay valid until `untilMs` — re-read from BOTH stores, fail closed. */
   eligibility(validatorId: string, nowMs: number, untilMs: number): GenerationEligibility;
@@ -786,10 +786,10 @@ export function createFederationRegistry(deps: {
       }
       translate(() => fed.insertAuthorization(stored.record, [], nowMs()));
     },
-    revokeTesting(authorizationId, reason) {
+    revokeTesting(organizationId, authorizationId, reason) {
       if (!isIdentifier(reason)) throw new FederationError('MALFORMED_INPUT', 'reason');
       try {
-        conformance.revokeTestingAuthorization(authorizationId, reason);
+        conformance.revokeTestingAuthorization(organizationId, authorizationId, reason);
       } catch (error) {
         if (error instanceof ConformanceRegistryError) throw new FederationError('AUTHORIZATION_INVALID', error.code);
         throw error;

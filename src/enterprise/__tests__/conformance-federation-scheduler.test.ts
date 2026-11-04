@@ -385,3 +385,22 @@ describe('RN-CONFORM-05 — restart, rollback and corruption (WP-17)', () => {
     assert.throws(() => f.restart(), (e: unknown) => e instanceof FederationStoreError && e.code === 'CORRUPT');
   });
 });
+
+describe('RN-CONFORM-07 — review #1: revocation stops redelivery', () => {
+  it('a challenge already bound to a job is not redelivered after its authorization is revoked', async () => {
+    const f = standardFederation('rn07-redelivery');
+    const r = scheduleOne(f, 'G01', 'document.open', 2, { key: 'rn07-redeliver' });
+    if (!r.scheduled) throw new Error(r.reason);
+    for (const a of r.job.assignments) f.down.add(a.validatorId);
+    await f.worker('w-rn07').process(r.job.jobId);
+    const bound = f.fed.getJob(r.job.jobId)!;
+    assert.ok(bound.challengeId !== null, 'the challenge was issued and bound');
+    f.down.clear();
+    f.c.services().registry.revokeTestingAuthorization(ORG_A, FED_AUTHORIZATION, 'consent withdrawn (test)');
+    const delivered = f.deliveries.filter((d) => d.result !== 'UNREACHABLE').length;
+    f.c.clock.advance(FEDERATION_TIMING.backoffBaseSeconds + FEDERATION_TIMING.jitterMaxSeconds + 1);
+    const out = await f.worker('w-rn07').process(r.job.jobId);
+    assert.deepEqual([out.outcome, 'detail' in out ? out.detail : null], ['CANCELLED', 'AUTHORIZATION_REVOKED']);
+    assert.equal(f.deliveries.filter((d) => d.result !== 'UNREACHABLE').length, delivered, 'nothing was delivered after revocation');
+  });
+});

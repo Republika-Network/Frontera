@@ -407,9 +407,12 @@ export function ensureTestingAuthorization(
   if (!profile.ok) return 'auth-not-available';
   authorizationCounter += 1;
   const at = deps.clock.now();
+  // One live authorization per (organization, integration version, purpose): a lapsing one is revoked and superseded.
+  const predecessor = cached?.authorizationId ?? deps.store.liveTestingAuthorizationId(organizationId, integrationDigest, purpose, now);
+  if (predecessor !== undefined) deps.registry.revokeTestingAuthorization(organizationId, predecessor, 'synthetic harness renewal');
   const { record, prepared } = deps.registry.prepareTestingAuthorization({
     authorizationId: `auth-synthetic-${authorizationCounter}`,
-    supersedes: null,
+    supersedes: predecessor ?? null,
     organizationId,
     integrationDigest,
     purpose,

@@ -49,12 +49,19 @@ digests are byte-identical. The binding is a **server-side association** (WP-07 
 | `cc_authorization_events` | one `REVOKED` row per authorization, `seq` = the order counter at commit (a backdated revocation is refused) |
 | `cc_challenge_authorizations` | one row per challenge, inserted **before** the challenge in the same IMMEDIATE transaction: authorization id, digest, purpose, `issued_seq` (or `LEGACY` for pre-`/4` challenges, writable only by the migration) |
 | `cc_observation_purposes` | written by an AFTER INSERT trigger on `cc_observations`: purpose and `accepted_seq`; cannot be forged |
-| `cc_challenges_authorized` | BEFORE INSERT on `cc_challenges`: organization, integration digest, profile, operation, challenge type, fixture, window and non-revocation must match the associated authorization; quotas (total, per hour, concurrent) and the integration-wide ceiling (10 000/hour) are counted **inside the write transaction** |
+| `cc_challenges_authorized` | BEFORE INSERT on `cc_challenges`: organization, integration digest, profile, operation, challenge type, fixture, window and non-revocation must match the associated authorization; quotas (total, per hour, concurrent) and the integration-wide ceilings (10 000/hour and 1 000 open, counted by `integration_id` across every version and authorization) are counted **inside the write transaction** |
 | `cc_observations_attributed` (replaced) | additionally refuses an observation whose challenge has no unrevoked, unexpired, non-LEGACY authorization at acceptance |
 | `cc_observations_record_violation` (replaced) | records and counts only `CONFORMANCE`-purpose violations |
 | `cc_credentials_purpose_reserved` | refuses any credential on an integration that ever had a `VALIDATOR_REQUALIFICATION` authorization |
 
 All five new tables are immutable (no UPDATE/DELETE) with duplicate guards. Open still demands the exact schema.
+
+Further store rules (independent review): at most **one live authorization** per (organization, integration version,
+purpose) — a parallel or overlapping one is refused, so scope only changes by revoke + supersede; a predecessor can
+have **one successor**; every sequence written (activation, revocation, issuance, acceptance) must be the advanced
+counter value **and exceed every sequence already used**; the insert trigger binds the columns to `record_json`, and a
+read recomputes the digest and compares every column (`CORRUPT` otherwise); revocation is **tenant-scoped** (the
+caller names the organization; another organization's authorization is `UNKNOWN_AUTHORIZATION`).
 
 ### Migration `/3` → `/4` (and `/2` → `/3` → `/4`)
 
@@ -79,13 +86,14 @@ original file; a second run is `ALREADY_CURRENT`.
 | Idempotency | a redispatch must match the request **and** the stored authorization and purpose; it returns the stored challenge and consumes no quota; a different authorization or purpose under the same key is `IDEMPOTENCY_CONFLICT`. A refused request writes nothing. |
 | Evidence (`evidence.ts`, step 5b) | independently re-verifies the association, the authorization's digest, purpose and exact scope, expiry (`AUTHORIZATION_EXPIRED`) and revocation (`AUTHORIZATION_REVOKED`); for a stored row, revocation is compared by `accepted_seq < revocation seq` (durable commit order, not milliseconds — a revocation in the same millisecond is ordered correctly). |
 | Lifecycle (`lifecycle.ts`) | engine input contains only `CONFORMANCE`-purpose observations; validator exclusion is still computed from every authenticated row. |
-| Federation | `TestingAuthorization` is now the authoritative record; `prepareTestingAuthorization`/`authorizeTesting` delegate to the conformance registry and the federation store keeps a mirror; the scheduler refuses a mirror that differs from, or whose authoritative record is revoked; `revokeTesting` revokes the authoritative record. The requalification purpose is renamed `VALIDATOR_REQUALIFICATION` (the job purpose stays `REQUALIFICATION`). A pre-RN-07 federation mirror (`/1` record) has no authoritative record and is therefore refused (fail closed). |
+| Federation | `TestingAuthorization` is now the authoritative record; `prepareTestingAuthorization`/`authorizeTesting` delegate to the conformance registry and the federation store keeps a mirror; the scheduler refuses a mirror that differs from, or whose authoritative record is revoked, and a worker cancels a job whose already-issued challenge belongs to a revoked or expired authorization instead of redelivering it; conformance scheduling (routine and follow-up planning) counts CONFORMANCE-purpose evidence only; `revokeTesting` revokes the authoritative record. The requalification purpose is renamed `VALIDATOR_REQUALIFICATION` (the job purpose stays `REQUALIFICATION`). A pre-RN-07 federation mirror (`/1` record) has no authoritative record and is therefore refused (fail closed). |
 
 **Revocation semantics (documented decision).** Revocation stops all **new** execution at once: no challenge, no
 dispatch (the scheduler refuses the authorization), no new observation for any of its challenges, even ones already
 issued. Evidence accepted **before** the revocation commit stays authentic and remains eligible evidence (revocation
 withdraws consent to test, it does not retroactively declare past observations false). Open federation jobs under a
-revoked authorization fail at dispatch or observation; they are not separately marked cancelled.
+revoked authorization are cancelled at their next dispatch or redelivery attempt (`AUTHORIZATION_REVOKED`); nothing is
+delivered to a validator after the revocation commits.
 
 ## 4. Invariants (WP-11) and where they are tested
 
@@ -109,6 +117,7 @@ revoked authorization fail at dispatch or observation; they are not separately m
 | AUTH-16 | A requalification authorization is refused on a credentialed integration | AUTH-16 |
 | AUTH-17 | Engine input is CONFORMANCE-purpose only | AUTH-17; v2 and v3 historical tests |
 | AUTH-18 | No unauthorized issuance path (request without authorization/purpose, or `LEGACY` purpose, is malformed) | AUTH-18 |
+| Review #1–#8 | Redelivery stopped on revocation; one live authorization, one successor; integration-wide ceilings by id; column/digest cross-check; tenant-scoped revocation; strictly fresh sequences | `conformance-testing-authorization.test.ts` "independent review regressions"; `conformance-federation-scheduler.test.ts` "revocation stops redelivery" |
 
 Migration: `conformance-migration-v3-historical.test.ts` on a **real `/3` file generated by the historical code**
 (main `9ddd66bd`, CI job `rn-conform-07-v3-migration`, generator `scripts/conformance/rn-conform-07-v3-fixture.mjs`):
@@ -130,4 +139,12 @@ Demonstration: `conformance-authorization-demo.test.ts`, CI job `rn-conform-07-d
 - **Quotas are admission limits**, not probe-traffic shaping at the network edge (no network code exists).
 - **Same-millisecond ordering** is solved by the order counter for revocation vs. acceptance; time-window checks still
   use the injected clock.
+- **Quota windows use each coordinator's injected clock.** Per-hour and concurrent counts compare against the
+  inserting coordinator's `issued_at`; coordinators with badly skewed clocks can each see a smaller window. A single
+  coordinator clock (or bounded skew) is an operational prerequisite.
+- **Integration-wide limits** are hourly and concurrent; the lifetime total is per authorization.
+- **Authorization ids are one global namespace** (immutable primary key); an id already used by any tenant is refused,
+  never reused. Revocation is tenant-scoped.
+- **Evidence cap.** `loadEngineInput` applies the observation cap before the purpose filter: after a migration, LEGACY
+  rows can occupy the cap and mark evidence as truncated (fail-safe direction: never more authority).
 - **AI review only.** The independent review of this PR is an AI review, not an accredited security audit.

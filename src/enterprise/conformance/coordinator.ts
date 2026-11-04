@@ -211,7 +211,7 @@ export function createChallengeCoordinator(deps: {
         }
         // Another coordinator won the race for the last quota unit, or the authorization was revoked meanwhile.
         if (error instanceof ConformanceStoreError && error.code === 'INVARIANT_REFUSED') {
-          if (/quota|rate limit/.test(error.detail)) throw new ChallengeCoordinatorError('QUOTA_EXHAUSTED');
+          if (/quota|limit/.test(error.detail)) throw new ChallengeCoordinatorError('QUOTA_EXHAUSTED');
           if (/revoked/.test(error.detail)) throw new ChallengeCoordinatorError('AUTHORIZATION_REVOKED');
           if (/authorization/.test(error.detail)) throw new ChallengeCoordinatorError('AUTHORIZATION_INVALID', 'refused by the store');
         }

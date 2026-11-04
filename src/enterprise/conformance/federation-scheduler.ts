@@ -241,7 +241,8 @@ export function createFederationScheduler(deps: {
       if (!resolved.ok) return [{ scheduled: false, reason: 'AUTHORIZATION_INVALID', availableOperators: 0 }];
       const windowMs = FEDERATION_TIMING.routineWindowSeconds * 1000;
       const windowIndex = Math.floor(at / windowMs);
-      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - windowMs, 4096);
+      // RN-CONFORM-07 (review #6): only CONFORMANCE-purpose evidence drives conformance scheduling.
+      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - windowMs, 4096).filter((o) => store.getObservationPurpose(o.eventId)?.purpose === 'CONFORMANCE');
       const results: ScheduleResult[] = [];
       for (const requirement of resolved.definition.requirements) {
         if (requirement.evaluation !== 'validator-corroborated' || requirement.challengeType === null) continue;
@@ -277,7 +278,9 @@ export function createFederationScheduler(deps: {
       const w = corroboration.windowSeconds * 1000;
       const othersToResolve = corroboration.disputeResolutionOperators - 1;
       // Look back far enough to see an unresolved violation still inside T_confirm, plus one window of evidence before it.
-      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - corroboration.investigationTimeoutSeconds * 1000 - w, 4096);
+      const recent = store
+        .listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - corroboration.investigationTimeoutSeconds * 1000 - w, 4096)
+        .filter((o) => store.getObservationPurpose(o.eventId)?.purpose === 'CONFORMANCE');
       // Only evidence the engine would count now: validators not quarantined/revoked, operators eligible (lifecycle rule).
       const counts = new Map<string, boolean>();
       const counted = (validatorId: string): boolean => {
@@ -504,6 +507,15 @@ export function createDispatchWorker(deps: {
       } else {
         signed = store.getChallenge(job.challengeId);
         if (signed === undefined) throw new FederationStoreError('INVARIANT_REFUSED', 'job challenge missing from the conformance store');
+        // RN-CONFORM-07 (review #1): a revoked or expired authorization stops redelivery of an already-issued challenge
+        // too — no validator probes the fixture after consent is withdrawn.
+        const authoritative = store.getTestingAuthorization(job.authorizationId);
+        const stop = authoritative === undefined ? 'AUTHORIZATION_INVALID' : authoritative.revokedSeq !== null ? 'AUTHORIZATION_REVOKED' : at > authoritative.notAfterMs ? 'AUTHORIZATION_EXPIRED' : null;
+        if (stop !== null) {
+          fed.commitWithLease(lease, at, { state: 'CANCELLED', lastError: stop });
+          fed.appendEvent('JOB_CANCELLED', at, 'job', jobId, { reason: stop });
+          return { jobId, outcome: 'CANCELLED', detail: stop };
+        }
       }
       const deadlineMs = toMs(signed.challenge.deadline);
       if (at > deadlineMs) {

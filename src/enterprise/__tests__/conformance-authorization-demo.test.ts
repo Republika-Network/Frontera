@@ -75,7 +75,7 @@ describe('RN-CONFORM-07 — synthetic testing-authorization demonstration (A–H
 
     // D — revocation in the same millisecond as an acceptance: ordered by the durable sequence.
     const pending = observe(c, c.validators.B, c.services().coordinator.issue(req(c, a.record.authorizationId, { assignedValidatorIds: [c.validators.B.validatorId] })));
-    c.services().registry.revokeTestingAuthorization(a.record.authorizationId, 'demo revocation');
+    c.services().registry.revokeTestingAuthorization(ORG_A, a.record.authorizationId, 'demo revocation');
     const revoked = c.services().registry.getTestingAuthorization(a.record.authorizationId)!;
     const late = submit(c, pending);
     const historicalRow = c.store.getObservation(acceptedA.accepted ? acceptedA.observation.eventId : '')!;

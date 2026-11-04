@@ -31,6 +31,8 @@ export const TESTING_AUTHORIZATION_LIMITS = Object.freeze({
 });
 /** Integration-wide admission ceiling, across all authorizations (enforced by trigger). */
 export const MAX_CHALLENGES_PER_INTEGRATION_PER_HOUR = 10_000;
+/** Integration-wide ceiling on open challenges, across all versions and authorizations (enforced by trigger). */
+export const MAX_CONCURRENT_CHALLENGES_PER_INTEGRATION = 1_000;
 
 export interface TestingAuthorizationRecord {
   readonly schema: 'rn.conformance.testing-authorization/2';

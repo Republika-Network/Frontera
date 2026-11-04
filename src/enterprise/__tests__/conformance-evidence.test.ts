@@ -213,7 +213,7 @@ describe('RN-CONFORM-02 evidence acceptance (WP-06, WP-07)', () => {
     };
     // Revoked after issuance, before submission: the observation is refused.
     const beforeRevocation = observe(d, DA, issue(d, 'G01', [DA]));
-    d.services().registry.revokeTestingAuthorization(testingAuthorizationFor(d), 'platform withdrew consent (test)');
+    d.services().registry.revokeTestingAuthorization(ORG_A, testingAuthorizationFor(d), 'platform withdrew consent (test)');
     expectD(beforeRevocation, 'AUTHORIZATION_REVOKED');
     // Expired between issuance and a delayed submission (a short authorization of its own).
     const now = d.clock.ms();

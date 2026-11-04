@@ -10,7 +10,9 @@ import { authenticateStoredObservation } from '../conformance/evidence.js';
 import { ConformanceRegistryError } from '../conformance/registry.js';
 import { ConformanceStoreError, openConformanceStore } from '../conformance/sqlite-conformance-store.js';
 import type { TestingAuthorizationPurpose } from '../conformance/testing-authorization.js';
-import { ORG_A, ORG_B, buildCircuit, cleanupAll, decide, issue, observe, submit, testingAuthorizationFor, type Circuit, type SyntheticHuman } from './conformance-support.js';
+import { RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1 } from '../conformance/profile.js';
+import { MAX_CONCURRENT_CHALLENGES_PER_INTEGRATION } from '../conformance/testing-authorization.js';
+import { ORG_A, ORG_B, buildCircuit, cleanupAll, decide, integrationInput, issue, observe, submit, testingAuthorizationFor, type Circuit, type SyntheticHuman } from './conformance-support.js';
 
 /**
  * RN-CONFORM-07 — WP-09 adversarial matrix on real SQLite: authoritative testing authorization (P2-3) and evidence
@@ -127,6 +129,7 @@ describe('RN-CONFORM-07 — AUTH-01..05: no challenge without an explicit, cover
     const future = authorize(c, { notBeforeOffset: 600 });
     future.commit();
     assert.throws(() => c.services().coordinator.issue(request(c, future.record.authorizationId)), refusedWith('AUTHORIZATION_WINDOW'));
+    c.services().registry.revokeTestingAuthorization(ORG_A, future.record.authorizationId, 'make room (test)');
     const short = authorize(c, { seconds: 30 });
     short.commit();
     assert.throws(() => c.services().coordinator.issue(request(c, short.record.authorizationId, { deadlineSeconds: 60 })), refusedWith('AUTHORIZATION_WINDOW'));
@@ -169,7 +172,7 @@ describe('RN-CONFORM-07 — AUTH-06..09: revocation and versioning, ordered dura
     assert.ok(accepted.accepted);
     const pending = observe(c, c.validators.B, issue(c, 'G01', [c.validators.B]));
     // Revocation lands in the SAME millisecond as the acceptance above: ordering is by commit sequence, not by time.
-    c.services().registry.revokeTestingAuthorization(authorizationId, 'consent withdrawn (test)');
+    c.services().registry.revokeTestingAuthorization(ORG_A, authorizationId, 'consent withdrawn (test)');
     const stored = c.services().registry.getTestingAuthorization(authorizationId)!;
     assert.ok(stored.revokedSeq !== null && stored.revokedAtMs === c.clock.ms());
     const purpose = c.store.getObservationPurpose(accepted.accepted ? accepted.observation.eventId : '')!;
@@ -181,7 +184,7 @@ describe('RN-CONFORM-07 — AUTH-06..09: revocation and versioning, ordered dura
     assert.equal(authenticateStoredObservation(c.store, c.profiles, row, c.coordinatorPublicKeyPem), null, 'historical evidence stays auditable');
     assert.throws(() => c.services().coordinator.issue(request(c, authorizationId)), refusedWith('AUTHORIZATION_REVOKED'));
     // Idempotent, terminal: a second revocation changes nothing; there is no reactivation path.
-    c.services().registry.revokeTestingAuthorization(authorizationId, 'again (test)');
+    c.services().registry.revokeTestingAuthorization(ORG_A, authorizationId, 'again (test)');
     assert.equal(c.services().registry.getTestingAuthorization(authorizationId)!.revokedSeq, stored.revokedSeq);
     c.cleanup();
   });
@@ -193,7 +196,7 @@ describe('RN-CONFORM-07 — AUTH-06..09: revocation and versioning, ordered dura
     const db = new Database(c.path);
     try {
       assert.throws(() => db.prepare("INSERT INTO cc_authorization_events (authorization_id, seq, kind, at_ms, reason) VALUES (?, 0, 'REVOKED', 0, 'backdated')").run(a.record.authorizationId), /cc:revocation order/);
-      assert.throws(() => db.prepare("INSERT INTO cc_observation_purposes (event_id, challenge_id, authorization_id, purpose, accepted_seq) VALUES ('evt-x', 'chl-x', NULL, 'CONFORMANCE', 1)").run(), /cc:observation purpose forged/);
+      assert.throws(() => db.prepare("INSERT INTO cc_observation_purposes (event_id, challenge_id, authorization_id, purpose, accepted_seq) VALUES ('evt-x', 'chl-x', NULL, 'CONFORMANCE', 1)").run(), /cc:observation purpose (order|forged)/);
     } finally {
       db.close();
     }
@@ -205,7 +208,7 @@ describe('RN-CONFORM-07 — AUTH-06..09: revocation and versioning, ordered dura
     const v1 = authorize(c);
     v1.commit();
     assert.throws(() => authorize(c, { supersedes: v1.record.authorizationId, operations: ['document.export', 'document.open'] }), registryRefused('AUTHORIZATION_SCOPE'), 'the old one must be revoked first');
-    c.services().registry.revokeTestingAuthorization(v1.record.authorizationId, 'scope change (test)');
+    c.services().registry.revokeTestingAuthorization(ORG_A, v1.record.authorizationId, 'scope change (test)');
     const v2 = authorize(c, { supersedes: v1.record.authorizationId, operations: ['document.export', 'document.open'] });
     assert.equal(v2.record.version, 2);
     // The approval binds the exact record: a widened copy fails approval, a record with altered derived fields is refused.
@@ -245,9 +248,8 @@ describe('RN-CONFORM-07 — AUTH-12..15: durable quotas', () => {
     assert.throws(() => coordinator.issue(request(c, id, { operation: 'document.export' })), refusedWith('AUTHORIZATION_INVALID'));
     assert.equal(c.store.authorizationUsage(id, c.clock.ms()).total, 1, 'a refused request consumed no quota');
     // Same idempotency key under a different authorization or purpose is a conflict, never a silent reuse.
-    const other = authorize(c);
-    other.commit();
-    assert.throws(() => coordinator.issue({ ...first, authorizationId: other.record.authorizationId }), refusedWith('IDEMPOTENCY_CONFLICT'));
+    assert.throws(() => coordinator.issue({ ...first, authorizationId: 'auth-some-other' }), refusedWith('IDEMPOTENCY_CONFLICT'));
+    assert.throws(() => coordinator.issue({ ...first, purpose: 'VALIDATOR_REQUALIFICATION' }), refusedWith('IDEMPOTENCY_CONFLICT'));
     assert.ok(coordinator.issue(request(c, id)));
     assert.throws(() => coordinator.issue(request(c, id)), refusedWith('QUOTA_EXHAUSTED'));
     c.cleanup();
@@ -262,6 +264,7 @@ describe('RN-CONFORM-07 — AUTH-12..15: durable quotas', () => {
     assert.throws(() => coordinator.issue(request(c, concurrent.record.authorizationId)), refusedWith('QUOTA_EXHAUSTED'));
     c.clock.advance(61);
     assert.ok(coordinator.issue(request(c, concurrent.record.authorizationId)), 'the first deadline passed');
+    c.services().registry.revokeTestingAuthorization(ORG_A, concurrent.record.authorizationId, 'make room (test)');
     const hourly = authorize(c, { maxChallengesPerHour: 2, seconds: 7200 });
     hourly.commit();
     assert.ok(coordinator.issue(request(c, hourly.record.authorizationId)));
@@ -352,6 +355,93 @@ describe('RN-CONFORM-07 — AUTH-18: no bypass', () => {
     const { authorizationId: _a, purpose: _p, ...legacy } = request(c, 'x');
     assert.throws(() => c.services().coordinator.issue(legacy as never), refusedWith('MALFORMED_REQUEST'));
     assert.throws(() => c.services().coordinator.issue({ ...request(c, testingAuthorizationFor(c)), purpose: 'LEGACY' as never }), refusedWith('MALFORMED_REQUEST'));
+    c.cleanup();
+  });
+});
+
+describe('RN-CONFORM-07 — independent review regressions', () => {
+  it('#2: no parallel live authorization for the same integration version and purpose; no forked successor', () => {
+    const c = buildCircuit();
+    const v1 = authorize(c);
+    v1.commit();
+    const parallel = authorize(c, { operations: ['document.export', 'document.open'] });
+    assert.throws(() => parallel.commit(), registryRefused('AUTHORIZATION_SCOPE'));
+    c.services().registry.revokeTestingAuthorization(ORG_A, v1.record.authorizationId, 'scope change (test)');
+    const v2 = authorize(c, { supersedes: v1.record.authorizationId });
+    const fork = authorize(c, { supersedes: v1.record.authorizationId, operations: ['document.export', 'document.open'] });
+    v2.commit();
+    c.services().registry.revokeTestingAuthorization(ORG_A, v2.record.authorizationId, 'again (test)');
+    assert.throws(() => fork.commit(), registryRefused('AUTHORIZATION_SCOPE'), 'a second successor of v1 is refused');
+    // The store refuses the same at the trigger, for a caller that skips the registry.
+    const db = new Database(c.path, { readonly: true });
+    try {
+      const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'cc_testing_authorizations_valid'").get() as { sql: string }).sql;
+      assert.match(sql, /overlaps a live authorization/);
+      assert.match(sql, /already superseded/);
+    } finally {
+      db.close();
+    }
+    c.cleanup();
+  });
+
+  it('#3: the integration-wide concurrency ceiling spans versions and authorizations (by integration id)', () => {
+    const c = buildCircuit();
+    const a = authorize(c, { maxConcurrentChallenges: 1000, maxChallengesPerHour: 10_000, seconds: 7200 });
+    a.commit();
+    const first = c.services().coordinator.issue(request(c, a.record.authorizationId));
+    const binding = { authorizationId: a.record.authorizationId, authorizationDigest: a.authorizationDigest, purpose: 'CONFORMANCE' as const };
+    for (let i = 1; i < MAX_CONCURRENT_CHALLENGES_PER_INTEGRATION; i += 1) c.store.insertChallenge(clone(first, `fill${i}`), binding);
+    // Version 2 of the same integration, its own fresh authorization: still refused at the integration ceiling.
+    const profile = c.profiles.resolve(RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileId, RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileVersion);
+    assert.ok(profile.ok);
+    const v2 = c.services().registry.registerIntegrationVersion(integrationInput(profile.digest, { integrationVersion: 2, deploymentDigest: `sha256:${'4'.repeat(64)}` }));
+    const now = c.clock.ms();
+    const { record, prepared } = c.services().registry.prepareTestingAuthorization({
+      authorizationId: 'auth-v2', supersedes: null, organizationId: ORG_A, integrationDigest: v2.integrationDigest, purpose: 'CONFORMANCE', fixtureRefs: [FIXTURE], operations: ['document.open'], challengeTypes: ['G01'],
+      notBefore: new Date(now).toISOString(), notAfter: new Date(now + 3_600_000).toISOString(), maxChallengesPerHour: 100, maxConcurrentChallenges: 100, maxTotalChallenges: null,
+    });
+    c.services().registry.authorizeTesting(record, [decide(c.humans.alice, 'attest', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, c.clock.now()), decide(c.humans.bob, 'approve', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, c.clock.now())]);
+    assert.throws(() => c.services().coordinator.issue(request(c, 'auth-v2', { integrationDigest: v2.integrationDigest })), refusedWith('QUOTA_EXHAUSTED'));
+    c.clock.advance(61);
+    assert.ok(c.services().coordinator.issue(request(c, 'auth-v2', { integrationDigest: v2.integrationDigest })), 'released once the open challenges close');
+    c.cleanup();
+  });
+
+  it('#4: a row whose columns or pinned digest differ from its record is CORRUPT on read', () => {
+    const c = buildCircuit();
+    const a = authorize(c);
+    a.commit();
+    const db = new Database(c.path);
+    try {
+      db.exec('DROP TRIGGER cc_testing_authorizations_no_update');
+      db.prepare('UPDATE cc_testing_authorizations SET max_concurrent = 999 WHERE authorization_id = ?').run(a.record.authorizationId);
+    } finally {
+      db.close();
+    }
+    assert.throws(() => c.store.getTestingAuthorization(a.record.authorizationId), (e: unknown) => e instanceof ConformanceStoreError && e.code === 'CORRUPT');
+    c.cleanup();
+  });
+
+  it('#5: revocation is tenant-scoped', () => {
+    const c = buildCircuit();
+    const a = authorize(c);
+    a.commit();
+    assert.throws(() => c.services().registry.revokeTestingAuthorization(ORG_B, a.record.authorizationId, 'cross-tenant (test)'), registryRefused('UNKNOWN_AUTHORIZATION'));
+    assert.equal(c.services().registry.getTestingAuthorization(a.record.authorizationId)!.revokedSeq, null);
+    c.cleanup();
+  });
+
+  it('#8: a raw revocation cannot reuse the latest sequence (it must exceed every sequence already used)', () => {
+    const c = buildCircuit();
+    const a = authorize(c);
+    a.commit();
+    assert.ok(submit(c, observe(c, c.validators.A, c.services().coordinator.issue(request(c, a.record.authorizationId)))).accepted);
+    const db = new Database(c.path);
+    try {
+      assert.throws(() => db.prepare("INSERT INTO cc_authorization_events (authorization_id, seq, kind, at_ms, reason) VALUES (?, (SELECT value FROM cc_order), 'REVOKED', 0, 'reused seq')").run(a.record.authorizationId), /cc:revocation order/);
+    } finally {
+      db.close();
+    }
     c.cleanup();
   });
 });

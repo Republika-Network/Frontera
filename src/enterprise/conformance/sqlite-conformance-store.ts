@@ -18,7 +18,7 @@ import type {
   ValidatorOperatorRecord,
 } from './contracts.js';
 import { canonicalizeConformance } from './canonical.js';
-import { MAX_CHALLENGES_PER_INTEGRATION_PER_HOUR, isTestingAuthorizationRecord, type TestingAuthorizationPurpose, type TestingAuthorizationRecord } from './testing-authorization.js';
+import { MAX_CHALLENGES_PER_INTEGRATION_PER_HOUR, MAX_CONCURRENT_CHALLENGES_PER_INTEGRATION, isTestingAuthorizationRecord, testingAuthorizationDigest, type TestingAuthorizationPurpose, type TestingAuthorizationRecord } from './testing-authorization.js';
 
 /**
  * RN-CONFORM-02 / WP-08 — the dedicated conformance store.
@@ -634,6 +634,9 @@ const ATTRIBUTED_TRIGGER_V4 = ATTRIBUTED_TRIGGER_V3.replace(
 const IMMUTABLE = (table: string) => `CREATE TRIGGER ${table}_no_update BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:immutable ${table}'); END;
 CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN SELECT RAISE(ABORT, 'cc:immutable ${table}'); END;`;
 const ORDER_NOW = `(SELECT o.value FROM cc_order o WHERE o.id = 1)`;
+/** Review #8: the highest sequence any row already carries. A new sequence must exceed it (the counter must have advanced). */
+const SEQ_USED = `(SELECT MAX(m) FROM (SELECT MAX(activated_seq) AS m FROM cc_testing_authorizations UNION ALL SELECT MAX(seq) FROM cc_authorization_events UNION ALL SELECT MAX(issued_seq) FROM cc_challenge_authorizations UNION ALL SELECT MAX(accepted_seq) FROM cc_observation_purposes))`;
+const FRESH_SEQ = (expr: string) => `(${expr} IS ${ORDER_NOW} AND ${expr} > COALESCE(${SEQ_USED}, 0))`;
 const AUTHORIZATION_SCHEMA_V4 = `
 CREATE TABLE cc_order (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -665,6 +668,11 @@ CREATE TABLE cc_testing_authorizations (
 );
 ${IMMUTABLE('cc_testing_authorizations')}
 ${duplicateGuard('cc_testing_authorizations', [['authorization_id'], ['authorization_digest']])}
+CREATE INDEX cc_testing_authorizations_subject ON cc_testing_authorizations (organization_id, integration_digest, purpose);
+CREATE INDEX cc_testing_authorizations_supersedes ON cc_testing_authorizations (supersedes);
+CREATE INDEX cc_challenge_authorizations_by_authorization ON cc_challenge_authorizations (authorization_id);
+CREATE INDEX cc_challenge_authorizations_seq ON cc_challenge_authorizations (issued_seq);
+CREATE INDEX cc_observation_purposes_seq ON cc_observation_purposes (accepted_seq);
 CREATE TABLE cc_authorization_events (
   authorization_id TEXT PRIMARY KEY REFERENCES cc_testing_authorizations (authorization_id),
   seq INTEGER NOT NULL,
@@ -696,17 +704,25 @@ ${IMMUTABLE('cc_observation_purposes')}
 ${duplicateGuard('cc_observation_purposes', [['event_id']])}
 CREATE TRIGGER cc_testing_authorizations_valid BEFORE INSERT ON cc_testing_authorizations BEGIN
   SELECT RAISE(ABORT, 'cc:authorization integration mismatch') WHERE NOT EXISTS (SELECT 1 FROM cc_integrations i WHERE i.integration_digest = NEW.integration_digest AND i.organization_id = NEW.organization_id AND i.integration_id = NEW.integration_id AND i.integration_version = NEW.integration_version);
-  SELECT RAISE(ABORT, 'cc:authorization order') WHERE NEW.activated_seq IS NOT ${ORDER_NOW};
+  SELECT RAISE(ABORT, 'cc:authorization order') WHERE NOT ${FRESH_SEQ('NEW.activated_seq')};
+  SELECT RAISE(ABORT, 'cc:authorization digest mismatch') WHERE json_extract(NEW.record_json, '$.authorizationId') IS NOT NEW.authorization_id OR json_extract(NEW.record_json, '$.organizationId') IS NOT NEW.organization_id
+    OR json_extract(NEW.record_json, '$.integrationDigest') IS NOT NEW.integration_digest OR json_extract(NEW.record_json, '$.purpose') IS NOT NEW.purpose OR json_extract(NEW.record_json, '$.version') IS NOT NEW.version
+    OR json_extract(NEW.record_json, '$.supersedes') IS NOT NEW.supersedes OR json_extract(NEW.record_json, '$.maxChallengesPerHour') IS NOT NEW.max_per_hour
+    OR json_extract(NEW.record_json, '$.maxConcurrentChallenges') IS NOT NEW.max_concurrent OR json_extract(NEW.record_json, '$.maxTotalChallenges') IS NOT NEW.max_total;
+  -- Review #2: one live authorization per (organization, integration version, purpose); a scope change supersedes it.
+  SELECT RAISE(ABORT, 'cc:authorization overlaps a live authorization') WHERE EXISTS (SELECT 1 FROM cc_testing_authorizations o WHERE o.organization_id = NEW.organization_id
+    AND o.integration_digest = NEW.integration_digest AND o.purpose = NEW.purpose AND o.not_after_ms > NEW.not_before_ms AND NOT EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = o.authorization_id));
+  SELECT RAISE(ABORT, 'cc:authorization already superseded') WHERE NEW.supersedes IS NOT NULL AND EXISTS (SELECT 1 FROM cc_testing_authorizations o WHERE o.supersedes = NEW.supersedes);
   SELECT RAISE(ABORT, 'cc:authorization version') WHERE (NEW.supersedes IS NULL AND NEW.version <> 1) OR (NEW.supersedes IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cc_testing_authorizations s WHERE s.authorization_id = NEW.supersedes AND s.organization_id = NEW.organization_id AND s.integration_id = NEW.integration_id AND s.purpose = NEW.purpose AND s.version + 1 = NEW.version AND EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = s.authorization_id)));
   SELECT RAISE(ABORT, 'cc:requalification target is credentialed') WHERE NEW.purpose = 'VALIDATOR_REQUALIFICATION' AND EXISTS (SELECT 1 FROM cc_credentials c JOIN cc_integrations i ON i.integration_digest = c.integration_digest WHERE i.integration_id = NEW.integration_id AND i.organization_id = NEW.organization_id);
   SELECT RAISE(ABORT, 'cc:authorization requires two humans') WHERE NOT ${TWO_HUMANS('testing.authorize', "'authorization:' || NEW.authorization_id", 'NEW.authorization_digest', "'authorization:' || NEW.authorization_id")};
 END;
-CREATE TRIGGER cc_authorization_events_order BEFORE INSERT ON cc_authorization_events WHEN NEW.seq IS NOT ${ORDER_NOW} BEGIN SELECT RAISE(ABORT, 'cc:revocation order'); END;
+CREATE TRIGGER cc_authorization_events_order BEFORE INSERT ON cc_authorization_events WHEN NOT ${FRESH_SEQ('NEW.seq')} BEGIN SELECT RAISE(ABORT, 'cc:revocation order'); END;
 CREATE TRIGGER cc_challenge_authorizations_valid BEFORE INSERT ON cc_challenge_authorizations BEGIN
   SELECT RAISE(ABORT, 'cc:legacy association outside migration') WHERE NEW.purpose = 'LEGACY' AND NOT EXISTS (SELECT 1 FROM cc_challenges c WHERE c.challenge_id = NEW.challenge_id);
   SELECT RAISE(ABORT, 'cc:association authorization mismatch') WHERE NEW.purpose <> 'LEGACY' AND NOT EXISTS (SELECT 1 FROM cc_testing_authorizations t WHERE t.authorization_id = NEW.authorization_id AND t.authorization_digest = NEW.authorization_digest AND t.purpose = NEW.purpose);
   SELECT RAISE(ABORT, 'cc:authorization revoked') WHERE NEW.purpose <> 'LEGACY' AND EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = NEW.authorization_id);
-  SELECT RAISE(ABORT, 'cc:association order') WHERE NEW.issued_seq IS NOT ${ORDER_NOW};
+  SELECT RAISE(ABORT, 'cc:association order') WHERE NEW.issued_seq IS NOT ${ORDER_NOW} OR (NEW.purpose <> 'LEGACY' AND NOT ${FRESH_SEQ('NEW.issued_seq')});
 END;
 CREATE TRIGGER cc_challenges_authorized BEFORE INSERT ON cc_challenges BEGIN
   SELECT RAISE(ABORT, 'cc:challenge outside its authorization') WHERE NOT EXISTS (SELECT 1 FROM cc_challenge_authorizations a JOIN cc_testing_authorizations t ON t.authorization_id = a.authorization_id
@@ -721,7 +737,11 @@ CREATE TRIGGER cc_challenges_authorized BEFORE INSERT ON cc_challenges BEGIN
       (t.max_total IS NOT NULL AND (SELECT COUNT(*) FROM cc_challenges c JOIN cc_challenge_authorizations b ON b.challenge_id = c.challenge_id WHERE b.authorization_id = t.authorization_id) >= t.max_total)
       OR (SELECT COUNT(*) FROM cc_challenges c JOIN cc_challenge_authorizations b ON b.challenge_id = c.challenge_id WHERE b.authorization_id = t.authorization_id AND c.issued_at_ms > NEW.issued_at_ms - 3600000) >= t.max_per_hour
       OR (SELECT COUNT(*) FROM cc_challenges c JOIN cc_challenge_authorizations b ON b.challenge_id = c.challenge_id WHERE b.authorization_id = t.authorization_id AND c.deadline_ms > NEW.issued_at_ms) >= t.max_concurrent));
-  SELECT RAISE(ABORT, 'cc:integration rate limit') WHERE (SELECT COUNT(*) FROM cc_challenges c WHERE c.integration_digest = NEW.integration_digest AND c.issued_at_ms > NEW.issued_at_ms - 3600000) >= ${MAX_CHALLENGES_PER_INTEGRATION_PER_HOUR};
+  -- Review #3: integration-wide ceilings across every version and authorization of the integration (by integration_id).
+  SELECT RAISE(ABORT, 'cc:integration rate limit') WHERE (SELECT COUNT(*) FROM cc_challenges c JOIN cc_integrations i ON i.integration_digest = c.integration_digest
+    WHERE i.integration_id = (SELECT n.integration_id FROM cc_integrations n WHERE n.integration_digest = NEW.integration_digest) AND i.organization_id = NEW.organization_id AND c.issued_at_ms > NEW.issued_at_ms - 3600000) >= ${MAX_CHALLENGES_PER_INTEGRATION_PER_HOUR};
+  SELECT RAISE(ABORT, 'cc:integration concurrency limit') WHERE (SELECT COUNT(*) FROM cc_challenges c JOIN cc_integrations i ON i.integration_digest = c.integration_digest
+    WHERE i.integration_id = (SELECT n.integration_id FROM cc_integrations n WHERE n.integration_digest = NEW.integration_digest) AND i.organization_id = NEW.organization_id AND c.deadline_ms > NEW.issued_at_ms) >= ${MAX_CONCURRENT_CHALLENGES_PER_INTEGRATION};
 END;
 CREATE TRIGGER cc_observations_purpose AFTER INSERT ON cc_observations BEGIN
   UPDATE cc_order SET value = value + 1 WHERE id = 1;
@@ -730,6 +750,7 @@ CREATE TRIGGER cc_observations_purpose AFTER INSERT ON cc_observations BEGIN
   SELECT RAISE(ABORT, 'cc:observation purpose not recorded') WHERE NOT EXISTS (SELECT 1 FROM cc_observation_purposes p WHERE p.event_id = NEW.event_id);
 END;
 CREATE TRIGGER cc_observation_purposes_bound BEFORE INSERT ON cc_observation_purposes BEGIN
+  SELECT RAISE(ABORT, 'cc:observation purpose order') WHERE NEW.purpose <> 'LEGACY' AND NOT ${FRESH_SEQ('NEW.accepted_seq')};
   SELECT RAISE(ABORT, 'cc:observation purpose forged') WHERE NOT EXISTS (SELECT 1 FROM cc_observations o JOIN cc_challenge_authorizations a ON a.challenge_id = o.challenge_id
     WHERE o.event_id = NEW.event_id AND o.challenge_id = NEW.challenge_id AND a.purpose = NEW.purpose AND a.authorization_id IS NEW.authorization_id);
 END;
@@ -975,6 +996,10 @@ export interface ConformanceStore {
   /** Protective, terminal. Returns the revocation's order sequence. */
   revokeTestingAuthorization(authorizationId: string, atMs: number, reason: string): number;
   getChallengeAuthorization(challengeId: string): StoredChallengeAuthorization | undefined;
+  /** The unrevoked authorization of (organization, integration version, purpose) whose window reaches past `fromMs`, if any. */
+  liveTestingAuthorizationId(organizationId: string, integrationDigest: string, purpose: TestingAuthorizationPurpose, fromMs: number): string | undefined;
+  /** Whether some authorization already supersedes `authorizationId`. */
+  isTestingAuthorizationSuperseded(authorizationId: string): boolean;
   getObservationPurpose(eventId: string): StoredObservationPurpose | undefined;
   /** Challenges admitted under one authorization: total, issued in the hour before `atMs`, and still open at `atMs`. */
   authorizationUsage(authorizationId: string, atMs: number): { readonly total: number; readonly lastHour: number; readonly open: number };
@@ -1466,7 +1491,14 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
       } catch {
         throw new ConformanceStoreError('CORRUPT', 'testing authorization is not JSON');
       }
-      if (!isTestingAuthorizationRecord(record) || canonicalizeConformance(record) !== row['record_json'] || record.authorizationId !== authorizationId || record.purpose !== row['purpose'] || record.integrationDigest !== row['integration_digest'] || Date.parse(record.notAfter) !== row['not_after_ms']) {
+      // Review #4: every column must equal the record, and the pinned digest must be the record's digest.
+      if (
+        !isTestingAuthorizationRecord(record) || canonicalizeConformance(record) !== row['record_json'] || testingAuthorizationDigest(record) !== row['authorization_digest'] ||
+        record.authorizationId !== authorizationId || record.version !== row['version'] || record.supersedes !== row['supersedes'] || record.organizationId !== row['organization_id'] ||
+        record.integrationId !== row['integration_id'] || record.integrationVersion !== row['integration_version'] || record.integrationDigest !== row['integration_digest'] ||
+        record.purpose !== row['purpose'] || record.environment !== row['environment'] || Date.parse(record.notBefore) !== row['not_before_ms'] || Date.parse(record.notAfter) !== row['not_after_ms'] ||
+        record.maxChallengesPerHour !== row['max_per_hour'] || record.maxConcurrentChallenges !== row['max_concurrent'] || record.maxTotalChallenges !== row['max_total']
+      ) {
         throw new ConformanceStoreError('CORRUPT', 'testing authorization row differs from its record');
       }
       return Object.freeze({
@@ -1488,6 +1520,15 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
           return seq;
         }).immediate(),
       ),
+    liveTestingAuthorizationId: (organizationId: string, integrationDigest: string, purpose: TestingAuthorizationPurpose, fromMs: number) =>
+      (
+        db
+          .prepare(
+            'SELECT authorization_id FROM cc_testing_authorizations o WHERE organization_id = ? AND integration_digest = ? AND purpose = ? AND not_after_ms > ? AND NOT EXISTS (SELECT 1 FROM cc_authorization_events r WHERE r.authorization_id = o.authorization_id) ORDER BY activated_seq LIMIT 1',
+          )
+          .get(organizationId, integrationDigest, purpose, fromMs) as { authorization_id: string } | undefined
+      )?.authorization_id,
+    isTestingAuthorizationSuperseded: (authorizationId: string) => db.prepare('SELECT 1 FROM cc_testing_authorizations WHERE supersedes = ?').get(authorizationId) !== undefined,
     getChallengeAuthorization: (challengeId: string) => {
       const r = db.prepare('SELECT authorization_id, authorization_digest, purpose, issued_seq FROM cc_challenge_authorizations WHERE challenge_id = ?').get(challengeId) as
         | { authorization_id: string | null; authorization_digest: string | null; purpose: string; issued_seq: number }

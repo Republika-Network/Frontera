@@ -163,7 +163,7 @@ export interface ConformanceRegistry {
   /** PROPOSED → ACTIVE: two-person `testing.authorize`, consumed in the store (trigger-checked). */
   authorizeTesting(record: TestingAuthorizationRecord, decisions: readonly unknown[]): StoredTestingAuthorization;
   /** Protective, terminal, idempotent: no new challenge or observation from the committed revocation onward. */
-  revokeTestingAuthorization(authorizationId: string, reason: string): void;
+  revokeTestingAuthorization(organizationId: string, authorizationId: string, reason: string): void;
   getTestingAuthorization(authorizationId: string): StoredTestingAuthorization | undefined;
 }
 
@@ -475,6 +475,11 @@ export function createConformanceRegistry(deps: {
       if (again.authorizationDigest !== testingAuthorizationDigest(record)) throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', 'the record is not the prepared record');
       const authority = verifyTwoPersonAuthority(humans, decisions, { ...again.prepared, now: clock.now() }, store.isDecisionConsumed);
       if (!authority.authorized) throw new ConformanceRegistryError('APPROVAL_REFUSED', authority.denial);
+      // Review #2: one live authorization per (organization, integration version, purpose); scope changes supersede.
+      if (store.getTestingAuthorization(record.authorizationId) !== undefined) throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', 'authorization id already used');
+      const live = store.liveTestingAuthorizationId(record.organizationId, record.integrationDigest, record.purpose, toMs(record.notBefore));
+      if (live !== undefined) throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', `live authorization ${live} must be revoked and superseded`);
+      if (record.supersedes !== null && store.isTestingAuthorizationSuperseded(record.supersedes)) throw new ConformanceRegistryError('AUTHORIZATION_SCOPE', 'the predecessor already has a successor');
       const consumed: ConsumedDecision[] = authority.refs.map((ref, index) => ({ ref, signed: authority.signed[index]!, action: 'testing.authorize', organizationId: again.prepared.organizationId, subjectRef: again.prepared.subjectRef }));
       try {
         store.insertTestingAuthorization(again.record, again.authorizationDigest, consumed, clock.now());
@@ -483,9 +488,10 @@ export function createConformanceRegistry(deps: {
       }
       return store.getTestingAuthorization(record.authorizationId) as StoredTestingAuthorization;
     },
-    revokeTestingAuthorization(authorizationId: string, reason: string) {
+    revokeTestingAuthorization(organizationId: string, authorizationId: string, reason: string) {
       const current = store.getTestingAuthorization(authorizationId);
-      if (current === undefined) throw new ConformanceRegistryError('UNKNOWN_AUTHORIZATION');
+      // Review #5: tenant-scoped — another organization's authorization is indistinguishable from an unknown one.
+      if (current === undefined || current.record.organizationId !== organizationId) throw new ConformanceRegistryError('UNKNOWN_AUTHORIZATION');
       if (typeof reason !== 'string' || reason.length === 0 || reason.length > 200) throw new ConformanceRegistryError('MALFORMED_INPUT', 'reason');
       if (current.revokedSeq !== null) return;
       try {
