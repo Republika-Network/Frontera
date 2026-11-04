@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import { RN_SV_FRAMEWORK_V0_1 } from '../assurance/frameworks/rn-sv-framework.js';
 import { computeDigest } from '../governance-store/digest.js';
@@ -27,8 +27,18 @@ const moduleFiles = walk(MODULE);
 const conformanceTests = readdirSync(join(ROOT, 'src', 'enterprise', '__tests__')).filter((f) => f.startsWith('conformance-')).map((f) => join(ROOT, 'src', 'enterprise', '__tests__', f));
 /** Static `… from '…';` lines and dynamic `import('…')`. Anchored to line ends so SQL text inside template strings is not mistaken for an import. */
 const importsOf = (text: string) => [...text.matchAll(/\bfrom\s+'([^']+)';\s*$/gm), ...text.matchAll(/\bimport\s*\(\s*'([^']+)'\s*\)/g), ...text.matchAll(/^import\s+'([^']+)';\s*$/gm)].map((m) => m[1]!);
-/** A specifier that resolves into src/enterprise/conformance/ (and not, e.g., payment-runtime/tests/conformance/). */
-const intoModule = (fromFile: string, specifier: string) => specifier.startsWith('.') && join(fromFile, '..', specifier).startsWith(MODULE);
+/**
+ * Whether `path` is `dir` or lies inside it — a directory boundary, not a string prefix: `src/enterprise/conformance-x/`
+ * is **not** inside `src/enterprise/conformance/` (RN-CONFORM-03 Gate A hardening).
+ */
+const within = (path: string, dir: string) => path === dir || path.startsWith(dir + sep);
+/** A specifier that resolves into src/enterprise/conformance/ (and not, e.g., payment-runtime/tests/conformance/ or a sibling conformance-* directory). */
+const intoModule = (fromFile: string, specifier: string) => specifier.startsWith('.') && within(join(fromFile, '..', specifier), MODULE);
+// RN-CONFORM-03: the one exception to "imported by nothing" — its loopback-only, disabled-by-default test listener and that
+// listener's own test. Named exactly; no other directory or file inherits it.
+const LOCAL_LISTENER = join(ROOT, 'src', 'enterprise', 'conformance-status-local');
+const LISTENER_TEST = join(ROOT, 'src', 'enterprise', '__tests__', 'rn-conform-03-local-status-server.test.ts');
+const exemptImporter = (f: string) => within(f, MODULE) || conformanceTests.includes(f) || within(f, LOCAL_LISTENER) || f === LISTENER_TEST;
 
 describe('RN-CONFORM-02 scope and isolation', () => {
   it('the module exists and imports only node:crypto/fs/path, better-sqlite3, itself and CORE-02 authority-authenticity', () => {
@@ -50,16 +60,31 @@ describe('RN-CONFORM-02 scope and isolation', () => {
   });
 
   it('is imported by nothing outside its own module and tests: no Host composition, no public export', () => {
-    // RN-CONFORM-03: the one exception is its loopback-only, disabled-by-default test listener (and that listener's own test),
-    // which carries the read-only status binding and is itself imported by nothing (rn-conform-03-local-status-server.test.ts).
-    const LOCAL_LISTENER = join(ROOT, 'src', 'enterprise', 'conformance-status-local');
-    const LISTENER_TEST = join(ROOT, 'src', 'enterprise', '__tests__', 'rn-conform-03-local-status-server.test.ts');
     const offenders = walk(join(ROOT, 'src'))
-      .filter((f) => !f.startsWith(MODULE) && !conformanceTests.includes(f) && !f.startsWith(LOCAL_LISTENER) && f !== LISTENER_TEST)
+      .filter((f) => !exemptImporter(f))
       .filter((f) => importsOf(read(f)).some((s) => intoModule(f, s)));
     assert.deepEqual(offenders.map((f) => relative(ROOT, f)), []);
     const pkg = JSON.parse(read(join(ROOT, 'package.json'))) as { exports: Record<string, unknown> };
     assert.ok(!JSON.stringify(pkg.exports).includes('conformance/'));
+  });
+
+  it('the module boundary is a directory boundary: a sibling conformance-* directory neither counts as the module nor inherits the listener exemption', () => {
+    const sibling = join(ROOT, 'src', 'enterprise', 'conformance-unauthorized', 'host-wiring.ts');
+    const lookalike = join(ROOT, 'src', 'enterprise', 'conformance-status-local-extra', 'server.ts');
+    for (const f of [sibling, lookalike]) {
+      assert.equal(within(f, MODULE), false, f);
+      assert.equal(exemptImporter(f), false, `${f} must not be exempt`);
+      // Such a file importing the core would be an offender.
+      assert.equal(intoModule(f, '../conformance/engine.js'), true);
+    }
+    // Importing a sibling directory is not importing the core (no false positives either way).
+    assert.equal(intoModule(join(ROOT, 'src', 'enterprise', 'host', 'x.ts'), '../conformance-unauthorized/a.js'), false);
+    // The real module and the one named listener are recognized exactly.
+    assert.equal(within(join(MODULE, 'engine.ts'), MODULE), true);
+    assert.equal(exemptImporter(join(LOCAL_LISTENER, 'server.ts')), true);
+    assert.equal(exemptImporter(LISTENER_TEST), true);
+    // The network scan covers exactly the module directory (never a sibling), and found the module's files.
+    assert.ok(moduleFiles.length >= 10 && moduleFiles.every((f) => within(f, MODULE)));
   });
 
   it('never imports or writes Assurance persistence', () => {
