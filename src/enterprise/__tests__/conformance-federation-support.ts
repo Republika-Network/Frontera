@@ -2,7 +2,8 @@ import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { join } from 'node:path';
 
 import type { ChallengeType, ObservedOutcome, SignedHumanDecision } from '../conformance/contracts.js';
-import { createChallengeCoordinator } from '../conformance/coordinator.js';
+import { createChallengeCoordinator, secureRandomSource } from '../conformance/coordinator.js';
+import { CONFORMANCE_NETWORK_ORGANIZATION } from '../conformance/registry.js';
 import { generationIdentity, type EnrollmentRequestKind, type JobAssignment, type ValidatorCapabilities } from '../conformance/federation-contracts.js';
 import { createFederationHealth, type FederationHealth } from '../conformance/federation-health.js';
 import { createFederationRegistry, type FederationRegistry, type PreparedFederationAction } from '../conformance/federation-registry.js';
@@ -23,7 +24,7 @@ import { RN_CONFORMANCE_DOCUMENT_USE_REFERENCE_PROFILE_V0_1 } from '../conforman
 import { deriveConformanceKeyId, publicKeyPemOf, signConformancePayload } from '../conformance/signing.js';
 import { ORG_A, decide, deterministicRandom, enrollmentDecisions, testKey } from './conformance-support.js';
 import { REFERENCE_DEPLOYMENT_DIGEST, REFERENCE_FIXTURE_REF, runReferenceProbe, type ReferenceChallengeType } from './conformance-reference-pep.js';
-import { REFERENCE_CHALLENGES, buildReferenceCircuit, referenceApprovals, type ReferenceCircuit } from './conformance-reference-support.js';
+import { REFERENCE_CHALLENGES, buildReferenceCircuit, referenceApprovals, referenceIntegrationInput, type ReferenceCircuit } from './conformance-reference-support.js';
 
 /**
  * RN-CONFORM-05 — the synthetic federation around the RN-CONFORM-04 reference circuit. TEST CODE ONLY.
@@ -36,6 +37,9 @@ import { REFERENCE_CHALLENGES, buildReferenceCircuit, referenceApprovals, type R
 
 export const FED_OPERATORS = Object.freeze({ A: 'op-fed-a', B: 'op-fed-b', C: 'op-fed-c', D: 'op-fed-d' });
 export const FED_AUTHORIZATION = 'auth-reference-pep-synthetic-1';
+/** Probation target for reinstating validators: the network's own fixture integration, which has no credential (review P1-2). */
+export const FED_REQUALIFICATION_AUTHORIZATION = 'auth-requalification-fixture-1';
+export const REQUALIFICATION_INTEGRATION_ID = 'integration-requalification-fixture';
 
 export const fullCapabilities = (): ValidatorCapabilities => ({
   challengeTypes: [...REFERENCE_CHALLENGES].sort(),
@@ -61,6 +65,8 @@ export interface FederatedValidator {
 
 export interface Federation {
   readonly c: ReferenceCircuit;
+  /** The credential-free requalification fixture integration, owned by the validator network organization. */
+  readonly requalification: { readonly organizationId: string; readonly integrationDigest: string };
   fed: FederationStore;
   readonly fedPath: string;
   registry: FederationRegistry;
@@ -117,13 +123,17 @@ export function runtimeFor(f: Federation, v: { validatorId: string; operatorId: 
     outbox,
     policy: {
       trustedCoordinatorPublicKeyPems: [f.c.coordinatorPublicKeyPem],
-      authorizedTargets: [{ organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, deploymentDigest: REFERENCE_DEPLOYMENT_DIGEST, fixtureRefs: options.fixtureRefs ?? [REFERENCE_FIXTURE_REF] }],
+      authorizedTargets: [
+        { organizationId: ORG_A, integrationDigest: f.c.integration.integrationDigest, deploymentDigest: REFERENCE_DEPLOYMENT_DIGEST, fixtureRefs: options.fixtureRefs ?? [REFERENCE_FIXTURE_REF] },
+        { organizationId: CONFORMANCE_NETWORK_ORGANIZATION, integrationDigest: f.requalification.integrationDigest, deploymentDigest: REFERENCE_DEPLOYMENT_DIGEST, fixtureRefs: options.fixtureRefs ?? [REFERENCE_FIXTURE_REF] },
+      ],
       capabilities: fullCapabilities(),
       environment: options.environment ?? 'synthetic',
       clockSkewMs: 5_000,
     },
     clock: f.c.clock,
-    random: deterministicRandom(`runtime:${cvid}`),
+    // The runtime's event ids must be unpredictable (review P2-4): the OS CSPRNG, as in production.
+    random: secureRandomSource,
   });
   return { runtime, outbox };
 }
@@ -153,7 +163,13 @@ export function buildFederation(options: { readonly seed?: string; readonly oper
       return 'DELIVERED';
     },
   };
-  const f = { c, fedPath, validators, down, deliveries, transport } as unknown as Federation;
+  const { registry: conformanceRegistry } = c.services();
+  conformanceRegistry.registerPlatform({ platformId: 'platform-synthetic-requalification', organizationId: CONFORMANCE_NETWORK_ORGANIZATION, displayName: 'Synthetic requalification fixture (validator network)' });
+  const requalificationIntegration = conformanceRegistry.registerIntegrationVersion(
+    referenceIntegrationInput(c.profileDigest, { integrationId: REQUALIFICATION_INTEGRATION_ID, platformId: 'platform-synthetic-requalification', organizationId: CONFORMANCE_NETWORK_ORGANIZATION }),
+  );
+  const requalification = { organizationId: CONFORMANCE_NETWORK_ORGANIZATION, integrationDigest: requalificationIntegration.integrationDigest };
+  const f = { c, requalification, fedPath, validators, down, deliveries, transport } as unknown as Federation;
   const wire = (fed: FederationStore) => {
     const registry = createFederationRegistry({ fed, store: c.store, conformance: c.services().registry, profiles: c.profiles, humans: c.humansDirectory, clock: c.clock, random, ...(options.faults === undefined ? {} : { faults: options.faults }) });
     const health = createFederationHealth({ fed, store: c.store, registry, clock: c.clock, random });
@@ -190,6 +206,7 @@ export function buildFederation(options: { readonly seed?: string; readonly oper
   };
   for (const operatorId of options.operators ?? [FED_OPERATORS.A, FED_OPERATORS.B, FED_OPERATORS.C]) onboardOperator(f, operatorId);
   authorizeReferenceTesting(f);
+  authorizeRequalificationTesting(f);
   return f;
 }
 
@@ -207,11 +224,35 @@ export function authorizeReferenceTesting(f: Federation, authorizationId = FED_A
     authorizationId,
     organizationId: ORG_A,
     integrationDigest: f.c.integration.integrationDigest,
+    purpose: 'CONFORMANCE',
     fixtureRefs: [REFERENCE_FIXTURE_REF],
     notBefore: new Date(now).toISOString(),
     notAfter: new Date(now + days * 86_400_000).toISOString(),
   });
   f.registry.authorizeTesting(record, fedDecisions(f, prepared, f.c.humans.alice, f.c.humans.bob));
+}
+
+/** Two network humans authorize probation challenges against the credential-free requalification fixture. */
+export function authorizeRequalificationTesting(f: Federation): void {
+  const now = f.c.clock.ms();
+  const { record, prepared } = f.registry.prepareTestingAuthorization({
+    authorizationId: FED_REQUALIFICATION_AUTHORIZATION,
+    organizationId: f.requalification.organizationId,
+    integrationDigest: f.requalification.integrationDigest,
+    purpose: 'REQUALIFICATION',
+    fixtureRefs: [REFERENCE_FIXTURE_REF],
+    notBefore: new Date(now).toISOString(),
+    notAfter: new Date(now + 30 * 86_400_000).toISOString(),
+  });
+  f.registry.authorizeTesting(record, fedDecisions(f, prepared));
+}
+
+/** Schedules, runs and returns the requalification job of a reinstating generation. */
+export async function requalify(f: Federation, validatorId: string, generation: number): Promise<string> {
+  const r = f.scheduler.scheduleRequalification({ validatorId, generation, authorizationId: FED_REQUALIFICATION_AUTHORIZATION, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF });
+  if (!r.scheduled) throw new Error(`requalification not scheduled: ${r.reason}`);
+  await drain(f);
+  return r.job.jobId;
 }
 
 const keyWindow = (f: Federation, days = 365) => ({ keyValidFrom: f.c.clock.now(), keyValidUntil: new Date(f.c.clock.ms() + days * 86_400_000).toISOString() });

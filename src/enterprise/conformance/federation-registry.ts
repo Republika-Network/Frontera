@@ -146,8 +146,8 @@ export interface FederationRegistry {
   prepareValidatorAction(validatorId: string, kind: 'reinstate' | 'revoke'): PreparedFederationAction;
   /** Protective, no humans. Quarantines every non-revoked generation in the conformance store, then the validator. */
   quarantineValidator(validatorId: string, reason: string): void;
-  /** Ends a REINSTATE: the new generation passed its requalification challenge (checked by the caller against the engine's evidence). */
-  completeReinstatement(validatorId: string, generation: number, evidence: { readonly passed: boolean; readonly detail: string }): void;
+  /** Ends a REINSTATE once the generation's COMPLETED requalification job shows it agreeing with a reference operator (derived, never asserted). */
+  completeReinstatement(validatorId: string, generation: number, requalificationJobId: string): void;
   /** Two humans, `validator.revoke`. Terminal; every generation's key is revoked in the conformance store. */
   revokeValidator(validatorId: string, decisions: readonly unknown[]): void;
   /** Protective, no humans: one generation's key is revoked (compromise). */
@@ -302,6 +302,45 @@ export function createFederationRegistry(deps: {
     }
   };
 
+  /** Generations not superseded by a later REINSTATE generation (those were resolved by the two-person release). */
+  const currentGenerations = (validatorId: string): readonly GenerationRow[] => {
+    const all = fed.listGenerations(validatorId);
+    const floor = all.filter((g) => g.enrollmentKind === 'REINSTATE').reduce((m, g) => Math.max(m, g.generation), 0);
+    return all.filter((g) => g.generation >= floor);
+  };
+  /** Review P1-1: a quarantine recorded in the conformance store for a current generation, whatever the federation says. */
+  const quarantinedInConformance = (validatorId: string): boolean =>
+    currentGenerations(validatorId).some((g) => {
+      const stored = store.getValidator(g.conformanceValidatorId);
+      return stored !== undefined && stored.quarantinedAtMs !== null;
+    });
+  /**
+   * Moves one validator's federation view towards the conformance store, never the other way. Quarantine and key
+   * revocation are evaluated independently, for every generation state (a RETIRED or REVOKED generation that was
+   * quarantined still quarantines its validator — review P1-1).
+   */
+  const syncValidator = (validatorId: string, at: number): string[] => {
+    const changed: string[] = [];
+    for (const g of fed.listGenerations(validatorId)) {
+      const stored = store.getValidator(g.conformanceValidatorId);
+      if (stored === undefined) continue;
+      if (stored.keyRevokedAtMs !== null && fed.generationState(g.validatorId, g.generation)?.state !== 'REVOKED') {
+        fed.appendGenerationState(g.validatorId, g.generation, 'REVOKED', at, 'CONFORMANCE_STORE_KEY_REVOKED');
+        event('REGISTRY_DIVERGENCE', at, 'validator', validatorId, { generation: g.generation, conformance: 'KEY_REVOKED' });
+        changed.push(g.conformanceValidatorId);
+      }
+    }
+    const state = validatorStateOf(validatorId);
+    if ((state === 'ACTIVE' || state === 'ENROLLED') && quarantinedInConformance(validatorId)) {
+      // Typically evidence acceptance's automatic VALIDATOR_CONFLICT quarantine: the whole validator follows it.
+      const hit = currentGenerations(validatorId).filter((g) => (store.getValidator(g.conformanceValidatorId)?.quarantinedAtMs ?? null) !== null);
+      for (const g of hit) event('REGISTRY_DIVERGENCE', at, 'validator', validatorId, { generation: g.generation, conformance: 'QUARANTINED' });
+      quarantineValidatorInternal(validatorId, 'CONFORMANCE_STORE_QUARANTINE', at);
+      for (const g of hit) if (!changed.includes(g.conformanceValidatorId)) changed.push(g.conformanceValidatorId);
+    }
+    return changed;
+  };
+
   const registry: FederationRegistry = {
     registerOperator(input) {
       const read = readClosed(input, ['operatorId', 'operatorClass', 'administrativeOwnerRef']);
@@ -309,6 +348,9 @@ export function createFederationRegistry(deps: {
       const at = nowMs();
       const existing = fed.getOperator(input.operatorId);
       if (existing !== undefined) throw new FederationError('DUPLICATE_OPERATOR', input.operatorId);
+      // Review P2-5: an operator id that already exists in the conformance store (with validators enrolled outside the
+      // federation) is never adopted: the federation would otherwise inherit votes it does not govern.
+      if (store.getOperator(input.operatorId) !== undefined) throw new FederationError('DUPLICATE_OPERATOR', `${input.operatorId} already exists in the conformance store`);
       const record: FederationOperatorRecord = Object.freeze({
         schema: 'rn.conformance.federation-operator/1',
         operatorId: input.operatorId,
@@ -338,6 +380,7 @@ export function createFederationRegistry(deps: {
       const consumed = authorize(prepared, decisions);
       const at = nowMs();
       // The conformance store gets the operator only after approval: before it, no validator can be enrolled under it.
+      if (store.getOperator(operatorId) !== undefined) throw new FederationError('DUPLICATE_OPERATOR', `${operatorId} already exists in the conformance store`);
       conformance.registerSyntheticOperator(operatorId);
       translate(() => fed.appendOperatorState(operatorId, 'APPROVED', at, 'TWO_PERSON_APPROVAL', consumed));
       event('OPERATOR_APPROVED', at, 'operator', operatorId, { approvers: consumed.length });
@@ -422,6 +465,9 @@ export function createFederationRegistry(deps: {
         throw new FederationError('KEY_NOT_PUBLIC');
       }
       if (fed.getGenerationByKeyId(keyId) !== undefined || store.getValidatorByKeyId(keyId) !== undefined) throw new FederationError('KEY_REUSED');
+      // Review P1-1: mirror the conformance store's protective events before deciding anything about this validator.
+      syncValidator(input.validatorId, nowMs());
+      if (input.kind !== 'REINSTATE' && quarantinedInConformance(input.validatorId)) throw new FederationError('VALIDATOR_NOT_ELIGIBLE', 'a generation of this validator is quarantined');
       const vState = validatorStateOf(input.validatorId);
       const opState = operatorStateOf(validator.operatorId);
       const generations = fed.listGenerations(input.validatorId);
@@ -515,61 +561,76 @@ export function createFederationRegistry(deps: {
       }
       const validator = fed.getValidator(request.validatorId);
       if (validator === undefined || validator.operatorId !== request.operatorId) throw new FederationError('ENROLLMENT_MISMATCH', 'operator binding');
-      const existing = fed.listGenerations(request.validatorId).find((g) => g.generation === request.generation);
-      if (existing !== undefined) return existing;
-      // Re-check the lifecycle at completion (it may have changed since the request).
+      // Review P1-1: the conformance store's protective events are read first, so an automatic quarantine that the
+      // federation has not mirrored yet still blocks a rotation (or any enrollment) of this validator.
+      syncValidator(request.validatorId, nowMs());
+      if (request.kind !== 'REINSTATE' && quarantinedInConformance(request.validatorId)) throw new FederationError('VALIDATOR_NOT_ELIGIBLE', 'a generation of this validator is quarantined');
       const vState = validatorStateOf(request.validatorId);
       const opState = operatorStateOf(request.operatorId);
       const stillAllowed =
         (request.kind === 'ENROLL' && vState === 'ENROLLED' && (opState === 'APPROVED' || opState === 'ACTIVE')) ||
         (request.kind === 'ROTATE' && vState === 'ACTIVE' && opState === 'ACTIVE') ||
         (request.kind === 'REINSTATE' && vState === 'QUARANTINED' && opState === 'ACTIVE');
-      if (!stillAllowed) throw new FederationError('VALIDATOR_NOT_ELIGIBLE', `${request.kind} with validator ${vState ?? '?'} / operator ${opState ?? '?'}`);
-      let reinstateConsumed: FederationConsumedDecision[] = [];
-      if (request.kind === 'REINSTATE') reinstateConsumed = authorize(prepareValidatorAction(request.validatorId, 'reinstate'), reinstateDecisions ?? []);
+      let row = fed.listGenerations(request.validatorId).find((g) => g.generation === request.generation);
+      if (row !== undefined) {
+        // A retry: the intent row exists. Done or no longer pending → nothing to complete.
+        if (row.keyId !== request.keyId) throw new FederationError('ENROLLMENT_MISMATCH', 'generation intent');
+        if (fed.generationState(row.validatorId, row.generation)?.state !== 'PENDING' || (request.kind === 'REINSTATE' && store.getValidator(cvid) !== undefined)) return row;
+        if (!stillAllowed) throw new FederationError('VALIDATOR_NOT_ELIGIBLE', `${request.kind} with validator ${vState ?? '?'} / operator ${opState ?? '?'}`);
+      } else {
+        if (!stillAllowed) throw new FederationError('VALIDATOR_NOT_ELIGIBLE', `${request.kind} with validator ${vState ?? '?'} / operator ${opState ?? '?'}`);
+        const reinstateConsumed = request.kind === 'REINSTATE' ? authorize(prepareValidatorAction(request.validatorId, 'reinstate'), reinstateDecisions ?? []) : [];
+        const intentAt = nowMs();
+        const intent: GenerationRow = Object.freeze({
+          validatorId: request.validatorId,
+          generation: request.generation,
+          conformanceValidatorId: cvid,
+          operatorId: request.operatorId,
+          keyId: request.keyId,
+          publicKeyPem: request.publicKeyPem,
+          validFromMs: request.validFromMs,
+          validUntilMs: request.validUntilMs,
+          enrollmentKind: request.kind,
+          bindingDigest: conformanceDigest(record),
+          createdMs: intentAt,
+        });
+        // Review P2-2: the federation INTENT (a PENDING generation) is durable BEFORE the conformance-store identity
+        // exists, so a crash between the stores never leaves a conformance identity that quarantine or revocation
+        // (which sweep the federation's generations) cannot reach.
+        translate(() =>
+          fed.atomically(() => {
+            fed.insertGeneration(intent);
+            if (reinstateConsumed.length > 0) fed.consumeDecisions(reinstateConsumed, `reinstate:${cvid}`, intentAt);
+          }),
+        );
+        row = intent;
+      }
 
-      // Conformance store first (two humans validator.enroll, enforced there by trigger too). Idempotent on retry.
-      let enrolled: { record: ValidatorEnrollmentRecord; bindingDigest: string };
+      // Conformance store next (two humans validator.enroll, enforced there by trigger too). Idempotent on retry.
       try {
-        enrolled = conformance.enrollValidator(record, enrollDecisions);
+        conformance.enrollValidator(record, enrollDecisions);
       } catch (error) {
         if (error instanceof ConformanceRegistryError) throw new FederationError(error.code === 'KEY_REUSED' ? 'KEY_REUSED' : 'APPROVAL_REFUSED', error.code);
         throw error;
       }
       deps.faults?.afterConformanceEnrollment?.();
       const at = nowMs();
-      const row: GenerationRow = Object.freeze({
-        validatorId: request.validatorId,
-        generation: request.generation,
-        conformanceValidatorId: cvid,
-        operatorId: request.operatorId,
-        keyId: request.keyId,
-        publicKeyPem: request.publicKeyPem,
-        validFromMs: request.validFromMs,
-        validUntilMs: request.validUntilMs,
-        enrollmentKind: request.kind,
-        bindingDigest: enrolled.bindingDigest,
-        createdMs: at,
-      });
-      translate(() =>
-        fed.atomically(() => {
-          fed.insertGeneration(row);
-          if (reinstateConsumed.length > 0) fed.consumeDecisions(reinstateConsumed, `reinstate:${cvid}`, at);
-          if (request.kind === 'ENROLL') {
-            fed.appendGenerationState(row.validatorId, row.generation, 'ACTIVE', at, 'ENROLLED');
-          } else if (request.kind === 'ROTATE') {
-            for (const g of fed.listGenerations(row.validatorId)) {
-              if (g.generation !== row.generation && fed.generationState(g.validatorId, g.generation)?.state === 'ACTIVE') fed.appendGenerationState(g.validatorId, g.generation, 'RETIRED', at, 'ROTATED');
-            }
-            fed.appendGenerationState(row.validatorId, row.generation, 'ACTIVE', at, 'ROTATED');
+      const done = row;
+      fed.atomically(() => {
+        if (request.kind === 'ENROLL') {
+          fed.appendGenerationState(done.validatorId, done.generation, 'ACTIVE', at, 'ENROLLED');
+        } else if (request.kind === 'ROTATE') {
+          for (const g of fed.listGenerations(done.validatorId)) {
+            if (g.generation !== done.generation && fed.generationState(g.validatorId, g.generation)?.state === 'ACTIVE') fed.appendGenerationState(g.validatorId, g.generation, 'RETIRED', at, 'ROTATED');
           }
-          // REINSTATE stays PENDING until the requalification challenge passes.
-        }),
-      );
-      event('VALIDATOR_ENROLLED', at, 'validator', row.validatorId, { generation: row.generation, kind: row.enrollmentKind });
-      if (request.kind === 'ENROLL' || request.kind === 'ROTATE') event('KEY_ACTIVATED', at, 'validator', row.validatorId, { generation: row.generation });
-      if (request.kind === 'ROTATE') event('KEY_ROTATION_COMPLETED', at, 'validator', row.validatorId, { generation: row.generation });
-      return row;
+          fed.appendGenerationState(done.validatorId, done.generation, 'ACTIVE', at, 'ROTATED');
+        }
+        // REINSTATE stays PENDING until the requalification challenge passes.
+      });
+      event('VALIDATOR_ENROLLED', at, 'validator', done.validatorId, { generation: done.generation, kind: done.enrollmentKind });
+      if (request.kind === 'ENROLL' || request.kind === 'ROTATE') event('KEY_ACTIVATED', at, 'validator', done.validatorId, { generation: done.generation });
+      if (request.kind === 'ROTATE') event('KEY_ROTATION_COMPLETED', at, 'validator', done.validatorId, { generation: done.generation });
+      return done;
     },
 
     activateValidator(validatorId) {
@@ -591,7 +652,7 @@ export function createFederationRegistry(deps: {
       if (state === 'REVOKED') throw new FederationError('TRANSITION_NOT_ALLOWED', 'REVOKED → QUARANTINED');
       quarantineValidatorInternal(validatorId, reason, nowMs());
     },
-    completeReinstatement(validatorId, generation, evidence) {
+    completeReinstatement(validatorId, generation, requalificationJobId) {
       if (validatorStateOf(validatorId) !== 'QUARANTINED') throw new FederationError('TRANSITION_NOT_ALLOWED', 'not quarantined');
       const row = fed.listGenerations(validatorId).find((g) => g.generation === generation);
       if (row === undefined || row.enrollmentKind !== 'REINSTATE' || fed.generationState(validatorId, generation)?.state !== 'PENDING') throw new FederationError('VALIDATOR_NOT_ELIGIBLE', 'no pending reinstatement generation');
@@ -600,15 +661,27 @@ export function createFederationRegistry(deps: {
       const stored = store.getValidator(row.conformanceValidatorId);
       if (stored === undefined || stored.quarantinedAtMs !== null || stored.keyRevokedAtMs !== null) throw new FederationError('VALIDATOR_NOT_ELIGIBLE', 'the new generation is not eligible in the conformance store');
       const at = nowMs();
-      if (!evidence.passed) {
-        event('REQUALIFICATION_SCHEDULED', at, 'validator', validatorId, { generation, result: 'FAILED', detail: evidence.detail.slice(0, 120) });
-        throw new FederationError('REQUALIFICATION_FAILED', evidence.detail);
+      // Review P2-1: the result is DERIVED here from the durable requalification job and the stored evidence — never
+      // taken from the caller. The job must be a COMPLETED REQUALIFICATION job for exactly this generation, against a
+      // REQUALIFICATION authorization, with a reference validator of another operator, and both observations must agree.
+      const job = fed.getJob(requalificationJobId);
+      const auth = job === undefined ? undefined : fed.getAuthorization(job.authorizationId);
+      const candidate = job?.assignments.find((a) => a.conformanceValidatorId === row.conformanceValidatorId);
+      const reference = job?.assignments.find((a) => a.operatorId !== record.operatorId);
+      const candidateObs = job?.challengeId === null || job === undefined || candidate === undefined ? undefined : store.getObservationForChallengeValidator(job.challengeId, candidate.conformanceValidatorId);
+      const referenceObs = job?.challengeId === null || job === undefined || reference === undefined ? undefined : store.getObservationForChallengeValidator(job.challengeId, reference.conformanceValidatorId);
+      const passed =
+        job !== undefined && job.purpose === 'REQUALIFICATION' && job.state === 'COMPLETED' && auth?.record.purpose === 'REQUALIFICATION' && candidate !== undefined && reference !== undefined &&
+        candidateObs !== undefined && referenceObs !== undefined && candidateObs.outcomeClass === referenceObs.outcomeClass && candidateObs.outcomeClass !== 'inconclusive';
+      if (!passed) {
+        event('REQUALIFICATION_SCHEDULED', at, 'validator', validatorId, { generation, result: 'FAILED' });
+        throw new FederationError('REQUALIFICATION_FAILED', job === undefined ? 'unknown requalification job' : `job ${job.state}`);
       }
       fed.atomically(() => {
         fed.appendGenerationState(validatorId, generation, 'ACTIVE', at, 'REQUALIFIED');
         fed.appendValidatorState(validatorId, 'ACTIVE', at, 'REINSTATED_AFTER_REQUALIFICATION', []);
       });
-      event('REQUALIFICATION_PASSED', at, 'validator', validatorId, { generation });
+      event('REQUALIFICATION_PASSED', at, 'validator', validatorId, { generation, jobId: requalificationJobId });
       event('VALIDATOR_REINSTATED', at, 'validator', validatorId, { generation });
     },
     revokeValidator(validatorId, decisions) {
@@ -631,9 +704,9 @@ export function createFederationRegistry(deps: {
     },
 
     prepareTestingAuthorization(input) {
-      const read = readClosed(input, ['authorizationId', 'organizationId', 'integrationDigest', 'fixtureRefs', 'notBefore', 'notAfter']);
+      const read = readClosed(input, ['authorizationId', 'organizationId', 'integrationDigest', 'purpose', 'fixtureRefs', 'notBefore', 'notAfter']);
       if (
-        !read.ok || !isIdentifier(input.authorizationId) || !isIdentifier(input.organizationId) || typeof input.integrationDigest !== 'string' || !Array.isArray(input.fixtureRefs) ||
+        !read.ok || (input.purpose !== 'CONFORMANCE' && input.purpose !== 'REQUALIFICATION') || !isIdentifier(input.authorizationId) || !isIdentifier(input.organizationId) || typeof input.integrationDigest !== 'string' || !Array.isArray(input.fixtureRefs) ||
         input.fixtureRefs.length === 0 || !input.fixtureRefs.every(isIdentifier) || !isTimestamp(input.notBefore) || !isTimestamp(input.notAfter) || toMs(input.notAfter) <= toMs(input.notBefore)
       ) {
         throw new FederationError('MALFORMED_INPUT', 'testing authorization');
@@ -643,11 +716,14 @@ export function createFederationRegistry(deps: {
       const endpoints = integration.record.testEndpoints;
       // Only fixtures the integration itself registered, and only synthetic ones (CC-D-12): no URL can be authorized here.
       for (const ref of input.fixtureRefs) if (!endpoints.some((e) => e.fixtureRef === ref && e.environment === 'synthetic')) throw new FederationError('AUTHORIZATION_INVALID', `fixture ${ref} is not a registered synthetic endpoint`);
+      // Review P1-2: probation evidence may only land on an integration no credential depends on.
+      if (input.purpose === 'REQUALIFICATION' && store.hasCredentialForIntegration(input.organizationId, input.integrationDigest)) throw new FederationError('AUTHORIZATION_INVALID', 'a requalification target must have no credential');
       const record: TestingAuthorization = Object.freeze({
         schema: 'rn.conformance.testing-authorization/1',
         authorizationId: input.authorizationId,
         organizationId: input.organizationId,
         integrationDigest: input.integrationDigest,
+        purpose: input.purpose,
         environment: 'synthetic',
         fixtureRefs: Object.freeze([...input.fixtureRefs].sort()),
         notBefore: input.notBefore,
@@ -664,6 +740,7 @@ export function createFederationRegistry(deps: {
         authorizationId: record.authorizationId,
         organizationId: record.organizationId,
         integrationDigest: record.integrationDigest,
+        purpose: record.purpose,
         fixtureRefs: record.fixtureRefs,
         notBefore: record.notBefore,
         notAfter: record.notAfter,
@@ -693,39 +770,25 @@ export function createFederationRegistry(deps: {
     },
     syncFromConformance() {
       const at = nowMs();
-      const changed: string[] = [];
-      for (const v of fed.listValidators()) {
-        for (const g of fed.listGenerations(v.validatorId)) {
-          const stored = store.getValidator(g.conformanceValidatorId);
-          const state = fed.generationState(g.validatorId, g.generation)?.state;
-          if (stored === undefined) continue;
-          if (stored.keyRevokedAtMs !== null && state !== 'REVOKED') {
-            fed.appendGenerationState(g.validatorId, g.generation, 'REVOKED', at, 'CONFORMANCE_STORE_KEY_REVOKED');
-            event('REGISTRY_DIVERGENCE', at, 'validator', v.validatorId, { generation: g.generation, conformance: 'KEY_REVOKED' });
-            changed.push(g.conformanceValidatorId);
-          } else if (stored.quarantinedAtMs !== null && (state === 'ACTIVE' || state === 'PENDING')) {
-            // Typically evidence acceptance's automatic VALIDATOR_CONFLICT quarantine: the whole validator follows it.
-            event('REGISTRY_DIVERGENCE', at, 'validator', v.validatorId, { generation: g.generation, conformance: 'QUARANTINED' });
-            quarantineValidatorInternal(v.validatorId, 'CONFORMANCE_STORE_QUARANTINE', at);
-            changed.push(g.conformanceValidatorId);
-          }
-        }
-      }
-      return Object.freeze(changed);
+      return Object.freeze(fed.listValidators().flatMap((v) => syncValidator(v.validatorId, at)));
     },
     enforceProtocolThreshold() {
       const at = nowMs();
-      const since = at - FEDERATION_TIMING.protocolViolationWindowSeconds * 1000;
+      const windowStart = at - FEDERATION_TIMING.protocolViolationWindowSeconds * 1000;
       for (const r of store.listRejections()) {
         if (r.validatorId === null || !ATTRIBUTABLE_REJECTIONS.includes(r.reason)) continue;
         if (fed.getGenerationByConformanceId(r.validatorId) === undefined) continue;
-        fed.recordViolation(r.validatorId, `EVIDENCE_${r.reason}`, r.submissionDigest, at);
+        // Review P3-3: one signed submission is one violation, however its bytes are re-encoded (ref = its event id).
+        fed.recordViolation(r.validatorId, `EVIDENCE_${r.reason}`, r.eventId ?? r.submissionDigest, at);
       }
       const quarantined: string[] = [];
       for (const v of fed.listValidators()) {
         const state = validatorStateOf(v.validatorId);
         if (state !== 'ACTIVE' && state !== 'ENROLLED') continue;
-        const count = fed.listGenerations(v.validatorId).reduce((n, g) => n + fed.countViolations(g.conformanceValidatorId, since), 0);
+        // Only the generations since the last reinstatement, and only violations since it: a released validator starts clean.
+        const reinstatedAt = fed.validatorHistory(v.validatorId).filter((h) => h.reason === 'REINSTATED_AFTER_REQUALIFICATION').reduce((m, h) => Math.max(m, h.atMs), 0);
+        const since = Math.max(windowStart, reinstatedAt);
+        const count = currentGenerations(v.validatorId).reduce((n, g) => n + fed.countViolations(g.conformanceValidatorId, since), 0);
         if (count >= FEDERATION_TIMING.protocolViolationThreshold) {
           quarantineValidatorInternal(v.validatorId, 'PROTOCOL_VIOLATION_THRESHOLD', at);
           quarantined.push(v.validatorId);

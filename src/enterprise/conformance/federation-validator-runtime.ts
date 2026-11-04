@@ -315,7 +315,10 @@ export function createValidatorRuntime(deps: {
         synthetic: true,
       });
       const deploymentDigest = c.challengeType === 'G08' ? execution.observedDeploymentDigest : null;
-      const eventId = `obs-${identity.conformanceValidatorId}-${outbox.nextEventNumber()}`;
+      // Review P2-4: an unpredictable event id (evidence acceptance treats event ids as globally unique, so a guessable
+      // one would let another validator pre-empt — and thereby suppress — this observation).
+      outbox.nextEventNumber();
+      const eventId = `obs_${deps.random.bytes(16).toString('hex')}`;
       const observation: ObservationPayload = Object.freeze({
         schema: 'rn.conformance.observation/1',
         eventId,

@@ -101,10 +101,13 @@ export function createFederationScheduler(deps: {
     return Object.freeze(out);
   };
 
-  const authorizationFor = (authorizationId: string, fixtureRef: string, deadlineSeconds: number, at: number) => {
+  const authorizationFor = (authorizationId: string, fixtureRef: string, deadlineSeconds: number, at: number, purpose: 'CONFORMANCE' | 'REQUALIFICATION') => {
     const auth = fed.getAuthorization(authorizationId);
     if (auth === undefined) return undefined;
     const r = auth.record;
+    // Review P1-2: probation work only on a credential-free requalification target; credentialed work never there.
+    if (r.purpose !== purpose) return undefined;
+    if (purpose === 'REQUALIFICATION' && store.hasCredentialForIntegration(r.organizationId, r.integrationDigest)) return undefined;
     // No scheduling outside the signed testing window: the whole challenge must fit inside it.
     if (at < toMs(r.notBefore) || at + deadlineSeconds * 1000 > toMs(r.notAfter) || !r.fixtureRefs.includes(fixtureRef)) return undefined;
     const integration = store.getIntegrationByDigest(r.organizationId, r.integrationDigest);
@@ -153,7 +156,8 @@ export function createFederationScheduler(deps: {
     schedule(request) {
       const at = nowMs();
       const deadlineSeconds = DEADLINE_OF[request.purpose];
-      const target = authorizationFor(request.authorizationId, request.fixtureRef, deadlineSeconds, at);
+      if (request.purpose === 'REQUALIFICATION') throw new TypeError('Requalification jobs are scheduled only through scheduleRequalification.');
+      const target = authorizationFor(request.authorizationId, request.fixtureRef, deadlineSeconds, at, 'CONFORMANCE');
       if (target === undefined) return { scheduled: false, reason: 'AUTHORIZATION_INVALID', availableOperators: 0 };
       const existing = fed.getJob(jobIdOf(request.jobKey));
       if (existing !== undefined) return { scheduled: true, job: existing, created: false };
@@ -179,7 +183,7 @@ export function createFederationScheduler(deps: {
 
     scheduleRequalification(input) {
       const at = nowMs();
-      const target = authorizationFor(input.authorizationId, input.fixtureRef, DEADLINE_OF.REQUALIFICATION, at);
+      const target = authorizationFor(input.authorizationId, input.fixtureRef, DEADLINE_OF.REQUALIFICATION, at, 'REQUALIFICATION');
       if (target === undefined) return { scheduled: false, reason: 'AUTHORIZATION_INVALID', availableOperators: 0 };
       const record = fed.getValidator(input.validatorId);
       const row = fed.listGenerations(input.validatorId).find((g) => g.generation === input.generation);
@@ -330,7 +334,8 @@ export function expireOverdueJobs(fed: FederationStore, store: ConformanceStore,
     const overdue = job.challengeDeadlineMs !== null ? nowMs > job.challengeDeadlineMs : auth === undefined || nowMs + job.deadlineSeconds * 1000 > toMs(auth.record.notAfter);
     if (!overdue) continue;
     const committed = job.challengeId === null ? 0 : new Set(job.assignments.filter((a) => store.getObservationForChallengeValidator(job.challengeId as string, a.conformanceValidatorId) !== undefined).map((a) => a.operatorId)).size;
-    fed.closeWithoutLease(job.jobId, nowMs, 'EXPIRED', job.challengeDeadlineMs !== null ? 'CHALLENGE_DEADLINE_PASSED' : 'AUTHORIZATION_WINDOW_EXHAUSTED');
+    const closed = fed.closeWithoutLease(job.jobId, nowMs, 'EXPIRED', job.challengeDeadlineMs !== null ? 'CHALLENGE_DEADLINE_PASSED' : 'AUTHORIZATION_WINDOW_EXHAUSTED');
+    if (closed.state !== 'EXPIRED') continue; // another process closed it first
     fed.appendEvent('JOB_EXPIRED', nowMs, 'job', job.jobId, { committedOperators: committed, requiredOperators: job.requiredOperators });
     // Missing evidence stays missing: the engine sees too few operators (investigation / staleness), never a success.
     if (committed < job.requiredOperators) fed.appendEvent('QUORUM_INSUFFICIENT', nowMs, 'job', job.jobId, { committed, required: job.requiredOperators });

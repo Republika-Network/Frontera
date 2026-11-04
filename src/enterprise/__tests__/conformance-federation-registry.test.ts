@@ -263,9 +263,10 @@ describe('RN-CONFORM-05 — key rotation and revocation (WP-04)', () => {
     const decisions = enrollmentDecisions(f.c, prepared.record.validatorId, prepared.bindingDigest, f.c.clock.now());
     crash = true;
     assert.throws(() => f.registry.completeEnrollment(pop.requestId, prepared.record, decisions), /synthetic crash/);
-    // Partial state: the conformance store has k2, the federation does not — and k2 is NOT eligible (fail closed).
+    // Partial state: the conformance store has k2 and the federation holds its PENDING intent (written first, review
+    // P2-2) — k2 is NOT eligible (fail closed).
     assert.ok(f.c.store.getValidator('vb1.k2'));
-    assert.equal(f.fed.listGenerations('vb1').length, 1);
+    assert.equal(f.fed.generationState('vb1', 2)?.state, 'PENDING');
     const during = f.registry.eligibility('vb1', f.c.clock.ms(), f.c.clock.ms());
     assert.ok(during.eligible && during.generation.generation === 1, 'the old generation keeps serving until the rotation completes');
     // Retry with the SAME (already consumed) decisions: the conformance enrollment is idempotent, the federation row lands.
@@ -273,6 +274,51 @@ describe('RN-CONFORM-05 — key rotation and revocation (WP-04)', () => {
     assert.equal(generation.generation, 2);
     assert.equal(f.fed.generationState('vb1', 1)?.state, 'RETIRED');
     assert.equal(f.fed.listGenerations('vb1').length, 2);
+  });
+});
+
+describe('RN-CONFORM-05 — independent review regressions', () => {
+  it('P1-1a: a conformance-store-only quarantine (not yet mirrored) still blocks rotation', () => {
+    const f = standardFederation();
+    f.c.services().registry.quarantineValidator('vb1.k1', 'VALIDATOR_CONFLICT');
+    assert.equal(f.registry.validatorState('vb1'), 'ACTIVE', 'not yet synced');
+    refusal(() => enrollGeneration(f, 'vb1', 'ROTATE'), 'VALIDATOR_NOT_ELIGIBLE');
+    assert.equal(f.registry.validatorState('vb1'), 'QUARANTINED', 'the request itself mirrored the quarantine');
+  });
+
+  it('P1-1b/c: quarantine + key revocation, or a key revocation after a conflict, still quarantine the validator; no rotation escape', () => {
+    const f = standardFederation();
+    f.c.services().registry.quarantineValidator('vb1.k1', 'VALIDATOR_CONFLICT');
+    f.c.services().registry.revokeValidatorKey('vb1.k1', 'KEY_COMPROMISE');
+    f.registry.syncFromConformance();
+    assert.equal(f.registry.validatorState('vb1'), 'QUARANTINED');
+    const g = standardFederation('p11c');
+    g.c.services().registry.quarantineValidator('vc1.k1', 'VALIDATOR_CONFLICT');
+    g.registry.revokeKeyGeneration('vc1.k1', 'KEY_COMPROMISE');
+    assert.equal(g.fed.generationState('vc1', 1)?.state, 'REVOKED');
+    refusal(() => enrollGeneration(g, 'vc1', 'ROTATE'), 'VALIDATOR_NOT_ELIGIBLE');
+    assert.equal(g.registry.validatorState('vc1'), 'QUARANTINED');
+  });
+
+  it('P2-2: an identity written to the conformance store before a crash is still reached by quarantine and revocation', () => {
+    let crash = false;
+    const f = buildFederation({ faults: { afterConformanceEnrollment: () => { if (crash) { crash = false; throw new Error('synthetic crash between stores'); } } } });
+    addValidator(f, 'vb1', FED_OPERATORS.B);
+    const key = ephemeralKey();
+    const pop = f.registry.requestKeyPossession({ validatorId: 'vb1', kind: 'ROTATE', publicKeyPem: publicKeyPemOf(key), keyValidFrom: f.c.clock.now(), keyValidUntil: '2027-11-01T00:00:00.000Z' });
+    const prepared = f.registry.proveKeyPossession(pop.requestId, signConformancePayload('keyPossession', pop.statement, key));
+    crash = true;
+    assert.throws(() => f.registry.completeEnrollment(pop.requestId, prepared.record, enrollmentDecisions(f.c, prepared.record.validatorId, prepared.bindingDigest, f.c.clock.now())), /synthetic crash/);
+    f.registry.quarantineValidator('vb1', 'PROTOCOL_VIOLATIONS');
+    assert.notEqual(f.c.store.getValidator('vb1.k2')?.quarantinedAtMs, null, 'the half-enrolled k2 is quarantined too');
+    // …and the validator can still be reinstated later (the next generation number does not collide with k2).
+    const { generation } = enrollGeneration(f, 'vb1', 'REINSTATE');
+    assert.equal(generation.generation, 3);
+  });
+
+  it('P2-5: a federation operator never adopts an operator id that already exists in the conformance store', () => {
+    const f = buildFederation({ operators: [] });
+    refusal(() => f.registry.registerOperator({ operatorId: 'op-synthetic-a', operatorClass: 'REPUBLIKA', administrativeOwnerRef: 'owner-ref-adopt' }), 'DUPLICATE_OPERATOR');
   });
 });
 

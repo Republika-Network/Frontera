@@ -26,6 +26,7 @@ import {
   evidencePort,
   fedDecisions,
   makeMalicious,
+  requalify,
   runtimeFor,
   scheduleOne,
   standardFederation,
@@ -246,17 +247,18 @@ describe('RN-CONFORM-05 — automatic quarantine and controlled release (WP-11)'
     assert.equal(f.registry.validatorState('vb1'), 'QUARANTINED', '…and still quarantined until it requalifies');
     assert.notEqual(f.c.store.getValidator('vb1.k1')?.quarantinedAtMs, null, 'the old identity stays quarantined forever');
     adoptGeneration(f, 'vb1', generation, key);
-    // …then a bounded requalification challenge alongside a reference validator of another operator.
-    const requal = f.scheduler.scheduleRequalification({ validatorId: 'vb1', generation: 2, authorizationId: FED_AUTHORIZATION, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF });
-    assert.ok(requal.scheduled);
-    await drain(f);
-    const done = f.fed.getJob(requal.job.jobId)!;
-    const candidate = f.c.store.getObservationForChallengeValidator(done.challengeId as string, 'vb1.k2');
-    const reference = done.assignments.find((a) => a.validatorId !== 'vb1')!;
-    const refObs = f.c.store.getObservationForChallengeValidator(done.challengeId as string, reference.conformanceValidatorId);
-    const passed = candidate !== undefined && refObs !== undefined && candidate.outcomeClass === refObs.outcomeClass;
-    assert.throws(() => f.registry.completeReinstatement('vb1', 2, { passed: false, detail: 'disagreed with the reference' }), FederationError);
-    f.registry.completeReinstatement('vb1', 2, { passed, detail: 'agreed with the reference operator' });
+    // A caller cannot simply assert a pass (review P2-1): no job, or a job that is not this generation's, is refused.
+    assert.throws(() => f.registry.completeReinstatement('vb1', 2, 'job_unknown'), (e: unknown) => e instanceof FederationError && e.code === 'REQUALIFICATION_FAILED');
+    const routineJob = f.fed.listJobs(['COMPLETED'])[0]!.jobId;
+    assert.throws(() => f.registry.completeReinstatement('vb1', 2, routineJob), (e: unknown) => e instanceof FederationError && e.code === 'REQUALIFICATION_FAILED');
+    // Requalification is never scheduled against a credentialed integration (review P1-2).
+    assert.equal(f.scheduler.scheduleRequalification({ validatorId: 'vb1', generation: 2, authorizationId: FED_AUTHORIZATION, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF }).scheduled, false);
+    // …then a bounded requalification challenge on the credential-free fixture, alongside a reference validator of another operator.
+    const jobId = await requalify(f, 'vb1', 2);
+    const done = f.fed.getJob(jobId)!;
+    assert.equal(done.organizationId, f.requalification.organizationId);
+    assert.ok(done.assignments.some((a) => a.operatorId !== FED_OPERATORS.B));
+    f.registry.completeReinstatement('vb1', 2, jobId);
     assert.equal(f.registry.validatorState('vb1'), 'ACTIVE');
     const kinds = f.fed.listEvents().filter((e) => e.subjectId === 'vb1').map((e) => e.kind);
     assert.ok(kinds.includes('REQUALIFICATION_PASSED') && kinds.includes('VALIDATOR_REINSTATED'));
@@ -281,6 +283,33 @@ describe('RN-CONFORM-05 — automatic quarantine and controlled release (WP-11)'
     // Live acceptance keeps the inclusive boundary: a submission at the quarantine instant is still refused.
     const late = { ...contradiction, eventId: 'same-ms-late' };
     assert.deepEqual(f.c.services().evidence.submitObservation(JSON.stringify({ observation: late, validatorSignature: signConformancePayload('observation', late, b.key) })), { accepted: false, reason: 'VALIDATOR_QUARANTINED' });
+  });
+
+  it('P1-2: a reinstating validator lying during requalification never touches a real credential and does not requalify', async () => {
+    const { f, id } = await activeAndAged('fed-p12', true);
+    f.registry.quarantineValidator('vb1', 'PROTOCOL_VIOLATIONS');
+    const { generation, key } = enrollGeneration(f, 'vb1', 'REINSTATE');
+    adoptGeneration(f, 'vb1', generation, key);
+    makeMalicious(f, 'vb1', 'allowed');
+    // Meanwhile another operator genuinely observes the export bypass on the REAL credential.
+    jobOf(scheduleOne(f, 'G01', 'document.export', 1, { exclude: [FED_OPERATORS.B, FED_OPERATORS.C], key: 'p12-real' }));
+    await drain(f);
+    const jobId = await requalify(f, 'vb1', 2);
+    const evaluation = cr01(f, id);
+    assert.equal(evaluation.evaluation.criticalFailureConfirmed, false, 'the probation lie is not a second operator vote on the real credential');
+    assert.notEqual(evaluation.protectiveTransition?.record.reasonCode, 'CRITICAL_VIOLATION_CONFIRMED');
+    assert.deepEqual(categoryOf(evaluation)?.violationOperators, [FED_OPERATORS.A]);
+    assert.throws(() => f.registry.completeReinstatement('vb1', 2, jobId), (e: unknown) => e instanceof FederationError && e.code === 'REQUALIFICATION_FAILED');
+    assert.equal(f.registry.validatorState('vb1'), 'QUARANTINED');
+  });
+
+  it('P2-4: observation event ids are unpredictable, so no validator can pre-empt another\'s', async () => {
+    const f = standardFederation('fed-p24');
+    const job = jobOf(scheduleOne(f, 'G01', 'document.open', 2, { key: 'p24' }));
+    await drain(f);
+    const rows = f.c.store.listObservations(ORG_A, f.c.integration.integrationDigest).filter((o) => o.challengeId === f.fed.getJob(job.jobId)!.challengeId);
+    assert.equal(rows.length, 2);
+    for (const r of rows) assert.match(r.eventId, /^obs_[0-9a-f]{32}$/);
   });
 
   it('persistent AUTHENTICATED protocol violations quarantine; forged signature failures never do', async () => {
@@ -359,14 +388,19 @@ describe('RN-CONFORM-05 — the validator runtime boundary (WP-09/10)', () => {
       authorizationId: 'auth-cross-tenant',
       organizationId: ORG_A,
       integrationDigest: f.c.integration.integrationDigest,
+      purpose: 'CONFORMANCE',
       fixtureRefs: [REFERENCE_FIXTURE_REF],
       notBefore: f.c.clock.now(),
       notAfter: '2027-01-01T00:00:00.000Z',
     });
-    assert.throws(() => f.registry.authorizeTesting(record, fedDecisions(f, { ...prepared, organizationId: 'org-synthetic-beta' }, f.c.humans.mallory, f.c.humans.mallory)), FederationError);
+    // Organization binding specifically (distinct principals, one of them from another organization).
+    assert.throws(
+      () => f.registry.authorizeTesting(record, fedDecisions(f, prepared, f.c.humans.alice, f.c.humans.mallory)),
+      (e: unknown) => e instanceof FederationError && e.code === 'APPROVAL_REFUSED' && e.detail === 'ORGANIZATION_MISMATCH',
+    );
     // The integration digest of organization A does not exist under organization B: no cross-tenant authorization.
     assert.throws(
-      () => f.registry.prepareTestingAuthorization({ authorizationId: 'auth-cross-2', organizationId: 'org-synthetic-beta', integrationDigest: record.integrationDigest, fixtureRefs: [REFERENCE_FIXTURE_REF], notBefore: record.notBefore, notAfter: record.notAfter }),
+      () => f.registry.prepareTestingAuthorization({ authorizationId: 'auth-cross-2', organizationId: 'org-synthetic-beta', integrationDigest: record.integrationDigest, purpose: 'CONFORMANCE', fixtureRefs: [REFERENCE_FIXTURE_REF], notBefore: record.notBefore, notAfter: record.notAfter }),
       (e: unknown) => e instanceof FederationError && e.code === 'UNKNOWN_INTEGRATION',
     );
     // A runtime never executes for a target outside its authorization, even with a valid coordinator signature.
@@ -408,7 +442,11 @@ describe('RN-CONFORM-05 — credential lifecycle separation and privacy (WP-14/1
   it('no federation module writes evidence, evaluations, transitions, credentials or status directly', () => {
     for (const name of federationFiles) {
       const text = readFileSync(join(MODULE, name), 'utf8');
-      for (const banned of [/\.commitTransition\(/, /\.commitEvaluation\(/, /\.createCredential\(/, /\.insertObservation\(/, /\.withStatusIssuance\(/, /\.insertRejection\(/, /\.insertValidator\(record, bindingDigest/]) assert.ok(!banned.test(text), `${name} matches ${banned}`);
+      // Every write to the conformance store goes through the existing registry; none directly (review test finding 4).
+      const direct = /\bstore\.(insert\w+|append\w+|commit\w+|create\w+|withStatusIssuance)\(/;
+      assert.ok(!direct.test(text), `${name} writes the conformance store directly`);
+      assert.ok(!/\bimport\s*\(/.test(text), `${name} uses a dynamic import`);
+      for (const banned of [/\.commitTransition\(/, /\.commitEvaluation\(/, /\.createCredential\(/, /\.insertObservation\(/, /\.withStatusIssuance\(/, /\.insertRejection\(/]) assert.ok(!banned.test(text), `${name} matches ${banned}`);
     }
   });
 

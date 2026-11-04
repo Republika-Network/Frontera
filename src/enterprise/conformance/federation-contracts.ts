@@ -207,6 +207,12 @@ export interface TestingAuthorization {
   readonly authorizationId: string;
   readonly organizationId: string;
   readonly integrationDigest: string;
+  /**
+   * `CONFORMANCE`: challenges whose evidence counts for the integration's credential. `REQUALIFICATION`: probation
+   * challenges for a reinstating validator, allowed only against a fixture integration that has NO credential, so a
+   * still-untrusted generation's observation can never become a vote on a real credential (review P1-2).
+   */
+  readonly purpose: 'CONFORMANCE' | 'REQUALIFICATION';
   readonly environment: 'synthetic';
   readonly fixtureRefs: readonly string[];
   readonly notBefore: string;

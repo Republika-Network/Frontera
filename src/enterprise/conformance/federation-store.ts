@@ -293,7 +293,7 @@ CREATE TRIGGER fed_jobs_fencing BEFORE UPDATE ON fed_jobs
 WHEN NEW.lease_generation < OLD.lease_generation OR NEW.attempts < OLD.attempts OR NEW.updated_ms < OLD.updated_ms
   OR (NEW.state = 'LEASED' AND OLD.state <> 'LEASED' AND NEW.lease_generation <> OLD.lease_generation + 1)
   OR (NEW.state = 'LEASED' AND OLD.state = 'LEASED' AND NEW.lease_owner IS NOT OLD.lease_owner AND NEW.lease_generation <> OLD.lease_generation + 1)
-  OR (NEW.state = 'LEASED' AND OLD.state = 'LEASED' AND NEW.lease_owner IS OLD.lease_owner AND NEW.lease_generation <> OLD.lease_generation)
+  OR (NEW.state = 'LEASED' AND OLD.state = 'LEASED' AND NEW.lease_owner IS OLD.lease_owner AND NEW.lease_generation NOT IN (OLD.lease_generation, OLD.lease_generation + 1))
 BEGIN SELECT RAISE(ABORT, 'fed:fencing token must advance on every new lease'); END;
 CREATE TRIGGER fed_jobs_challenge_once BEFORE UPDATE ON fed_jobs
 WHEN OLD.challenge_id IS NOT NULL AND (NEW.challenge_id IS NOT OLD.challenge_id OR NEW.challenge_deadline_ms IS NOT OLD.challenge_deadline_ms)
@@ -491,7 +491,7 @@ export interface FederationStore {
   commitWithLease(lease: JobLease, nowMs: number, patch: JobPatch): ScheduledJob;
   /** An expired lease is released back to RETRY_PENDING (attempt counted) without any worker's cooperation. */
   releaseExpiredLeases(nowMs: number): readonly string[];
-  /** Coordinator-side transitions that need no lease: expiry at the challenge deadline / authorization end, and cancellation. */
+  /** Coordinator-side transitions that need no lease: expiry at the challenge deadline / authorization end, and cancellation. A job already terminal is returned unchanged. */
   closeWithoutLease(jobId: string, nowMs: number, state: 'EXPIRED' | 'CANCELLED' | 'COMPLETED', reason: string): ScheduledJob;
 
   appendDelivery(jobId: string, conformanceValidatorId: string, leaseGeneration: number, atMs: number, outcome: string): void;
@@ -1013,7 +1013,8 @@ function buildStore(db: Database.Database, file: string): FederationStore {
       return write((): ScheduledJob => {
         const row = getJobRow(jobId);
         if (row === undefined) throw new FederationStoreError('NOT_FOUND', jobId);
-        db.prepare('UPDATE fed_jobs SET state = ?, lease_owner = NULL, lease_expires_ms = NULL, updated_ms = MAX(updated_ms, ?), last_error = ? WHERE job_id = ?').run(state, nowMs, reason, jobId);
+        // Review P3-2: conditional on the job still being open, so a job another process closed first is left as it is.
+        db.prepare(`UPDATE fed_jobs SET state = ?, lease_owner = NULL, lease_expires_ms = NULL, updated_ms = MAX(updated_ms, ?), last_error = ? WHERE job_id = ? AND state IN (${list(OPEN_STATES)})`).run(state, nowMs, reason, jobId);
         return toJob(getJobRow(jobId) as JobRow);
       });
     },

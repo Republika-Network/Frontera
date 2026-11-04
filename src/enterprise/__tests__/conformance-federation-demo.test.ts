@@ -23,6 +23,7 @@ import {
   buildFederation,
   drain,
   enrollGeneration,
+  requalify,
   runtimeFor,
   scheduleOne,
 } from './conformance-federation-support.js';
@@ -121,15 +122,14 @@ describe('RN-CONFORM-05 — reproducible synthetic federation demonstration', ()
     // Stage 12a — quarantine release: new generation, two humans (enroll) + two humans (reinstate), requalification.
     const reinstated = enrollGeneration(f, 'va2', 'REINSTATE');
     adoptGeneration(f, 'va2', reinstated.generation, reinstated.key);
-    const requal = f.scheduler.scheduleRequalification({ validatorId: 'va2', generation: reinstated.generation.generation, authorizationId: FED_AUTHORIZATION, challengeType: 'G01', operation: 'document.open', fixtureRef: REFERENCE_FIXTURE_REF });
-    assert.ok(requal.scheduled);
-    await drain(f);
-    const rq = f.fed.getJob(requal.job.jobId)!;
+    const requalJobId = await requalify(f, 'va2', reinstated.generation.generation);
+    const rq = f.fed.getJob(requalJobId)!;
     const cand = f.c.store.getObservationForChallengeValidator(rq.challengeId as string, reinstated.generation.conformanceValidatorId);
     const refA = rq.assignments.find((a) => a.validatorId !== 'va2')!;
     const refObs = f.c.store.getObservationForChallengeValidator(rq.challengeId as string, refA.conformanceValidatorId);
     const requalified = cand !== undefined && refObs !== undefined && cand.outcomeClass === refObs.outcomeClass;
-    f.registry.completeReinstatement('va2', reinstated.generation.generation, { passed: requalified, detail: 'candidate agreed with the reference operator' });
+    // The registry derives the result itself from the stored job and evidence (it is not told).
+    f.registry.completeReinstatement('va2', reinstated.generation.generation, requalJobId);
     beat(f);
 
     // Stage 12b — SEPARATELY: the platform is fixed and the credential goes through full critical revalidation + two humans.
@@ -179,7 +179,7 @@ describe('RN-CONFORM-05 — reproducible synthetic federation demonstration', ()
       '9_credentialTransitions': { measured: true, suspension: confirmed.protectiveTransition === null ? null : { code: confirmed.protectiveTransition.record.transitionCode, reasonCode: confirmed.protectiveTransition.record.reasonCode, humans: confirmed.protectiveTransition.record.humanDecisions.length }, reinstated: { state: credentialReinstated.state, stateVersion: credentialReinstated.stateVersion, approvers: approvals.map((d) => d.decision.principalId) } },
       '10_signedStatus': { measured: true, initial: initialStatus, suspended: suspendedStatus, final: finalStatus, issuedBy: 'RN-CONFORM-03 status signer (no validator involvement)' },
       '11_failureAndRecovery': { measured: true, missedHeartbeats: missed, duringOutage, quorumWithoutB: noQuorum.scheduled ? 'unexpected' : noQuorum.reason, recovered: recovered.map((o) => o.outcome), recoveredJobState: recoveredJob.state, recoveredObservations, leaseExpiredEvents: count('LEASE_EXPIRED') },
-      '12_quarantine': { measured: true, conflict: conflict.accepted ? 'unexpected' : conflict.reason, synced, va2State: f.registry.validatorState('va2'), assignedAfterQuarantine: afterQuarantine.scheduled ? afterQuarantine.job.assignments.map((a) => a.validatorId) : [], releasedAfterRequalification: requalified },
+      '12_quarantine': { measured: true, requalificationTarget: rq.organizationId, conflict: conflict.accepted ? 'unexpected' : conflict.reason, synced, va2State: f.registry.validatorState('va2'), assignedAfterQuarantine: afterQuarantine.scheduled ? afterQuarantine.job.assignments.map((a) => a.validatorId) : [], releasedAfterRequalification: requalified },
       '13_keyRotation': { measured: true, newGeneration: rotation.generation.conformanceValidatorId, historicalObservationsReverified: before.length, historicalDefects, postRotationAssignedTo: postRotation.scheduled ? postRotation.job.assignments.map((a) => a.conformanceValidatorId) : [] },
       '14_verifiedHistory': { measured: true, valid: history.valid, transitions: history.valid ? history.transitions.map((r: TransitionRecord) => `${r.stateVersion}:${r.transitionCode}:${r.from ?? '∅'}→${r.to}:${r.reasonCode}`) : [] },
       '15_limitations': {

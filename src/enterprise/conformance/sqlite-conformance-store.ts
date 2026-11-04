@@ -723,6 +723,8 @@ export interface ConformanceStore {
   getEvidencePackage(organizationId: string, digest: string): { readonly challengeId: string; readonly validatorId: string } | undefined;
   /** RN-CONFORM-03: a credential by id alone (status requests name only the credential id). */
   findCredential(credentialId: string): CredentialRecord | undefined;
+  /** RN-CONFORM-05 (read only): whether any credential exists for this integration (requalification targets must have none). */
+  hasCredentialForIntegration(organizationId: string, integrationDigest: string): boolean;
   /** RN-CONFORM-03: the most recent committed evaluations of a credential, newest first, at most `limit`. */
   listRecentEvaluations(organizationId: string, credentialId: string, limit: number): readonly { record: EvaluationRecord; evaluationDigest: string }[];
   /** RN-CONFORM-03: the latest link of a credential's status-assertion chain. */
@@ -1158,6 +1160,8 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
       const row = db.prepare('SELECT record_json FROM cc_credentials WHERE credential_id = ?').get(credentialId) as { record_json: string } | undefined;
       return row === undefined ? undefined : (JSON.parse(row.record_json) as CredentialRecord);
     },
+    hasCredentialForIntegration: (organizationId: string, integrationDigest: string) =>
+      db.prepare('SELECT 1 FROM cc_credentials WHERE organization_id = ? AND integration_digest = ? LIMIT 1').get(organizationId, integrationDigest) !== undefined,
     listRecentEvaluations: (organizationId: string, credentialId: string, limit: number) => {
       if (credentialRow(organizationId, credentialId) === undefined) return [];
       return (db.prepare('SELECT record_json, evaluation_digest FROM cc_evaluations WHERE credential_id = ? ORDER BY evaluated_at_ms DESC, evaluation_id DESC LIMIT ?').all(credentialId, Math.max(0, Math.floor(limit))) as {

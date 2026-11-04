@@ -150,7 +150,7 @@ describe('RN-CONFORM-05 — operator-aware assignment (WP-08)', () => {
     );
     // Authorizing a fixture the integration never registered is refused at the source.
     assert.throws(() =>
-      f.registry.prepareTestingAuthorization({ authorizationId: 'auth-bad', organizationId: 'org-synthetic-alpha', integrationDigest: f.c.integration.integrationDigest, fixtureRefs: ['https-customer-tenant'], notBefore: f.c.clock.now(), notAfter: '2027-01-01T00:00:00.000Z' }),
+      f.registry.prepareTestingAuthorization({ authorizationId: 'auth-bad', organizationId: 'org-synthetic-alpha', integrationDigest: f.c.integration.integrationDigest, purpose: 'CONFORMANCE', fixtureRefs: ['https-customer-tenant'], notBefore: f.c.clock.now(), notAfter: '2027-01-01T00:00:00.000Z' }),
     );
     f.c.clock.advance(31 * 86_400);
     beat(f);
@@ -195,8 +195,19 @@ describe('RN-CONFORM-05 — durable jobs, leases and fencing (WP-06/07)', () => 
     const done = f.fed.getJob(job.jobId)!;
     assert.equal(done.state, 'COMPLETED');
     assert.equal(observationsFor(f, done.challengeId as string).length, 2);
-    // Terminal: nobody can move it again, with any token.
-    assert.throws(() => f.fed.closeWithoutLease(job.jobId, f.c.clock.ms(), 'CANCELLED', 'late'), FederationStoreError);
+    // Terminal: nobody can move it again, with any token — a late close leaves it as it is (review P3-2).
+    assert.equal(f.fed.closeWithoutLease(job.jobId, f.c.clock.ms(), 'CANCELLED', 'late').state, 'COMPLETED');
+    assert.throws(() => f.fed.commitWithLease(fresh, f.c.clock.ms(), { state: 'CANCELLED' }), FederationStoreError);
+  });
+
+  it('P3-1: a worker can take over its own expired lease; the token still advances', () => {
+    const f = standardFederation();
+    const job = jobOf(scheduleOne(f, 'G01', 'document.open', 2));
+    const first = f.worker('w-same').acquire(job.jobId)!;
+    f.c.clock.advance(FEDERATION_TIMING.leaseSeconds + 1);
+    const again = f.worker('w-same').acquire(job.jobId)!;
+    assert.equal(again.fencingToken, first.fencingToken + 1);
+    assert.throws(() => f.fed.commitWithLease(first, f.c.clock.ms(), { state: 'COMPLETED' }), (e: unknown) => e instanceof FederationStoreError && e.code === 'FENCED');
   });
 
   it('worker crash before dispatch: the lease expires and the job is recovered by another worker, same challenge identity', async () => {
