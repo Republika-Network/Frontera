@@ -350,3 +350,49 @@ Scenario C needed strictly later evidence; F-0), then one explicit-any lint fals
 
 **Process:** no code was executed in the Windows-mounted worktree by the author or any subagent; validation ran in
 GitHub CI only. File edits were made with editor tools and small text-substitution scripts.
+
+## Security remediation (founder-authorized, after the cross-boundary gate)
+
+### Remediation matrix
+
+| Finding | Vulnerable path | Exploit | Invariant | Fix | Regression |
+|---|---|---|---|---|---|
+| P1-1 retired-generation quarantine | `federation-registry.ts` `eligibility()` read only the ACTIVE generation's conformance status | k1 (retired, outstanding challenge) is auto-quarantined by a contradiction; k2 keeps receiving work and voting until a caller-driven sync | S-01 | eligibility (and therefore scheduler capacity and the worker's pre-delivery check) refuses while any current generation is quarantined in the conformance store, and mirrors it | rotate → contradiction on k1 → schedule/dispatch to k2 refused, also after restart; release still needs REINSTATE + requalification |
+| P1-2 dispute chronology | `federation-scheduler.ts` `planFollowUps()` counted every operator seen in the window | A, B conformant before C's violation → "3 involved" → no dispute job → engine stays CONFLICTING → SR-4 suspension of a conformant credential | S-06, S-07 | per (control, operation) take the engine's earliest violation not resolved by ≥ 2 other operators' conformant observations **strictly after** it; schedule the operators still missing, allowing operators whose evidence predates it | the exact A, B → C chronology resolves; boundary, duplicate, same-operator, unavailable-third, restart, deadline cases |
+| P2-5 operator authority | RN-CONFORM-02 store: operators have no status; enrollment and observation acceptance never consult the federation | quarantined/revoked operator regains its vote through a direct enrollment; `registerSyntheticOperator` mints unapproved operator ids that count as independent votes | S-02, S-03, S-04, S-13 | operator status in the authoritative conformance store (schema `/3`), enforced by trigger at enrollment and observation acceptance, and in TypeScript at issuance, acceptance, re-authentication and evaluation | §Phase E sequence, unknown / unapproved / self-registered / revoked / stale projection / same-millisecond / two fabricated ids |
+| P2 job recovery | `expireOverdueJobs()` | all observations committed, crash before COMPLETED, restart after the deadline → EXPIRED; requalification lost | S-09 | reconcile committed observations first; fully evidenced jobs close COMPLETED | crash-after-commit + restart after deadline; partial; none |
+| P2 requalification fixture | scheduling-time-only credential-absence check | credential registered on the fixture after scheduling → probation evidence evaluated | S-08 | re-check at dispatch (before issue and before every delivery) and at reinstatement | credential created before dispatch / before completion → refused |
+
+### Migration plan (conformance store `/2` → `/3`)
+
+1. **Representation.** A new append-only table `cc_operator_events(operator_id, seq, kind, at_ms, reason, binding_digest)`,
+   `kind ∈ {APPROVED, REINSTATED, QUARANTINED, REVOKED, LEGACY}`. An operator is **eligible** exactly when its latest event
+   is `APPROVED` or `REINSTATED`. No event = registered only = ineligible (covers UNKNOWN and REGISTERED).
+2. **Mapping of existing identities.** A `/2` operator has no status; migration records one `LEGACY` event per operator
+   (`reason MIGRATED_FROM_STORE_V2`). LEGACY is **not eligible**: it preserves the historical acceptance of rows accepted
+   before it, and nothing else. Legacy operators become eligible again only through a two-person `operator.approve`.
+3. **Migration vs. interface.** A separate authorization interface outside the store could not be enforced by the store's
+   own triggers (no cross-database trigger is safe), so status lives in the store itself.
+4. **Triggers / preconditions.** Sequential `seq`, non-decreasing `at_ms`, REVOKED terminal, allowed edges
+   (APPROVED only from none/LEGACY; REINSTATED only from QUARANTINED; QUARANTINED from an eligible state or LEGACY;
+   LEGACY only as the first event); APPROVED and REINSTATED require two consumed humans (`operator.approve` /
+   `operator.reinstate`, bound to the operator and the sequence moved from); enrollment requires an eligible operator;
+   observation acceptance requires an eligible operator; append-only and duplicate guards as for every table.
+5. **Consistency with the federation store.** The conformance store is authoritative and is written first; the federation
+   mirrors it (`syncFromConformance` also mirrors operator quarantine/revocation) and its eligibility re-reads the
+   conformance operator status, so a lagging federation view can only be *more* permissive on paper, never in effect.
+6. **Crash between stores.** Conformance first; a retried federation approval adopts an already-recorded conformance
+   approval; a federation-only state is never sufficient for eligibility.
+7. **Monotonicity.** By trigger (no update/delete, sequential, REVOKED terminal, time non-decreasing).
+8. **Historical observations.** Untouched. Re-authentication checks the operator's status *at the row's acceptance time*
+   (either order of same-millisecond events, see F-0), with the LEGACY era accepted; evaluation excludes validators whose
+   operator is not eligible *now* (the existing exclusion rule, extended from validator to operator).
+9. **Unknown operators fail closed** (no events → ineligible) at enrollment, issuance, acceptance and evaluation.
+10. **Synthetic fixtures.** Test harnesses approve their synthetic operators explicitly with two humans; approval is
+    operational eligibility for synthetic tests only and never sets independence (`NOT_VERIFIED` stays).
+
+Opening: `/3` is created fresh; a `/2` file is **refused with `SCHEMA_MIGRATION_REQUIRED`** (never migrated implicitly)
+and converted only by the explicit `migrateConformanceStore(path)` — one IMMEDIATE transaction that first verifies the
+exact `/2` schema (tampered → refused), then adds the table and triggers, replaces the two guarded triggers, records the
+LEGACY events and bumps the version. Running it twice is refused (`ALREADY_CURRENT`); an interrupted run rolls back
+whole. Old code opening a `/3` file refuses it (schema differs). No row of any existing table is rewritten.
