@@ -259,7 +259,11 @@ export async function appendFvRevocation(
  * row's target and credential; it was made at exactly that row's position (prior head and chain digest) and time
  * (`notBefore`); there, the administrator was the FV administrator, active, with that credential active; the target was
  * a cryptographically verified FV operator, not the administrator; the challenge was unused; the counter advanced; and
- * the stored assertion verifies by the administrator's credential as it was there. Anything else is `unauthorized`
+ * the stored assertion verifies by the administrator's credential as it was there; and the stored row is byte-for-byte the
+ * row AUTH-03 builds from that contract and assertion (publication review F1). **What `authorized` does not prove:** that
+ * the row was appended within the signed window — neither the store nor the witness records a trusted append time, so a
+ * holder of the store's signing key could append a genuine authorization the ceremony never used, at its exact head,
+ * later (publication review F2); it still only removes authority. Anything else is `unauthorized`
  * (for example a holder of the store's signing key forging one). Either way the credential stays revoked: a revocation
  * only ever removes authority.
  */
@@ -290,7 +294,13 @@ export async function verifyFvRevocations(history: readonly StoredHumanIdentityR
         const credential = prior.credentials.get(authorization.administrator.credentialId);
         const challenge = webAuthnChallengeOf(fvRevocationAuthorizationCommitment(authorization));
         const counter = payload.counter;
+        const targetCredential = prior.credentials.get(authorization.target.credentialId);
         if (
+          !fvOperatorPlanUnfinished(prefix) &&
+          targetCredential !== undefined &&
+          targetCredential.operatorId === authorization.target.operatorId &&
+          targetCredential.state === 'active' &&
+          firstAdministratorCredentialDigest({ credentialId: authorization.target.credentialId, publicKey: targetCredential.publicKey }) === authorization.target.credentialDigest &&
           prior.principals.get(authorization.administrator.operatorId)?.state === 'active' &&
           credential !== undefined &&
           credential.operatorId === authorization.administrator.operatorId &&
@@ -304,7 +314,11 @@ export async function verifyFvRevocations(history: readonly StoredHumanIdentityR
           const a = payload.assertion ?? {};
           const response = parseAuthenticationResponse({ id: authorization.administrator.credentialId, rawId: authorization.administrator.credentialId, type: 'public-key', response: { clientDataJSON: a.clientDataJSON, authenticatorData: a.authenticatorData, signature: a.signature } });
           const verified = await verifyAssertion(response, challenge, { credentialId: authorization.administrator.credentialId, publicKey: credential.publicKey }, relyingParty);
-          ok = verified.counter === counter;
+          // Publication review F1: the stored row must be exactly the one AUTH-03 builds from this contract and this
+          // assertion (byte for byte), so no field AUTH-02's projection acts on (`assertedWith`, `counter`, `backedUp`,
+          // `reason`) can be swapped under a genuine signature.
+          const rebuilt = canonicalJson({ reason: authorization.reason, revokedBy: 'fv-administrator', assertedWith: authorization.administrator.credentialId, counter: verified.counter, backedUp: verified.backedUp, challengeDigest: challengeDigestOf(challenge), authorizationCommitment: fvRevocationAuthorizationCommitment(authorization), authorization: authorization as unknown as Parameters<typeof canonicalJson>[0], assertion: { clientDataJSON: response.response.clientDataJSON, authenticatorData: response.response.authenticatorData, signature: response.response.signature } });
+          ok = verified.counter === counter && row.payload === rebuilt;
         }
       }
     } catch {

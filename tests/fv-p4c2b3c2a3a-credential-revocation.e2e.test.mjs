@@ -254,6 +254,21 @@ describe('FV-P4C-2B3C-2A3A — only the current FV administrator revokes, and on
     });
   });
 
+  it('publication review F1: a genuine authorization appended with a swapped projected field (assertedWith) is unauthorized', async () => {
+    const { witness, w } = await world();
+    w.operators['fv-operator-b'] = await enrolOperator(w, witness, 'fv-operator-b');
+    await withStore(w, witness, async (store) => {
+      const evidence = evidenceFor(w, witness, store);
+      const row = (await verifyFvRevocationEvidence(store.history(), store, evidence, contextOf(w, witness))).row;
+      const payload = JSON.parse(row.payload);
+      const canonical = (v) => (v === null || typeof v !== 'object' ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map(canonical).join(',')}]` : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`);
+      // A signing-key holder appends it at its exact position, crediting the use (and its counter) to operator B's credential.
+      await store.append({ ...row, payload: canonical({ ...payload, assertedWith: w.operators['fv-operator-b'].credentialId }) }, () => undefined);
+      const revocations = await verifyFvRevocations(store.history(), w.world.org, RP);
+      assert.deepEqual([[...revocations.authorized], [...revocations.unauthorized]], [[], [w.operators['fv-operator-a'].credentialId]]);
+    });
+  });
+
   it('a revocation row a store-signing-key holder forged only removes authority, and is reported unauthorized', async () => {
     const { witness, w } = await world();
     w.operators['fv-operator-b'] = await enrolOperator(w, witness, 'fv-operator-b');

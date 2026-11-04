@@ -1007,7 +1007,13 @@ A single row is never a partial plan, so it adds no resume deadlock and no inter
 
 - **AUTH-02's projection** makes the revoked credential unusable at once, for authentication and for human and bootstrap decisions (tested).
 - **`verifyFvCurrentOperators`** counts only verified operators whose principal is active and that still hold an active credential. That is current authority, distinct from historical membership (`verifyFvOperatorRoles`, which still verifies). A revoked credential never counts, whether an administrator revoked it or a forged row did.
-- **`verifyFvRevocations`** re-verifies every FV revocation row from the store alone. A revocation is *authorized* when its stored contract recomputes, names that row's target, was made at exactly that row's position, and its stored assertion verifies under the administrator's credential as it was there. Otherwise it is *unauthorized*, for example a holder of the store's signing key forging one. Either way the credential stays revoked: **a revocation only ever removes authority**.
+- **`verifyFvRevocations`** re-verifies, from the store alone, **every** `credential_revoked` row of the FV store. A row is *authorized* only when all of these hold:
+  - it is the revocation ceremony's;
+  - everything AUTH-03 decided at write time holds again at that position (review L2/L3): the contract and its commitment, the target and its key digest, the target still active, a verified operator target, the position and chain digest, the signed time, an active administrator with its credential active, no unfinished plan, an unused challenge, an advancing counter and a valid signature;
+  - the stored row is **byte-for-byte the row AUTH-03 rebuilds** from that contract and assertion, so no projected field (`assertedWith`, counter, reason) can be swapped under a genuine signature (publication review F1).
+
+  Otherwise the row is *unauthorized*, for example a holder of the store's signing key forging one. Either way the credential stays revoked: **a revocation only ever removes authority**. A forged revocation is still a real loss of access, an availability and governance issue (recovery is §18).
+- **What `authorized` does not prove (publication review F2):** that the row was appended within the signed window. Neither the store nor the witness records a trusted append time. So a holder of the signing key could append, at its exact head and later, a genuine administrator authorization the ceremony never used (one left in the unsigned record after `WINDOW_CLOSED`, say). `authorized` means "the administrator signed exactly this revocation at exactly this position".
 - **The administrator's current state is required.** If its credential is revoked (in 2A3A only by a forged row, since the administrator is never a target), it authorizes neither a revocation nor an enrolment (tested).
 - **Freshness:** each decision reads the store's verified history under CORE-07 freshness. A rolled-back store never revives a revoked credential: the witness refuses it (tested).
 
@@ -1053,11 +1059,11 @@ A single row is never a partial plan, so it adds no resume deadlock and no inter
 ### 17.8 Evidence
 
 - **Tests.**
-  - `tests/fv-p4c2b3c2a3a-credential-revocation.e2e.test.mjs`: 23 tests, with real child processes paused or SIGKILLed, a real witness and real AUTH-02 authentication.
+  - `tests/fv-p4c2b3c2a3a-credential-revocation.e2e.test.mjs`: 24 tests, with real child processes paused or SIGKILLed, a real witness and real AUTH-02 authentication.
   - `fv-p4c2b3c2a3a-credential-revocation-structure.test.ts`: 4 tests.
   - Existing structure pins gained exact, commented exceptions for the new family member. No assertion was removed.
 - **Regression:** the focused suites (2A3A, 2A2B, 2A2A, HF01, 2A1, B3C-3, B3B, B3C-1, FV-EXEC-LOCK-01, all structure tests, AUTH-02/03/04, CORE-07, G-02A, PROD-02) and every gate pass on the final tree. The counts are in the CHANGELOG entry.
-- **Targeted mutants: 19 of 23 killed.** They ran on the compiled code in a separate copy, and every file was restored and hash-checked.
+- **Targeted mutants: 20 of 24 killed** (including the publication review's exact-row check). They ran on the compiled code in a separate copy, and every file was restored and hash-checked.
   - **Killed:**
     - the administrator's current state;
     - Host revocation of an FV store;
@@ -1088,6 +1094,14 @@ A single row is never a partial plan, so it adds no resume deadlock and no inter
   - **L3:** the verifier re-checked less than AUTH-03 did at write time. It now also re-checks the target's verified operator role, that the target is not the administrator, the active administrator principal, the challenge, the counter and the signed time.
 
   Info, documented in §17.6–§17.7: a recorded revocation goes stale if an enrolment lands first, and must be authorized again; a forged counter-raising row needs the signing key.
+- **Publication review (PR #268, head `d2febb1c`; a fresh read-only AI agent, not human).** No authorization bypass.
+  It reproduced two problems with the audit's integrity:
+  - **F1, Medium:** a genuine authorization appended at its position with a swapped projected field (for example
+    `assertedWith` moving the counter to another credential) was labelled authorized. **Fixed:** the stored row must
+    equal the row AUTH-03 rebuilds. AUTH-03's remaining write-time checks are also re-checked. Tested, and the mutant
+    is killed.
+  - **F2, Low/Medium:** an authorization the ceremony refused as expired, appended later by a key holder, is labelled
+    authorized. **Documented as a limit (§17.4):** there is no trusted append time to check against.
 
 ## 18. B3C-2A3B: governance recovery and interrupted enrolment (design only; NOT implemented)
 
