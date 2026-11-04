@@ -276,3 +276,11 @@ refused at open ("not intact") and must be re-provisioned — synthetic verifier
 `src/enterprise/conformance-*` directory counted as the module (and could import it unnoticed). It now uses a
 directory boundary, and the only exemption is the named listener directory and its test; a negative test pins that a
 sibling or look-alike directory is neither the module nor exempt.
+
+### 13.3 Final P3 — trusted time for key usability
+
+A final static review found that key usability was judged at the raw presented clock while expiry was judged at the
+latched trusted time: a clock stepped back ≤ 5 s after a pinned revocation could revive the revoked key. Key usability is
+now judged at the later of the presented and the store's latched trusted time (`StatusVerifierStore.trustedTimeMs()`, the
+same latch — no second clock), before the signature check and before anything is recorded, and re-judged at the time
+`observe` latched. Test: `RN-CONFORM-03 verifier: final P3 — key usability is judged at the latched trusted time`.

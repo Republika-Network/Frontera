@@ -139,6 +139,8 @@ export interface StatusVerifierStore {
     readonly nowMs: number;
     readonly online: boolean;
   }): HighWaterDecision;
+  /** The latched trusted time (the highest verification time this store has accepted). Read-only; `observe` alone advances it. */
+  trustedTimeMs(): number;
   /** The latched conflict for this credential (any issuer, or the given one), or `undefined`. Latches are append-only; no API clears one (§6). */
   latch(credentialId: string, issuer?: string): { readonly kind: string; readonly detail: string } | undefined;
   close(): void;
@@ -245,6 +247,7 @@ export function openStatusVerifierStore(path: string, options: { readonly create
   return Object.freeze<StatusVerifierStore>({
     path: file,
     latch: (credentialId: string, issuer?: string) => latchOf.get(credentialId, issuer ?? null, issuer ?? null) as { kind: string; detail: string } | undefined,
+    trustedTimeMs: () => (db.prepare('SELECT max_trusted_ms FROM vs_clock WHERE id = 1').get() as { max_trusted_ms: number }).max_trusted_ms,
     close: () => db.close(),
     observe(input) {
       return db.transaction((): HighWaterDecision => {
@@ -363,7 +366,11 @@ export function verifyConformanceStatus(input: {
     // 2 — pinned, issuer-bound, usable key; supported envelope; signature.
     if (a.signature.artifactVersion !== AUTHORITY_ARTIFACT_VERSION || a.signature.algorithm !== 'ed25519-v1') return verdict('INVALID_SIGNATURE', 'unsupported envelope');
     const key = input.trustedKeys.resolve(a.signature.keyId);
-    const usability = input.trustedKeys.usability(a.signature.keyId, a.issuer, toMs(a.issuedAt), nowMs);
+    // Key usability is judged at the effective trusted time — the later of the presented time and the store's latched
+    // trusted time — so a clock stepped back within the tolerance cannot revive an expired or revoked key. Judged before
+    // the signature and before anything is recorded.
+    const keyCheckMs = input.highWaterMark === undefined ? nowMs : Math.max(nowMs, input.highWaterMark.trustedTimeMs());
+    const usability = input.trustedKeys.usability(a.signature.keyId, a.issuer, toMs(a.issuedAt), keyCheckMs);
     if (key === undefined || usability !== 'USABLE') return verdict('UNTRUSTED_ISSUER', usability);
     const { signature, ...payload } = a;
     if (!verifyConformanceSignature(parsed.kind === 'assertion' ? 'status' : 'statusRefusal', payload, signature, key.publicKeyPem).ok) return verdict('INVALID_SIGNATURE');
@@ -415,6 +422,9 @@ export function verifyConformanceStatus(input: {
       // A clock stepped back within the tolerance never extends validity: judge expiry against the latched trusted time too.
       trustedNowMs = decision.trustedNowMs;
       if (trustedNowMs >= toMs(s.validUntil)) return verdict('EXPIRED_ASSERTION', 'EXPIRED', at);
+      // Re-judged at the time `observe` latched (another verifier on the same store may have advanced it meanwhile).
+      const keyNow = input.trustedKeys.usability(s.signature.keyId, s.issuer, toMs(s.issuedAt), trustedNowMs);
+      if (keyNow !== 'USABLE') return verdict('UNTRUSTED_ISSUER', keyNow, at);
     }
     const final = { ...at, continuity };
     // 7 — term, state, scope, evidence freshness.

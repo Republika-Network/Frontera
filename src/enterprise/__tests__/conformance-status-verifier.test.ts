@@ -8,7 +8,7 @@ import { toMs, toTimestamp } from '../conformance/contracts.js';
 import { signConformancePayload } from '../conformance/signing.js';
 import { parseStatusArtifact, type StatusAssertionPayload } from '../conformance/status-contracts.js';
 import { openStatusVerifierStore, verifyConformanceStatus, type StatusExpectation } from '../conformance/status-verifier.js';
-import { ORG_A, activeCredential, cleanupAll, issue, observe, submit } from './conformance-support.js';
+import { ORG_A, activeCredential, cleanupAll, issue, observe, submit, testKey } from './conformance-support.js';
 import { ISSUER, assertionText, buildStatusCircuit, freshNonce, type StatusCircuit } from './conformance-status-support.js';
 
 /**
@@ -275,6 +275,50 @@ describe('RN-CONFORM-03 verifier: re-review regressions (N-1, N-3)', () => {
     s.c.clock.set(toTimestamp(until - 1000));
     assert.equal(s.verify(a, credentialId, { kind: 'stapled' }).result, 'CONFORMANT', 'by the presented clock alone it would still be valid');
     assert.deepEqual(result(s.verify(a, credentialId, { kind: 'stapled' }, { store })), ['EXPIRED_ASSERTION', 'EXPIRED']);
+    s.cleanup();
+  });
+});
+
+describe('RN-CONFORM-03 verifier: final P3 — key usability is judged at the latched trusted time', () => {
+  it('a clock stepped back ≤ 5 s after a pinned revocation cannot revive the revoked key; restart preserves it; the replacement key still verifies; no false latch', () => {
+    const T0 = toMs('2026-11-02T09:00:00.000Z');
+    const revokedAt = T0 + 5 * 60_000;
+    const keyA = { privateKey: testKey('p3-key-a'), validFrom: '2026-10-01T00:00:00.000Z', validUntil: '2027-11-02T09:00:00.000Z', revokedAt: toTimestamp(revokedAt) };
+    const keyB = { privateKey: testKey('p3-key-b'), validFrom: toTimestamp(T0 + 4 * 60_000), validUntil: '2027-11-02T09:00:00.000Z' };
+    const s = buildStatusCircuit({ signerKeys: [keyA, keyB] });
+    const credentialId = activeCredential(s.c);
+    const [recordA, recordB] = s.trusted.list();
+    // 1, 2 — a stateful verifier and a valid ACTIVE staple signed by key A at trusted time T.
+    const old = assertionText(s.registry.stapled(credentialId));
+    assert.equal((JSON.parse(old) as { signature: { keyId: string } }).signature.keyId, recordA!.keyId);
+    const store = s.verifierStore('p3');
+    assert.equal(s.verify(old, credentialId, { kind: 'stapled' }, { store }).result, 'CONFORMANT');
+    // 3, 4 — key A is revoked at T0+5 min; the verifier's trusted time advances past it (verifying a key-B assertion).
+    s.c.clock.set(toTimestamp(revokedAt + 3_000));
+    const nonce = freshNonce();
+    const replacement = assertionText(s.registry.issueOnline(s.onlineRequest(credentialId, nonce)));
+    assert.equal((JSON.parse(replacement) as { signature: { keyId: string } }).signature.keyId, recordB!.keyId);
+    assert.equal(s.verify(replacement, credentialId, { kind: 'online', nonce }, { store }).result, 'CONFORMANT');
+    assert.equal(store.trustedTimeMs(), revokedAt + 3_000);
+    // 5–7 — the raw clock regresses 4 s (inside the 5 s tolerance), to before the revocation. The old staple is still
+    // inside its own validity window and its signature is genuine; judged by the raw clock alone, key A would be usable —
+    // which is exactly what the prior code did (the stateless verifier below shows that raw-clock judgement).
+    s.c.clock.set(toTimestamp(revokedAt - 1_000));
+    assert.ok(toMs(payloadOf(old).validUntil) > revokedAt + 3_000, 'the old staple has not expired');
+    assert.equal(s.verify(old, credentialId, { kind: 'stapled' }).result, 'CONFORMANT', 'raw-clock judgement (stateless verifier): key A looks usable');
+    const refused = s.verify(old, credentialId, { kind: 'stapled' }, { store });
+    assert.deepEqual([refused.conformant, refused.result, refused.detail], [false, 'UNTRUSTED_ISSUER', 'REVOKED']);
+    // 8 — after a restart the latched trusted time still applies.
+    store.close();
+    const reopened = openStatusVerifierStore(store.path);
+    assert.deepEqual([s.verify(old, credentialId, { kind: 'stapled' }, { store: reopened }).result, s.verify(old, credentialId, { kind: 'stapled' }, { store: reopened }).detail], ['UNTRUSTED_ISSUER', 'REVOKED']);
+    // 9 — the replacement key's assertion still verifies under the normal continuity and freshness rules.
+    s.c.clock.set(toTimestamp(revokedAt + 4_000));
+    const again = s.verify(replacement, credentialId, { kind: 'stapled' }, { store: reopened });
+    assert.deepEqual([again.result, again.continuity], ['CONFORMANT', 'SAME']);
+    // 10 — the regression produced no permanent latch.
+    assert.equal(reopened.latch(credentialId), undefined);
+    reopened.close();
     s.cleanup();
   });
 });
