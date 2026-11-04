@@ -305,11 +305,15 @@ describe('FV-P4C-2B3C-3 settlement — fenced inside the identity owner’s own 
     const fresh = async () => ({ boundary: await boundaryFor(witness, ORG), stateKind: FV_DOMAIN });
     const older = join(w.dir, 'older-identity.sqlite');
     copyFileSync(w.paths.identity, older);
-    // The FV store advances (its exclusive owner, in its own domain).
+    // The FV store advances (its exclusive owner, in its own domain). FV-P4C-2B3C-2A2B: an FV store refuses Host
+    // administration, so it advances by an enrolled FV human's passkey authentication (one chained row).
     const admin = identityAdministratorFor({ plane: 'operator', operatorId: 'ops-admin', organizationId: ORG, role: 'organization-administrator', credentialClass: 'operator', actorRef: 'operator-plane:ops-admin' });
     const authenticity = { signer: testSigner(AUTHORITY_KEY_A), verifier: testVerifier([AUTHORITY_KEY_A]) };
     const owner = await openSqliteHumanIdentityStore(w.paths.identity, { organizationId: ORG, now: () => LATER, authenticity, freshness: await fresh(), exclusive: { beforeWrite: () => undefined, closer: (_f, c) => () => void c.close(), storeId: identityConfigOf(w.dir).storeId } });
-    await createHumanIdentityService({ store: owner, relyingParty: RP, operatorIds: [...OPERATORS, 'observer-x'], now: () => new Date(LATER) }).createPrincipal(admin, { operatorId: 'observer-x', displayName: 'Synthetic observer' });
+    const ownerIdentity = createHumanIdentityService({ store: owner, relyingParty: RP, operatorIds: OPERATORS, now: () => new Date(LATER) });
+    const advancedFrom = owner.head().sequence;
+    await ownerIdentity.finishAuthentication(w.devices['requester-a'].assert(ownerIdentity.beginAuthentication()));
+    assert.equal(owner.head().sequence, advancedFrom + 1);
     owner.close();
     (await start(w, LATER, { identity: identityConfigOf(w.dir, { freshness: await fresh() }) })).host.close();
     // A Host store in the same organization, at the same witness.

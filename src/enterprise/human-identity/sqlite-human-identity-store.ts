@@ -219,6 +219,12 @@ export interface SqliteHumanIdentityStoreOptions {
 export interface HumanIdentityStore {
   readonly organizationId: string;
   readonly storeId: string;
+  /**
+   * FV-P4C-2B3C-2A2B: whether this handle is the store's one exclusive (FV) owner (`exclusive` was given). AUTH-02's
+   * general administration refuses such a store, as it refuses one whose signed history begins with an FV
+   * administrator (`fv-domain.ts`).
+   */
+  readonly exclusiveOwner: boolean;
   /** The verified history, oldest first. Throws `HUMAN_IDENTITY_STORE_CORRUPT` rather than return a history that does not verify. */
   history(): readonly StoredHumanIdentityRow[];
   head(): HumanIdentityStateCommitment;
@@ -568,6 +574,7 @@ export async function openSqliteHumanIdentityStore(path: string, options: Sqlite
   const store: HumanIdentityStore = {
     organizationId,
     storeId,
+    exclusiveOwner: exclusive !== undefined,
     history: () => (open(), verifiedState().rows),
     head: () => (open(), verifiedState().state),
     append(row, guard, consume) {

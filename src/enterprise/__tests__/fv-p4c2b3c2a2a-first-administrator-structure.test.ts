@@ -34,11 +34,15 @@ describe('FV-P4C-2B3C-2A2A structure — the first-administrator enrolment is in
     const outside = [...productionSources().filter((p) => !p.startsWith(join(MODULE, 'identity-registration'))), ...walk(join(ROOT, 'scripts'), (p) => /\.(m?js|ts|sh)$/.test(p)), ...walk(join(ROOT, 'deploy'), () => true), join(ROOT, 'Dockerfile'), join(ROOT, 'package.json')].filter((file) => existsSync(file) && NAMES.test(read(file)));
     assert.deepEqual(outside.map((f) => relative(ROOT, f)), []);
     const rowUsers = productionSources().filter((p) => p !== ROWS && /first-administrator\.js'/.test(read(p)));
-    assert.deepEqual(rowUsers.map((f) => relative(ROOT, f)), [relative(ROOT, CEREMONY)], 'only the ceremony imports AUTH-03’s first-administrator module');
+    // FV-P4C-2B3C-2A2B: AUTH-03's FV roles and FV operator rows (the role constant, the credential digest and the
+    // epoch expiry), and the operator ceremony (the credential digest, and this ceremony's registered-store access).
+    const OPERATOR_CEREMONY = join(MODULE, 'identity-registration-operator.ts');
+    assert.deepEqual(rowUsers.map((f) => relative(ROOT, f)).sort(), [CEREMONY, join(IDENTITY, 'fv-domain.ts'), join(IDENTITY, 'fv-operator.ts'), OPERATOR_CEREMONY].map((f) => relative(ROOT, f)).sort(), 'only the ceremonies of this family and AUTH-03’s FV modules import the first-administrator modules');
     assert.equal(/first-administrator/.test(read(join(IDENTITY, 'index.ts'))), false, 'not exported from the AUTH-03 index');
     assert.equal(/first-administrator|FirstAdministrator/.test(read(join(MODULE, 'index.ts'))), false, 'not exported from the module index');
     const internals = productionSources().filter((p) => /fvRegistrarInternals/.test(read(p)));
-    assert.deepEqual(internals.map((f) => relative(MODULE, f)).sort(), ['identity-registration-first-administrator.ts', 'identity-registration.ts'], 'the registrar’s helpers reach only the first-administrator ceremony');
+    // FV-P4C-2B3C-2A2B: and the operator-enrolment ceremony of the same family.
+    assert.deepEqual(internals.map((f) => relative(MODULE, f)).sort(), ['identity-registration-first-administrator.ts', 'identity-registration-operator.ts', 'identity-registration.ts'], 'the registrar’s helpers reach only this family’s ceremonies');
     for (const name of ['dedicated-executor.ts', 'dedicated-executor-main.ts', 'dedicated-executor-supervisor.ts', 'dedicated-executor-protocol.ts', 'protected-host-composition.ts']) {
       assert.equal(/FirstAdministrator|first-administrator/.test(read(join(MODULE, name))), false, name);
     }

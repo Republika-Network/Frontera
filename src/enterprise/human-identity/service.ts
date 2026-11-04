@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import type { EnterpriseOperatorPrincipal } from '../operator-control/operator-authenticator.js';
 import { canonicalJson, type HumanIdentityJson, type StoredHumanIdentityRow } from './chain.js';
+import { fvOperatorPlanUnfinished, fvOwnedHistory } from './fv-domain.js';
 import {
   HumanIdentityError,
   type AuthenticationOptionsJSON,
@@ -645,7 +646,36 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
 
   const state = (): IdentityState => project(store.history(), organizationId);
 
+  /**
+   * FV-P4C-2B3C-2A2B — Host administrator authority never implies FV administrator authority. An FV identity store
+   * (opened by its exclusive FV owner, or whose signed history begins with the FV administrator) refuses every
+   * general administrative act, enrolment-token registration and owner revocation, before anything is signed and
+   * again in each append's guard. FV principals are added only by the FV ceremonies' own AUTH-03 rules.
+   */
+  function notFvOwned(history: readonly StoredHumanIdentityRow[] = store.history()): void {
+    if (store.exclusiveOwner || fvOwnedHistory(history)) throw new HumanIdentityError('HUMAN_IDENTITY_FV_ADMINISTRATION_REFUSED', 'This is an FV identity store: Host administration, enrolment tokens and owner revocation do not apply to it.');
+  }
+
+  /**
+   * FV-P4C-2B3C-2A2B (fix-commit review F1) — every write of this service to an FV store is refused while an FV
+   * operator plan is unfinished (a crash mid-enrolment), so that plan stays the history's suffix and its resume can
+   * complete it; otherwise it would be stranded and every later enrolment blocked. Decided in the append's guard,
+   * against the verified history. Fails closed until the enrolment is resumed.
+   */
+  const guardedAppend: HumanIdentityStore['append'] = (content, guard, consume) =>
+    store.append(
+      content,
+      (history) => {
+        if ((store.exclusiveOwner || fvOwnedHistory(history)) && fvOperatorPlanUnfinished(history)) {
+          throw new HumanIdentityError('HUMAN_IDENTITY_FV_ENROLLMENT_PENDING', 'An FV operator enrolment is unfinished on this store: resume it before anything else is written.');
+        }
+        guard(history);
+      },
+      consume,
+    );
+
   function administrator(value: IdentityAdministrator): IdentityAdministrator {
+    notFvOwned();
     if (!ADMINISTRATORS.has(value)) throw new HumanIdentityError('HUMAN_IDENTITY_ADMINISTRATOR_REQUIRED', 'An administrative act requires an administrator established by the operator plane.');
     if (value.organizationId !== organizationId) throw new HumanIdentityError('HUMAN_IDENTITY_ADMINISTRATOR_REQUIRED', "The administrator belongs to another organization than this Host's.");
     return value;
@@ -773,7 +803,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
   };
 
   const anomaly = (credential: CredentialRecord, challengeDigest: string, presented: number) => async (): Promise<void> => {
-    await store.append(row('credential_counter_anomaly', credential.view.operatorId, credential.view.credentialId, { presented, stored: credential.view.counter, challengeDigest }, CEREMONY_RECORDER), (history) => void notUsed(challengeDigest)(history));
+    await guardedAppend(row('credential_counter_anomaly', credential.view.operatorId, credential.view.credentialId, { presented, stored: credential.view.counter, challengeDigest }, CEREMONY_RECORDER), (history) => void notUsed(challengeDigest)(history));
   };
 
   const FORMAT_OF = { 'core-05': HUMAN_DECISION_CHALLENGE_FORMAT, 'bootstrap-authority': BOOTSTRAP_AUTHORITY_CHALLENGE_FORMAT } as const;
@@ -878,7 +908,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       evidence = core05;
       evidenceDigest = humanDecisionEvidenceDigest(core05);
     }
-    await store.append(
+    await guardedAppend(
       // One row (CORE-07 advances one position per append): the decision also records the credential's use.
       row('decision_authorized', contract.operatorId, commitment, { evidence: { ...evidence }, evidenceDigest, challengeDigest, counter: use.counter, backedUp: use.backedUp }, CEREMONY_RECORDER),
       (history) => {
@@ -934,7 +964,8 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       if (typeof operatorId !== 'string' || !OPERATOR_ID.test(operatorId) || !operatorIds.has(operatorId)) throw new HumanIdentityError('HUMAN_IDENTITY_UNKNOWN_OPERATOR', "That operator id is not one of this Host's configured operators.");
       const displayName = input.displayName;
       if (typeof displayName !== 'string' || displayName.trim() !== displayName || displayName.length === 0 || displayName.length > 128) throw new HumanIdentityError('HUMAN_IDENTITY_CONFIGURATION_INVALID', 'displayName must be a non-empty trimmed string of at most 128 characters.');
-      await store.append(row('principal_created', operatorId, null, { displayName, userHandle: randomBytes(32).toString('base64url') }, actor.actorRef), (history) => {
+      await guardedAppend(row('principal_created', operatorId, null, { displayName, userHandle: randomBytes(32).toString('base64url') }, actor.actorRef), (history) => {
+        notFvOwned(history);
         if (project(history, organizationId).principals.has(operatorId)) throw new HumanIdentityError('HUMAN_IDENTITY_PRINCIPAL_EXISTS', 'A human principal already exists for that operator.');
       });
       return (state().principals.get(operatorId) as PrincipalState).principal;
@@ -943,7 +974,8 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     async revokePrincipal(admin, operatorId, reason) {
       const actor = administrator(admin);
       const why = reasonOf(reason);
-      await store.append(row('principal_revoked', operatorId, null, { reason: why }, actor.actorRef), (history) => {
+      await guardedAppend(row('principal_revoked', operatorId, null, { reason: why }, actor.actorRef), (history) => {
+        notFvOwned(history);
         const found = project(history, organizationId).principals.get(operatorId);
         if (found === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_UNKNOWN_PRINCIPAL', 'No human principal exists for that operator.');
         if (found.principal.state === 'revoked') throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That human principal is already revoked.');
@@ -957,7 +989,8 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const enrolmentId = `enr-${randomBytes(16).toString('hex')}`;
       const secret = randomBytes(32).toString('base64url');
       const expiresAt = after(enrolmentTtl);
-      await store.append(row('enrolment_authorized', operatorId, enrolmentId, { expiresAt, tokenVerifier: verifierOf(secret) }, actor.actorRef), (history) => {
+      await guardedAppend(row('enrolment_authorized', operatorId, enrolmentId, { expiresAt, tokenVerifier: verifierOf(secret) }, actor.actorRef), (history) => {
+        notFvOwned(history);
         const current = project(history, organizationId);
         activePrincipal(current, operatorId);
         // Decided against the verified history, so concurrent issuers cannot exceed it.
@@ -974,7 +1007,8 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       if (typeof enrolmentId !== 'string' || !ENROLMENT_ID.test(enrolmentId)) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'That is not an enrolment id.');
       const current = state().enrolments.get(enrolmentId);
       if (current === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'No such enrolment.');
-      await store.append(row('enrolment_revoked', current.operatorId, enrolmentId, { reason: why }, actor.actorRef), (history) => {
+      await guardedAppend(row('enrolment_revoked', current.operatorId, enrolmentId, { reason: why }, actor.actorRef), (history) => {
+        notFvOwned(history);
         const record = project(history, organizationId).enrolments.get(enrolmentId);
         if (record === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ENROLMENT_INVALID', 'No such enrolment.');
         if (record.revoked || record.consumed) throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That enrolment is already revoked or consumed.');
@@ -984,6 +1018,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
 
     beginRegistration(enrolmentToken) {
       const current = state();
+      notFvOwned(store.history());
       const enrolment = openEnrolment(current, enrolmentToken);
       const principal = activePrincipal(current, enrolment.operatorId);
       const challenge = challengeFor('registration', { operatorId: enrolment.operatorId, enrolmentId: enrolment.enrolmentId });
@@ -1001,6 +1036,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     },
 
     async finishRegistration(enrolmentToken, raw) {
+      notFvOwned();
       const enrolment = openEnrolment(state(), enrolmentToken);
       const response = parseRegistrationResponse(raw);
       const clientData = clientDataOf(response.response.clientDataJSON, 'webauthn.create', relyingParty);
@@ -1010,7 +1046,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       }
       const verified = await verifyRegistration(response, challenge.challenge, relyingParty);
       const challengeDigest = challengeDigestOf(challenge.challenge);
-      await store.append(
+      await guardedAppend(
         row(
             'credential_registered',
             enrolment.operatorId,
@@ -1031,6 +1067,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
             CEREMONY_RECORDER,
           ),
         (history) => {
+          notFvOwned(history);
           const current = notUsed(challengeDigest)(history);
           if (current.credentials.has(verified.credentialId)) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_DUPLICATE', 'That credential id is already registered.');
           const record = current.enrolments.get(enrolment.enrolmentId);
@@ -1053,7 +1090,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const challengeDigest = challengeDigestOf(challenge.challenge);
       const known = state().credentials.get(response.id);
       const use = await verifiedUse(response, challenge.challenge, null, known === undefined ? async () => undefined : anomaly(known, challengeDigest, signatureCounterOf(response.response.authenticatorData)));
-      await store.append(
+      await guardedAppend(
         row('credential_used', use.credential.view.operatorId, use.credential.view.credentialId, { counter: use.counter, backedUp: use.backedUp, challengeDigest }, CEREMONY_RECORDER),
         (history) => {
           const current = notUsed(challengeDigest)(history);
@@ -1080,7 +1117,8 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const why = reasonOf(reason);
       const existing = state().credentials.get(credentialId);
       if (existing === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'No such credential.');
-      await store.append(row('credential_revoked', existing.view.operatorId, credentialId, { reason: why, revokedBy: 'administrator' }, actor.actorRef), (history) => {
+      await guardedAppend(row('credential_revoked', existing.view.operatorId, credentialId, { reason: why, revokedBy: 'administrator' }, actor.actorRef), (history) => {
+        notFvOwned(history);
         const credential = project(history, organizationId).credentials.get(credentialId);
         if (credential === undefined) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'No such credential.');
         if (credential.view.state === 'revoked') throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That credential is already revoked.');
@@ -1089,6 +1127,8 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     },
 
     beginOwnerRevocation(credentialId) {
+      // FV-P4C-2B3C-2A2B: revocation of an FV credential is B3C-2A3's, never this general path.
+      notFvOwned();
       const current = state();
       const target = current.credentials.get(credentialId);
       if (target === undefined || target.view.state !== 'active') throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_UNUSABLE', 'The credential is unknown or revoked.');
@@ -1098,6 +1138,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
     },
 
     async finishOwnerRevocation(credentialId, raw, reason) {
+      notFvOwned();
       const why = reasonOf(reason);
       const response = parseAuthenticationResponse(raw);
       const clientData = clientDataOf(response.response.clientDataJSON, 'webauthn.get', relyingParty);
@@ -1109,10 +1150,11 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       const target = state().credentials.get(credentialId);
       if (target === undefined || target.view.operatorId !== use.credential.view.operatorId) throw new HumanIdentityError('HUMAN_IDENTITY_CREDENTIAL_OWNERSHIP_MISMATCH', 'Only the human who owns a credential may revoke it this way.');
       const asserting = use.credential.view.credentialId;
-      await store.append(
+      await guardedAppend(
         // One row (CORE-07 advances one position per append): the revocation also records the asserting credential's use.
         row('credential_revoked', target.view.operatorId, credentialId, { reason: why, revokedBy: 'owner', assertedWith: asserting, counter: use.counter, backedUp: use.backedUp, challengeDigest }, `owner:${asserting}`),
         (history) => {
+          notFvOwned(history);
           const current = notUsed(challengeDigest)(history);
           stillUsable(asserting, current);
           counterStillAdvances(current, asserting, use.counter);
@@ -1157,7 +1199,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       // FV-P4C-2B2B: a CORE-05 outcome (recorded, refused, abandoned) never settles a bootstrap-authority decision.
       if (decided === undefined || decided.domain !== 'core-05') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
       const payload = outcome.outcome === 'recorded' ? { outcome: 'recorded', verdictRowDigest: outcome.verdictRowDigest } : outcome.outcome === 'refused' ? { outcome: 'refused', code: outcome.code } : { outcome: 'abandoned' };
-      await store.append(row('decision_outcome', decided.evidence.operatorId, commitment, payload, CEREMONY_RECORDER), (history) => {
+      await guardedAppend(row('decision_outcome', decided.evidence.operatorId, commitment, payload, CEREMONY_RECORDER), (history) => {
         const current = project(history, organizationId).decisions.get(commitment);
         if (current === undefined || current.domain !== 'core-05') throw new HumanIdentityError('HUMAN_IDENTITY_CHALLENGE_INVALID', 'No authorized decision exists for that commitment.');
         if (current.outcome !== undefined) throw new HumanIdentityError('HUMAN_IDENTITY_ALREADY_REVOKED', 'That decision already has a recorded outcome.');
@@ -1228,7 +1270,7 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
       if (decided.settlement !== undefined) return 'unchanged';
       const read = settlementOf(settlement, decided.evidence) as BootstrapAuthoritySettlement;
       try {
-        await store.append(row('decision_outcome', decided.evidence.operatorId, commitment, { ...read }, CEREMONY_RECORDER), (history) => {
+        await guardedAppend(row('decision_outcome', decided.evidence.operatorId, commitment, { ...read }, CEREMONY_RECORDER), (history) => {
           const current = project(history, organizationId);
           const now = checkSettlement(current, commitment, read);
           // Settled meanwhile (identically, or checkSettlement would have refused): nothing to append.
@@ -1269,4 +1311,25 @@ function constructHumanIdentityService(options: HumanIdentityServiceOptions): { 
   };
   // Review fix: frozen, so no holder of the general service can replace a method and intercept a capability passed to it.
   return { service: Object.freeze(service), instance };
+}
+
+/** A read-only summary of AUTH-02's own projection (see {@link humanIdentityStateOf}). */
+export interface HumanIdentityStateSummary {
+  readonly principals: ReadonlyMap<string, { readonly state: 'active' | 'revoked'; readonly userHandle: string }>;
+  readonly credentials: ReadonlyMap<string, { readonly operatorId: string; readonly publicKey: string; readonly state: 'active' | 'revoked'; readonly counter: number }>;
+  readonly usedChallenges: ReadonlySet<string>;
+}
+
+/**
+ * FV-P4C-2B3C-2A2B — AUTH-02's own projection of a verified history (principals, credentials, consumed challenges),
+ * read-only, so the FV operator rows (`fv-operator.ts`) decide with exactly AUTH-02's semantics rather than a second
+ * reading of the rows. Throws `HUMAN_IDENTITY_STORE_CORRUPT` on a history AUTH-02 itself would refuse.
+ */
+export function humanIdentityStateOf(history: readonly StoredHumanIdentityRow[], organizationId: string): HumanIdentityStateSummary {
+  const current = project(history, organizationId);
+  return Object.freeze({
+    principals: new Map([...current.principals].map(([id, p]) => [id, Object.freeze({ state: p.principal.state, userHandle: p.userHandle })] as const)),
+    credentials: new Map([...current.credentials].map(([id, c]) => [id, Object.freeze({ operatorId: c.view.operatorId, publicKey: c.publicKey, state: c.view.state, counter: c.view.counter })] as const)),
+    usedChallenges: new Set(current.usedChallenges),
+  });
 }

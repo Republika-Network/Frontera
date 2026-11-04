@@ -712,3 +712,15 @@ export async function readFvFirstAdministratorEnrollment(options: FvFirstAdminis
     record.close();
   }
 }
+
+/**
+ * FV-P4C-2B3C-2A2B — this family's registered-store access, for the operator-enrolment ceremony
+ * (`identity-registration-operator.ts`) only (a structure test pins the one importer): the registration record
+ * locked and verified as registered, and the registered store opened as its exclusive, pinned, FV-domain owner under
+ * freshness. They decide nothing about administrators or operators.
+ */
+export const fvRegisteredStoreAccess = Object.freeze({
+  registeredRecord: (registrar: FvRegistrarConfiguration, relyingParty: RelyingPartyConfiguration) => registeredRecord({ registrar, relyingParty, observer: undefined }),
+  openStore: (registrar: FvRegistrarConfiguration, relyingParty: RelyingPartyConfiguration, record: FvRegistrationRecordFile, current: FvIdentityRegistrationRecord, boundary: AuthorityStateFreshnessBoundary) => openStore({ registrar, relyingParty, observer: undefined }, record, current, boundary),
+  pendingReason,
+});
