@@ -52,6 +52,8 @@ export interface FederationScheduler {
   capacity(challengeType: ChallengeType, profileId: string, profileVersion: string, untilMs: number): readonly JobAssignment[];
 }
 
+/** Bound on re-scheduling one follow-up after its jobs ended without completing (review C-4). */
+const MAX_FOLLOW_UP_ATTEMPTS = 8;
 const jobIdOf = (key: string) => `job_${createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 32)}`;
 
 const DEADLINE_OF: Readonly<Record<JobPurpose, number>> = Object.freeze({
@@ -159,8 +161,18 @@ export function createFederationScheduler(deps: {
       if (request.purpose === 'REQUALIFICATION') throw new TypeError('Requalification jobs are scheduled only through scheduleRequalification.');
       const target = authorizationFor(request.authorizationId, request.fixtureRef, deadlineSeconds, at, 'CONFORMANCE');
       if (target === undefined) return { scheduled: false, reason: 'AUTHORIZATION_INVALID', availableOperators: 0 };
-      const existing = fed.getJob(jobIdOf(request.jobKey));
-      if (existing !== undefined) return { scheduled: true, job: existing, created: false };
+      // Review C-4: a follow-up whose previous job ended without completing (expired, cancelled, failed) is scheduled
+      // again under a bounded attempt suffix; a live or completed job is returned as before.
+      let jobKey = request.jobKey;
+      for (let attempt = 1; ; attempt += 1) {
+        const existing = fed.getJob(jobIdOf(jobKey));
+        if (existing === undefined) break;
+        const ended = existing.state === 'EXPIRED' || existing.state === 'CANCELLED' || existing.state === 'FAILED_FINAL';
+        if (!ended || (request.purpose !== 'INVESTIGATION' && request.purpose !== 'DISPUTE')) return { scheduled: true, job: existing, created: false };
+        if (attempt > MAX_FOLLOW_UP_ATTEMPTS) return { scheduled: false, reason: 'QUORUM_INSUFFICIENT', availableOperators: 0 };
+        jobKey = `${request.jobKey}#retry${attempt}`;
+      }
+      request = { ...request, jobKey };
       if (!Number.isSafeInteger(request.requiredOperators) || request.requiredOperators < 1) throw new TypeError('requiredOperators must be a positive integer.');
       const exclude = new Set(request.excludeOperators ?? []);
       const candidates = capacity(request.challengeType, target.integration.profile.id, target.integration.profile.version, at + deadlineSeconds * 1000).filter((a) => !exclude.has(a.operatorId));
@@ -303,7 +315,8 @@ export function createFederationScheduler(deps: {
         const resolversOf = (v: { op: string; t: number }) => new Set(postConformant.filter((c) => c.op !== v.op && c.t > v.t).map((c) => c.op));
         const first = postViolations.find((v) => resolversOf(v).size < othersToResolve);
         if (first === undefined) continue;
-        if (openFollowUps.some((j) => j.challengeType === type && j.operation === operation)) continue; // already in flight
+        // Already in flight for THIS integration (review C-1: never another tenant's or integration's job).
+        if (openFollowUps.some((j) => j.organizationId === auth.record.organizationId && j.integrationDigest === auth.record.integrationDigest && j.challengeType === type && j.operation === operation)) continue;
         const violators = new Set(postViolations.map((v) => v.op));
         const resolvers = resolversOf(first);
         const conflicting = postConformant.some((c) => c.op !== first.op && (c.t > first.t || first.t - c.t <= w));

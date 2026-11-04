@@ -17,6 +17,7 @@ import {
   type ValidatorEnrollmentRecord,
   type ValidatorOperatorRecord,
 } from './contracts.js';
+import { quarantineLineage } from './evidence.js';
 import { verifyTwoPersonAuthority, type SyntheticHumanDirectory } from './human-authority.js';
 import { profileKey, sdkSupported, type ConformanceProfileDefinition, type ConformanceProfileRegistry } from './profile.js';
 import type { ConformanceStore, ConsumedDecision } from './sqlite-conformance-store.js';
@@ -179,7 +180,10 @@ export function createConformanceRegistry(deps: {
     if (store.getOperator(operatorId) === undefined) throw new ConformanceRegistryError('UNKNOWN_OPERATOR');
     if (typeof reason !== 'string' || reason.length === 0 || reason.length > 200) throw new ConformanceRegistryError('MALFORMED_INPUT', 'reason');
     try {
-      store.appendOperatorEvent(operatorId, kind, toMs(clock.now()), reason, null, []);
+      // Review C-3: a protective event is never refused for a slightly regressed clock — it is stamped no earlier than
+      // the latest event (status is decided by sequence), so it always lands and always restricts.
+      const latestAt = store.listOperatorEvents(operatorId).reduce((m, e) => Math.max(m, e.atMs), 0);
+      store.appendOperatorEvent(operatorId, kind, Math.max(toMs(clock.now()), latestAt), reason, null, []);
     } catch (error) {
       storeRefusal(error);
     }
@@ -388,7 +392,8 @@ export function createConformanceRegistry(deps: {
 
     quarantineValidator(validatorId: string, reason: string) {
       if (store.getValidator(validatorId) === undefined) throw new ConformanceRegistryError('MALFORMED_INPUT', 'unknown validator');
-      store.appendValidatorEvent(validatorId, 'QUARANTINED', toMs(clock.now()), reason);
+      // Review C-2: a behavioural quarantine applies to the whole logical validator (all earlier key generations).
+      quarantineLineage(store, validatorId, toMs(clock.now()), reason);
     },
   });
   return registry;

@@ -27,7 +27,7 @@ import {
 } from '../conformance/sqlite-conformance-store.js';
 import { ALL_ACTIONS, ORG_A, T0, decide, manualClock, syntheticHuman, syntheticValidator, enrollmentDecisions } from './conformance-support.js';
 import { REFERENCE_FIXTURE_REF } from './conformance-reference-pep.js';
-import { assertionOf, cleanupReferenceCircuits, referenceStatus } from './conformance-reference-support.js';
+import { assertionOf, cleanupReferenceCircuits, referenceIntegrationInput, referenceStatus } from './conformance-reference-support.js';
 import {
   FED_OPERATORS,
   FED_REQUALIFICATION_AUTHORIZATION,
@@ -86,9 +86,15 @@ describe('P1-1 — a quarantine on a retired key generation cannot be bypassed b
     // A job is assigned to k2 while everything is still clean.
     const pending = scheduleOne(f, 'G02', 'document.open', 2, { exclude: [FED_OPERATORS.A], key: 'p11-k2-job' });
     assert.ok(pending.scheduled && pending.job.assignments.some((a) => a.conformanceValidatorId === 'vb1.k2'));
+    // A challenge already issued to k2 (review C-2: k2 must not keep VOTING either).
+    const k2Issued = issueTo(f, ['vb1.k2'], 'p11-k2-issued');
     // The retired k1 signs a contradiction for its outstanding challenge: evidence acceptance quarantines k1.
     assert.deepEqual(contradict(f, outstanding.challenge.challengeId, 'vb1.k1', k1Key, 'p11-contradiction'), { accepted: false, reason: 'VALIDATOR_CONFLICT' });
     assert.equal(f.registry.validatorState('vb1'), 'ACTIVE', 'the federation has not synced');
+    // …but the authoritative store quarantined the whole lineage in the same transaction: k2's new evidence is refused.
+    assert.notEqual(f.c.store.getValidator('vb1.k2')?.quarantinedAtMs, null);
+    const k2Late = await f.validators.get('vb1')!.runtime.receive(k2Issued);
+    assert.deepEqual(k2Late.status === 'REJECTED' ? k2Late.reason : k2Late.status, 'VALIDATOR_QUARANTINED');
     // Before any sync: not eligible, not schedulable, and the worker refuses to dispatch the pre-assigned job.
     assert.deepEqual(f.registry.eligibility('vb1', f.c.clock.ms(), f.c.clock.ms()), { eligible: false, reason: 'QUARANTINED' });
     assert.deepEqual(scheduleOne(f, 'G05', 'document.open', 3, { key: 'p11-after' }), { scheduled: false, reason: 'QUORUM_INSUFFICIENT', availableOperators: 2 });
@@ -260,6 +266,8 @@ describe('P2-5 — operator authority is enforced by the authoritative RN-CONFOR
     assert.equal(operatorEligibleForStoredRow(approvedThenQuarantined, 2_000), true, 'stored: committed before the same-millisecond quarantine');
     assert.equal(operatorEligibleForStoredRow(approvedThenQuarantined, 2_001), false);
     assert.equal(operatorEligibleForStoredRow([{ seq: 1, kind: 'APPROVED', atMs: 1_000 }], 999), false);
+    // Review C-6: APPROVED@t, the row, QUARANTINED@t — committed between the two same-millisecond events.
+    assert.equal(operatorEligibleForStoredRow([{ seq: 1, kind: 'APPROVED', atMs: 3_000 }, { seq: 2, kind: 'QUARANTINED', atMs: 3_000 }], 3_000), true);
     const legacy = [{ seq: 1, kind: 'LEGACY' as const, atMs: 5_000 }];
     assert.equal(operatorEligibleForStoredRow(legacy, 4_000), true, 'accepted before the migration');
     assert.equal(operatorEligibleForStoredRow(legacy, 5_001), false);
@@ -382,5 +390,62 @@ describe('Codex P2 — durable job recovery and requalification isolation', () =
     const jobId = await requalify(f, 'vb1', 2);
     f.registry.completeReinstatement('vb1', 2, jobId);
     assert.equal(f.registry.validatorState('vb1'), 'ACTIVE');
+  });
+});
+
+describe('Independent review regressions (C-1, C-3, C-4)', () => {
+  it('C-1: another integration\'s in-flight follow-up never suppresses this integration\'s dispute', async () => {
+    const { f } = await activeAndAged('c1-tenant');
+    const second = f.c.services().registry.registerIntegrationVersion(referenceIntegrationInput(f.c.profileDigest, { integrationId: 'integration-second-tenant' }));
+    const now = f.c.clock.ms();
+    const auth = f.registry.prepareTestingAuthorization({ authorizationId: 'auth-second', organizationId: ORG_A, integrationDigest: second.integrationDigest, purpose: 'CONFORMANCE', fixtureRefs: [REFERENCE_FIXTURE_REF], notBefore: new Date(now).toISOString(), notAfter: new Date(now + 30 * 86_400_000).toISOString() });
+    f.registry.authorizeTesting(auth.record, fedDecisions(f, auth.prepared, f.c.humans.alice, f.c.humans.bob));
+    const blocker = f.scheduler.schedule({ purpose: 'DISPUTE', authorizationId: 'auth-second', challengeType: 'G01', operation: 'document.export', fixtureRef: REFERENCE_FIXTURE_REF, requiredOperators: 1, jobKey: 'c1-blocker' });
+    assert.ok(blocker.scheduled);
+    assert.ok(scheduleOne(f, 'G01', 'document.export', 2, { exclude: [FED_OPERATORS.C], key: 'c1-pre' }).scheduled);
+    await drain(f);
+    f.c.clock.advance(60);
+    makeMalicious(f, 'vc1', 'allowed');
+    assert.ok(scheduleOne(f, 'G01', 'document.export', 1, { exclude: [FED_OPERATORS.A, FED_OPERATORS.B], key: 'c1-c' }).scheduled);
+    await drain(f);
+    assert.ok(['PENDING', 'LEASED', 'DISPATCHED', 'RETRY_PENDING'].includes(f.fed.getJob(blocker.job.jobId)!.state), 'the other integration\'s job is still open');
+    f.c.clock.advance(5);
+    const plan = f.scheduler.planFollowUps('auth-reference-pep-synthetic-1', REFERENCE_FIXTURE_REF);
+    assert.ok(plan.some((r) => r.scheduled && r.created && r.job.purpose === 'DISPUTE' && r.job.integrationDigest === f.c.integration.integrationDigest));
+  });
+
+  it('C-3: a quarantine requested with a slightly regressed clock still lands in the authoritative store; reinstatement still needs two humans', () => {
+    const f = standardFederation('c3-clock');
+    f.registry.registerOperator({ operatorId: 'op-c3', operatorClass: 'CANDIDATE_EXTERNAL', administrativeOwnerRef: 'owner-ref-c3' });
+    f.registry.approveOperator('op-c3', fedDecisions(f, f.registry.prepareOperatorAction('op-c3', 'approve')));
+    f.registry.activateOperator('op-c3');
+    f.c.clock.advance(-2);
+    f.registry.quarantineOperator('op-c3', 'CLOCK_TEST');
+    assert.equal(f.c.store.listOperatorEvents('op-c3').at(-1)?.kind, 'QUARANTINED');
+    f.c.clock.advance(10);
+    assert.equal(f.c.services().registry.operatorEligible('op-c3'), false, 'never eligible again once the clock catches up');
+    assert.throws(() => f.registry.reinstateOperator('op-c3', []), refused('APPROVAL_REFUSED'));
+  });
+
+  it('C-4: an investigation whose job expired is scheduled again, not suppressed forever', async () => {
+    const { f } = await activeAndAged('c4-retry');
+    f.c.deployment.defects.add('BYPASS-01');
+    f.c.deployment.defectOperations.add('document.export');
+    assert.ok(scheduleOne(f, 'G01', 'document.export', 1, { exclude: [FED_OPERATORS.B, FED_OPERATORS.C], key: 'c4-first' }).scheduled);
+    await drain(f);
+    f.down.add('vb1');
+    f.down.add('vc1');
+    const first = f.scheduler.planFollowUps('auth-reference-pep-synthetic-1', REFERENCE_FIXTURE_REF).find((r) => r.scheduled && r.job.purpose === 'INVESTIGATION');
+    assert.ok(first?.scheduled);
+    for (let i = 0; i < 4; i += 1) {
+      await f.worker('w-c4').runOnce();
+      f.c.clock.advance(300);
+    }
+    await f.worker('w-c4').runOnce();
+    assert.equal(f.fed.getJob(first.job.jobId)?.state, 'EXPIRED');
+    f.down.clear();
+    beat(f);
+    const again = f.scheduler.planFollowUps('auth-reference-pep-synthetic-1', REFERENCE_FIXTURE_REF).find((r) => r.scheduled && r.job.purpose === 'INVESTIGATION');
+    assert.ok(again?.scheduled && again.created && again.job.jobId !== first.job.jobId);
   });
 });

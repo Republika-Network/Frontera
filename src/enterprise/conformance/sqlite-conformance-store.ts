@@ -629,11 +629,18 @@ export function operatorEligibleAt(events: readonly OperatorStatusEvent[], atMs:
  * the same millisecond (F-0), or if it predates the operator's LEGACY marker (accepted before the `/2` → `/3` migration).
  */
 export function operatorEligibleForStoredRow(events: readonly OperatorStatusEvent[], acceptedAtMs: number): boolean {
-  const first = [...events].sort((a, b) => a.seq - b.seq)[0];
+  const ordered = [...events].sort((a, b) => a.seq - b.seq);
+  const first = ordered[0];
   if (first !== undefined && first.kind === 'LEGACY' && acceptedAtMs <= first.atMs) return true;
-  const inclusive = statusAt(events, acceptedAtMs, true);
-  const exclusive = statusAt(events, acceptedAtMs, false);
-  return (inclusive !== null && ELIGIBLE_KINDS.includes(inclusive)) || (exclusive !== null && ELIGIBLE_KINDS.includes(exclusive));
+  // Review C-6: the row may have committed between ANY two events stamped in its millisecond — test every prefix.
+  let state = statusAt(events, acceptedAtMs, false);
+  if (state !== null && ELIGIBLE_KINDS.includes(state)) return true;
+  for (const e of ordered) {
+    if (e.atMs !== acceptedAtMs) continue;
+    state = e.kind;
+    if (ELIGIBLE_KINDS.includes(state)) return true;
+  }
+  return false;
 }
 
 export class ConformanceStoreError extends Error {
@@ -776,6 +783,11 @@ export interface ConformanceStore {
   insertValidator(record: ValidatorEnrollmentRecord, bindingDigest: string, decisions: readonly ConsumedDecision[], enrolledAt: string): void;
   getValidator(validatorId: string): StoredValidator | undefined;
   getValidatorByKeyId(keyId: string): StoredValidator | undefined;
+  /**
+   * RN-CONFORM-05 (review C-2): the key generations of one logical validator — every `<base>.k<n>` identity enrolled
+   * under the SAME operator as `validatorId` (a validator id without a `.k<n>` suffix is its own only member).
+   */
+  listValidatorLineage(validatorId: string): readonly StoredValidator[];
   appendValidatorEvent(validatorId: string, kind: 'KEY_REVOKED' | 'QUARANTINED', atMs: number, reason: string): void;
   /** RN-CONFORM-05: appends one authoritative operator status event (APPROVED/REINSTATED need two consumed humans, by trigger). Returns its sequence. */
   appendOperatorEvent(operatorId: string, kind: Exclude<OperatorEventKind, 'LEGACY'>, atMs: number, reason: string, bindingDigest: string | null, decisions: readonly ConsumedDecision[]): number;
@@ -881,6 +893,7 @@ export function migrateConformanceStore(path: string, options: { readonly now?: 
   if (!existsSync(file)) throw new ConformanceStoreError('OPEN_REFUSED', 'no store exists at that path');
   const db = new Database(file, { fileMustExist: true });
   try {
+    db.pragma('busy_timeout = 2000');
     db.pragma('foreign_keys = ON');
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = FULL');
@@ -889,7 +902,9 @@ export function migrateConformanceStore(path: string, options: { readonly now?: 
     if (meta?.schema_version !== CONFORMANCE_STORE_PREVIOUS_SCHEMA_VERSION || meta.synthetic !== 1) throw new ConformanceStoreError('CORRUPT', 'not a synthetic rn.conformance.store/2 file');
     if (db.pragma('quick_check', { simple: true }) !== 'ok') throw new ConformanceStoreError('CORRUPT', 'integrity check failed');
     if (JSON.stringify(expectedTriggers(db)) !== JSON.stringify(schemaSetOf(SCHEMA_V2))) throw new ConformanceStoreError('CORRUPT', 'the /2 tables or triggers differ from the /2 schema; refusing to migrate');
-    const at = (options.now ?? Date.now)();
+    // Review C-7: never earlier than any accepted /2 row, so the LEGACY era covers every historical acceptance.
+    const latestAccepted = (db.prepare('SELECT MAX(accepted_at_ms) AS m FROM cc_observations').get() as { m: number | null }).m ?? 0;
+    const at = Math.max((options.now ?? Date.now)(), latestAccepted);
     let legacyOperators = 0;
     db.transaction(() => {
       const metaGuard = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'cc_meta_no_update'").get() as { sql: string }).sql;
@@ -1137,6 +1152,15 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
       ),
     getValidator: (validatorId: string) => parseValidator(db.prepare('SELECT * FROM cc_validators WHERE validator_id = ?').get(validatorId) as Record<string, unknown> | undefined),
     getValidatorByKeyId: (keyId: string) => parseValidator(db.prepare('SELECT * FROM cc_validators WHERE key_id = ?').get(keyId) as Record<string, unknown> | undefined),
+    listValidatorLineage: (validatorId: string) => {
+      const self = parseValidator(db.prepare('SELECT * FROM cc_validators WHERE validator_id = ?').get(validatorId) as Record<string, unknown> | undefined);
+      if (self === undefined) return [];
+      const match = /^(.+)\.k\d+$/.exec(validatorId);
+      if (match === null) return [self];
+      const prefix = `${match[1]}.k`;
+      const rows = db.prepare('SELECT * FROM cc_validators WHERE substr(validator_id, 1, ?) = ? AND operator_id = ? ORDER BY validator_id').all(prefix.length, prefix, self.record.operatorId) as Record<string, unknown>[];
+      return Object.freeze(rows.map((r) => parseValidator(r) as StoredValidator).filter((v) => /^\d+$/.test(v.record.validatorId.slice(prefix.length))));
+    },
     appendValidatorEvent: (validatorId: string, kind: 'KEY_REVOKED' | 'QUARANTINED', atMs: number, reason: string) =>
       run(() =>
         db.transaction(() => {

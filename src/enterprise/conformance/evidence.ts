@@ -185,7 +185,9 @@ export function createEvidenceService(deps: {
       if (store.getObservation(observation.eventId) !== undefined) return reject('REPLAYED');
       const prior = store.getObservationForChallengeValidator(observation.challengeId, observation.validatorId);
       if (prior !== undefined) {
-        return reject('VALIDATOR_CONFLICT', prior.eventId, () => store.appendValidatorEvent(observation.validatorId, 'QUARANTINED', nowMs, 'VALIDATOR_CONFLICT'));
+        // Review C-2: the quarantine covers every key generation of the logical validator enrolled before now (same
+        // operator), in the same transaction — a successor key cannot keep voting while its predecessor is quarantined.
+        return reject('VALIDATOR_CONFLICT', prior.eventId, () => quarantineLineage(store, observation.validatorId, nowMs, 'VALIDATOR_CONFLICT'));
       }
 
       // 10 — evidence package in custody, and the classification the engine computes (never the validator's).
@@ -240,6 +242,19 @@ export function createEvidenceService(deps: {
  * for evidence accepted before the revocation (`loadEngineInput`). Compromise therefore withdraws a
  * validator's past evidence without rewriting it.
  */
+/**
+ * RN-CONFORM-05 (review C-2): quarantines `validatorId` and every other key generation of the same logical validator
+ * (`<base>.k<n>`, same operator) that was requested at or before `atMs`. A generation requested later (a two-person
+ * REINSTATE successor) is not affected. Idempotent.
+ */
+export function quarantineLineage(store: ConformanceStore, validatorId: string, atMs: number, reason: string): void {
+  for (const v of store.listValidatorLineage(validatorId)) {
+    if (v.quarantinedAtMs !== null) continue;
+    if (v.record.validatorId !== validatorId && toMs(v.record.requestedAt) > atMs) continue;
+    store.appendValidatorEvent(v.record.validatorId, 'QUARANTINED', atMs, reason);
+  }
+}
+
 export function checkObservationAuthority(
   store: ConformanceStore,
   profiles: ConformanceProfileRegistry,

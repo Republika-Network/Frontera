@@ -396,3 +396,29 @@ and converted only by the explicit `migrateConformanceStore(path)` — one IMMED
 exact `/2` schema (tampered → refused), then adds the table and triggers, replaces the two guarded triggers, records the
 LEGACY events and bumps the version. Running it twice is refused (`ALREADY_CURRENT`); an interrupted run rolls back
 whole. Old code opening a `/3` file refuses it (schema differs). No row of any existing table is rewritten.
+
+### Independent review of the remediation (fresh read-only AI reviewer; not an accredited audit)
+
+No P0. Dispositions:
+
+| Id | Finding | Disposition |
+|---|---|---|
+| C-1 (P1) | the "follow-up already in flight" skip matched any integration's job, so one tenant's job could suppress another's dispute (the P1-2 harm across tenants) | **Fixed**: scoped to the same organization and integration digest. Regression test |
+| C-2 (P2) | P1-1 stopped assignments but a successor generation could keep *voting* until a sync | **Fixed in the authoritative store**: the VALIDATOR_CONFLICT quarantine and `quarantineValidator` now quarantine the whole lineage (`<base>.k<n>`, same operator, requested at or before the event) in the same transaction; a later two-person REINSTATE successor is unaffected. Regression test (k2's pending challenge is refused at acceptance) |
+| C-3 (P2) | operator decisions used a clock-filtered view; a small clock regression could skip the authoritative quarantine and let reinstatement adopt without humans | **Fixed**: decided on the latest event by sequence; protective events are stamped no earlier than the latest event. Regression test |
+| C-4 (P2) | a follow-up whose job expired/cancelled/failed was suppressed forever by its deterministic key | **Fixed**: bounded re-scheduling under an attempt suffix (max 8). Regression test |
+| C-5 (P3) | while an operator is quarantined, a contradicting second observation is refused without the VALIDATOR_CONFLICT quarantine | **Accepted, documented**: its evidence stays excluded while the operator is ineligible; reinstating an operator is a two-person decision that should review its validators |
+| C-6 (P3) | same-millisecond prefix orderings could still look tampered | **Fixed** (every same-millisecond prefix is tested). Unit regression |
+| C-7 (P3) | the LEGACY marker could predate a /2 row accepted later than the migration clock | **Fixed** (`at = max(now, max accepted_at_ms)`); `busy_timeout` set. The migration test has no historical rows: **residual test gap** |
+| C-8 (P3) | planner chronology omits `revalidationSince` and the engine's period-start read | **Accepted** (liveness only; can only under-schedule relative to the engine, never grant) |
+| C-9 (P3) | a TEST-ONLY migration fixture is exported from the store module | **Accepted** (named and documented TEST-ONLY; the module is not exported outside itself) |
+| S-1 (P2, speculative) | a credential created later on the probation fixture would count finished probation evidence | **Residual, pre-activation gate**: needs a lifecycle-level reservation of requalification integrations (RN-CONFORM-02 change); today the fixture belongs to the validator network organization and is never credentialed by the federation |
+| S-2..S-4 (P3) | operator approvals not re-authenticated after insert (raw writer); LEGACY insertable as a first event; re-approving a LEGACY operator restores its /2-era evidence | **Accepted, documented** (raw-writer residual as for validator enrollment; LEGACY grants nothing; re-approval is a two-person decision) |
+
+### P2-3 pre-activation gate (unchanged, mandatory)
+
+Before any externally reachable coordinator or validator network exists, challenge issuance and acceptance must
+enforce testing authorization and eligible-operator policy at their authoritative trust boundaries. Today the
+coordinator is reachable only inside `src/enterprise/conformance/` and its tests (structure test; no package export,
+no Host route; `conformance-status-local/server.ts` imports only `status-http.js`). This remediation adds no new
+import path.

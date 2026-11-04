@@ -343,6 +343,7 @@ export function createFederationRegistry(deps: {
     return changed;
   };
 
+  const latestOperatorKind = (operatorId: string) => store.listOperatorEvents(operatorId).at(-1)?.kind;
   const quarantineOperatorInternal = (operatorId: string, reason: string, at: number) => {
     for (const v of fed.listValidators().filter((x) => x.operatorId === operatorId)) quarantineValidatorInternal(v.validatorId, `OPERATOR_QUARANTINED:${reason}`, at);
     const state = operatorStateOf(operatorId);
@@ -410,7 +411,8 @@ export function createFederationRegistry(deps: {
       if (operatorStateOf(operatorId) !== 'REGISTERED') throw new FederationError('TRANSITION_NOT_ALLOWED', 'only a REGISTERED operator is approved');
       // The conformance store is authoritative: its two-person APPROVED event (trigger-checked) is what makes the operator
       // eligible. A retry after a crash between the stores adopts an approval the conformance store already recorded.
-      if (!conformance.operatorEligible(operatorId)) {
+      // Review C-3: decided on the latest event by SEQUENCE (never a clock-filtered view): adopt only a recorded APPROVED.
+      if (latestOperatorKind(operatorId) !== 'APPROVED') {
         // Verified first (nothing is written for a refused approval), then re-verified and consumed by the store.
         authorize(prepareOperatorAction(operatorId, 'approve'), decisions);
         if (store.getOperator(operatorId) === undefined) conformance.registerSyntheticOperator(operatorId);
@@ -436,13 +438,17 @@ export function createFederationRegistry(deps: {
       requireOperatorTransition(operatorId, 'QUARANTINED');
       if (!isIdentifier(reason)) throw new FederationError('MALFORMED_INPUT', 'reason');
       // Authoritative store first: from this instant no validator of the operator enrolls or contributes evidence.
-      if (conformance.operatorEligible(operatorId)) conformance.quarantineOperator(operatorId, reason);
+      // Review C-3: by sequence, so a slightly regressed clock can never skip the authoritative quarantine.
+      const latest = latestOperatorKind(operatorId);
+      if (latest === 'APPROVED' || latest === 'REINSTATED' || latest === 'LEGACY') conformance.quarantineOperator(operatorId, reason);
       quarantineOperatorInternal(operatorId, reason, nowMs());
     },
     reinstateOperator(operatorId, decisions) {
       requireOperatorTransition(operatorId, 'ACTIVE');
       if (operatorStateOf(operatorId) !== 'QUARANTINED') throw new FederationError('TRANSITION_NOT_ALLOWED', 'only a QUARANTINED operator is reinstated');
-      if (!conformance.operatorEligible(operatorId)) {
+      // Review C-3: adopt only a REINSTATED recorded after the QUARANTINED this federation mirrors; otherwise the two
+      // humans are verified (and refused if the authoritative store is not quarantined — fail closed).
+      if (latestOperatorKind(operatorId) !== 'REINSTATED') {
         try {
           conformance.reinstateOperator(operatorId, decisions);
         } catch (error) {
