@@ -29,7 +29,7 @@ import type { TestingAuthorizationInput } from './testing-authorization.js';
 import type { ConformanceProfileRegistry } from './profile.js';
 import { CONFORMANCE_NETWORK_ORGANIZATION, ConformanceRegistryError, type ConformanceRegistry } from './registry.js';
 import { deriveConformanceKeyId, verifyConformanceSignature } from './signing.js';
-import { operatorEligibleAt, type ConformanceStore, type StoredTestingAuthorization } from './sqlite-conformance-store.js';
+import { ConformanceStoreError, operatorEligibleAt, type ConformanceStore, type StoredTestingAuthorization } from './sqlite-conformance-store.js';
 
 /**
  * RN-CONFORM-05 — operator identity, validator enrollment, key generations, quarantine and revocation.
@@ -207,7 +207,7 @@ export function createFederationRegistry(deps: {
   readonly clock: { now(): string };
   readonly random: RandomSource;
   /** TEST-ONLY fault injection: runs after the conformance-store enrollment commits and before the federation row (crash between stores). */
-  readonly faults?: { readonly afterConformanceEnrollment?: () => void; readonly beforeReinstatementCommit?: () => void };
+  readonly faults?: { readonly afterConformanceEnrollment?: () => void; readonly beforeReinstatementCommit?: () => void; readonly insideReinstatementLock?: () => void };
 }): FederationRegistry {
   const { fed, store, conformance, profiles, humans, clock, random } = deps;
   const nowMs = () => {
@@ -746,6 +746,7 @@ export function createFederationRegistry(deps: {
       // RN-CONFORM-07A (K-2): the AUTHORITATIVE requalification authorization — never only the federation mirror — must
       // still cover this work at the decision. The decisive check and the transition run under the conformance store's
       // write lock, so a revocation either committed before the check (and refuses) or commits after the reinstatement.
+      const generationId = row.conformanceValidatorId;
       const authoritativeDefect = (): string | null => {
         const a = store.getTestingAuthorization(j.authorizationId);
         if (a === undefined) return 'AUTHORIZATION_UNKNOWN';
@@ -764,6 +765,10 @@ export function createFederationRegistry(deps: {
           const p = store.getObservationPurpose(o.eventId);
           if (p === undefined || p.purpose !== 'VALIDATOR_REQUALIFICATION' || p.authorizationId !== j.authorizationId) return 'EVIDENCE_BINDING';
         }
+        // Review 07A #4: the other conformance-store gates are re-read here too (inside the lock on the final check).
+        if (store.hasCredentialForIntegration(j.organizationId, j.integrationDigest)) return 'REQUALIFICATION_TARGET_CREDENTIALED';
+        const generationNow = store.getValidator(generationId);
+        if (generationNow === undefined || generationNow.quarantinedAtMs !== null || generationNow.keyRevokedAtMs !== null) return 'VALIDATOR_NOT_ELIGIBLE';
         return null;
       };
       const refuse = (defect: string): never => {
@@ -773,14 +778,21 @@ export function createFederationRegistry(deps: {
       const early = authoritativeDefect();
       if (early !== null) refuse(early);
       deps.faults?.beforeReinstatementCommit?.();
-      store.underWriteLock(() => {
-        const defect = authoritativeDefect();
-        if (defect !== null) refuse(defect);
-        fed.atomically(() => {
-          fed.appendGenerationState(validatorId, generation, 'ACTIVE', at, 'REQUALIFIED');
-          fed.appendValidatorState(validatorId, 'ACTIVE', at, 'REINSTATED_AFTER_REQUALIFICATION', []);
+      try {
+        store.underWriteLock(() => {
+          const defect = authoritativeDefect();
+          if (defect !== null) refuse(defect);
+          deps.faults?.insideReinstatementLock?.();
+          fed.atomically(() => {
+            fed.appendGenerationState(validatorId, generation, 'ACTIVE', at, 'REQUALIFIED');
+            fed.appendValidatorState(validatorId, 'ACTIVE', at, 'REINSTATED_AFTER_REQUALIFICATION', []);
+          });
         });
-      });
+      } catch (error) {
+        // Review 07A #4: a lock that cannot be taken fails closed with the federation contract's refusal.
+        if (error instanceof ConformanceStoreError) refuse(`STORE_${error.code}`);
+        throw error;
+      }
       event('REQUALIFICATION_PASSED', at, 'validator', validatorId, { generation, jobId: requalificationJobId });
       event('VALIDATOR_REINSTATED', at, 'validator', validatorId, { generation });
     },

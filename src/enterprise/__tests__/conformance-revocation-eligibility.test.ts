@@ -7,8 +7,10 @@ import { authenticateStoredObservation } from '../conformance/evidence.js';
 import { FederationError } from '../conformance/federation-registry.js';
 import { CredentialLifecycleError, loadEngineInput, positivelyEligible } from '../conformance/lifecycle.js';
 import { CONFORMANCE_NETWORK_ORGANIZATION } from '../conformance/registry.js';
+import { RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1 } from '../conformance/profile.js';
+import { ConformanceStoreError, openConformanceStore } from '../conformance/sqlite-conformance-store.js';
 import { verifyCredentialHistory } from '../conformance/verifier.js';
-import { ORG_A, activeCredential, approvals, buildCircuit, cleanupAll, issue, observe, runBaseline, submit, testingAuthorizationFor, type Circuit } from './conformance-support.js';
+import { ORG_A, activeCredential, approvals, buildCircuit, cleanupAll, issue, observe, runBaseline, submit, testingAuthorizationFor, verdict, type Circuit } from './conformance-support.js';
 import { REFERENCE_FIXTURE_REF } from './conformance-reference-pep.js';
 import { cleanupReferenceCircuits } from './conformance-reference-support.js';
 import { FED_REQUALIFICATION_AUTHORIZATION, adoptGeneration, drain, enrollGeneration, standardFederation, type Federation } from './conformance-federation-support.js';
@@ -80,11 +82,20 @@ describe('RN-CONFORM-07A K-1 — positive eligibility after revocation (matrix 1
     c.cleanup();
   });
 
-  it('5, 14, 15: no positive re-evaluation from that evidence — in the same millisecond, and after a restart', () => {
+  it('5, 14, 15: no positive re-evaluation from that evidence, after a restart; same-millisecond order is by commit sequence', () => {
     const c = buildCircuit();
     const credentialId = candidateWithBaseline(c);
     const sameMs = c.clock.ms();
-    revoke(c); // same millisecond as the evaluation below; ordering is by the durable revocation commit
+    // Accepted, then revoked, then a second submission — all in ONE millisecond: the first stays authentic (its
+    // acceptance sequence precedes the revocation), the second is refused.
+    const before = submit(c, observe(c, c.validators.A, issue(c, 'G01', [c.validators.A])));
+    const pendingRaw = observe(c, c.validators.B, issue(c, 'G01', [c.validators.B]));
+    assert.ok(before.accepted);
+    revoke(c);
+    const late = submit(c, pendingRaw);
+    assert.deepEqual([late.accepted, !late.accepted && late.reason, c.clock.ms()], [false, 'AUTHORIZATION_REVOKED', sameMs]);
+    const revokedSeq = c.store.getTestingAuthorization(c.store.getObservationPurpose(before.accepted ? before.observation.eventId : '')!.authorizationId!)!.revokedSeq!;
+    assert.ok(c.store.getObservationPurpose(before.accepted ? before.observation.eventId : '')!.acceptedSeq < revokedSeq);
     for (const phase of ['live', 'after-restart']) {
       if (phase === 'after-restart') c.reopen();
       const loaded = loadEngineInput(c.store, c.profiles, ORG_A, credentialId, c.clock.now(), c.coordinatorPublicKeyPem)!;
@@ -98,6 +109,26 @@ describe('RN-CONFORM-07A K-1 — positive eligibility after revocation (matrix 1
         if (row.outcomeClass === 'conformant') assert.equal(positivelyEligible(c.store, row.eventId, sameMs), false);
       }
     }
+    c.cleanup();
+  });
+
+  it('4b: a reinstatement prepared before revocation and approved after it is refused at commit', () => {
+    const c = buildCircuit();
+    const credentialId = activeCredential(c);
+    const { lifecycle } = c.services();
+    c.platform.bypass = 'unauthorized-operation';
+    const v = issue(c, 'G01', [c.validators.A, c.validators.B]);
+    submit(c, observe(c, c.validators.A, v));
+    submit(c, observe(c, c.validators.B, v));
+    lifecycle.evaluate(ORG_A, credentialId);
+    c.platform.bypass = 'none';
+    c.clock.advance(60);
+    runBaseline(c, [c.validators.A, c.validators.B]);
+    c.clock.advance(1);
+    const prepared = lifecycle.prepare('reinstate', { organizationId: ORG_A, credentialId, remediation: remediation(c) });
+    revoke(c);
+    assert.throws(() => lifecycle.commit(prepared, approvals(c, prepared, c.humans.carol, c.humans.alice)), refused('NO_LONGER_ELIGIBLE'));
+    assert.equal(c.store.getHead(ORG_A, credentialId)!.state, 'SUSPENDED');
     c.cleanup();
   });
 
@@ -188,8 +219,39 @@ describe('RN-CONFORM-07A K-1 — protective eligibility and no false suspension 
   });
 });
 
+describe('RN-CONFORM-07A — ACTIVE credentials, interim policy (§3.1, founder decision pending)', () => {
+  it('stays CONFORMANT only until freshness ends, then the existing SR-2 (not a violation); automatic reinstatement needs positively eligible evidence', () => {
+    const c = buildCircuit();
+    const credentialId = activeCredential(c);
+    const { lifecycle } = c.services();
+    revoke(c);
+    // Documented residual: right after revocation an ACTIVE credential is still CONFORMANT on pre-revocation evidence.
+    lifecycle.evaluate(ORG_A, credentialId);
+    assert.equal(verdict(c, credentialId).reason, 'CONFORMANT');
+    const profile = c.profiles.resolve(RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileId, RN_CONFORMANCE_SYNTHETIC_CIRCUIT_PROFILE_V0_1.profileVersion);
+    assert.ok(profile.ok);
+    const freshness = Math.max(...profile.definition.requirements.map((r) => r.freshnessSeconds ?? 0));
+    c.clock.advance(freshness + 1);
+    assert.notEqual(verdict(c, credentialId).reason, 'CONFORMANT', 'not CONFORMANT once the evidence is no longer fresh');
+    c.clock.advance(profile.definition.freshnessGraceSeconds);
+    const out = lifecycle.evaluate(ORG_A, credentialId);
+    assert.deepEqual(out.evaluation.proposal, { kind: 'SUSPEND', ruleId: 'SR-2', reasonCode: 'EVIDENCE_STALE' }, 'the ordinary staleness rule, never a violation');
+    assert.ok(out.engine.requirementResults.every((r) => r.category !== 'VERIFIED_FAILURE'));
+    // Revalidation under a replacement that is itself revoked before the automatic reinstatement: refused.
+    runBaseline(c, [c.validators.A, c.validators.B]);
+    c.clock.advance(1);
+    revoke(c);
+    assert.throws(() => lifecycle.reinstateAutomatically(ORG_A, credentialId), refused('NOT_ELIGIBLE'));
+    // Fresh evidence under a valid authorization: the automatic path works again.
+    runBaseline(c, [c.validators.A, c.validators.B]);
+    c.clock.advance(1);
+    assert.equal(lifecycle.reinstateAutomatically(ORG_A, credentialId).state, 'ACTIVE');
+    c.cleanup();
+  });
+});
+
 describe('RN-CONFORM-07A K-2 — validator reinstatement needs the authoritative requalification authorization (matrix 11–13)', () => {
-  const pending = async (seed: string, faults?: { beforeReinstatementCommit?: () => void }) => {
+  const pending = async (seed: string, faults?: { beforeReinstatementCommit?: () => void; insideReinstatementLock?: () => void }) => {
     const f = standardFederation(seed, faults);
     f.registry.quarantineValidator('vb1', 'PROTOCOL_VIOLATIONS');
     const { generation, key } = enrollGeneration(f, 'vb1', 'REINSTATE');
@@ -226,6 +288,30 @@ describe('RN-CONFORM-07A K-2 — validator reinstatement needs the authoritative
     assert.throws(() => raced.f.registry.completeReinstatement('vb1', 2, raced.jobId), failedWith('AUTHORIZATION_REVOKED'));
     assert.equal(raced.f.registry.validatorState('vb1'), 'QUARANTINED');
     assert.notEqual(raced.f.c.store.getTestingAuthorization(FED_REQUALIFICATION_AUTHORIZATION)!.revokedSeq, null, 'the revocation itself committed');
+
+    // The decisive check and the transition hold the conformance write lock: a revocation from another connection
+    // cannot commit in between (it is BUSY), and succeeds afterwards.
+    const blocked: { error: unknown }[] = [];
+    let lockedPath = '';
+    const locked = await pending('rn07a-k2-lock', {
+      insideReinstatementLock: () => {
+        const second = openConformanceStore(lockedPath);
+        try {
+          second.revokeTestingAuthorization(FED_REQUALIFICATION_AUTHORIZATION, Date.now(), 'racing revocation (test)');
+        } catch (error) {
+          blocked.push({ error });
+        } finally {
+          second.close();
+        }
+      },
+    });
+    lockedPath = locked.f.c.store.path;
+    locked.f.registry.completeReinstatement('vb1', 2, locked.jobId);
+    const raceError = blocked[0]?.error;
+    assert.ok(raceError instanceof ConformanceStoreError && raceError.code === 'BUSY', 'a revocation cannot interleave with the locked decision');
+    assert.equal(locked.f.registry.validatorState('vb1'), 'ACTIVE');
+    assert.equal(locked.f.c.store.getTestingAuthorization(FED_REQUALIFICATION_AUTHORIZATION)!.revokedSeq, null);
+    revokeRequalification(locked.f);
 
     const control = await pending('rn07a-k2-control');
     control.f.registry.completeReinstatement('vb1', 2, control.jobId);

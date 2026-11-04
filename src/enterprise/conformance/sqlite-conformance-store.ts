@@ -1536,6 +1536,8 @@ function buildStore(db: Database.Database, file: string): ConformanceStore {
       )?.authorization_id,
     isTestingAuthorizationSuperseded: (authorizationId: string) => db.prepare('SELECT 1 FROM cc_testing_authorizations WHERE supersedes = ?').get(authorizationId) !== undefined,
     underWriteLock: <T>(fn: () => T): T => {
+      // Review 07A #3: nested, better-sqlite3 would open a SAVEPOINT and take no lock — refuse instead.
+      if (db.inTransaction) throw new ConformanceStoreError('INVARIANT_REFUSED', 'underWriteLock cannot be nested');
       // The callback's own errors (a refused decision) pass through unchanged; only SQLite failures are mapped.
       let failure: { readonly error: unknown } | null = null;
       try {

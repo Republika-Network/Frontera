@@ -104,7 +104,11 @@ is not positively eligible is withheld (violations and inconclusive observations
 the result more protective). Every path to ACTIVE (`prepare('issue'|'reinstate')`, `commit`, the in-transaction
 recheck, `reinstateAutomatically`) re-evaluates through this loader at commit time, so evidence revoked between
 preparation, human approval and commit refuses the transition (`NO_LONGER_ELIGIBLE`). Revocation never creates a
-violation record, a failure category or a protective transition by itself.
+violation record or a protective transition by itself, and never turns a passing requirement into a failure. One
+consequence is deliberate and only ever more protective: for a CANDIDATE or SUSPENDED credential, withholding later
+conformant evidence can leave a genuine earlier violation unremediated (VERIFIED_FAILURE) or an earlier dispute
+unresolved (CONFLICTING) in that evaluation; such an evaluation records `criticalFailureConfirmed`, so the suspension
+then needs the two-person reinstatement path even after fresh evidence arrives under a replacement authorization.
 
 ### 3.1 ACTIVE credentials — decision pending (unchanged behaviour)
 
@@ -114,8 +118,13 @@ after a revocation it keeps its standing until that evidence's normal freshness 
 revocation instead would make every critical requirement INSUFFICIENT_EVIDENCE and trigger an immediate SR-2 (T4)
 suspension recorded as "evidence stale" — a protective transition caused by lost consent alone, which policy B forbids
 (invariants 6, 7). Changing this needs a new lifecycle rule (see the RN-CONFORM-07A PR for the decision proposal); until
-the founder decides, the residual is: **an ACTIVE credential's status can remain CONFORMANT for up to the freshness +
-grace period after its testing authorization is revoked.**
+the founder decides, the residual is precise: after its testing authorization is revoked, an ACTIVE credential
+(a) is verified **CONFORMANT until its evidence's freshness ends** (during grace the verifier answers
+`EVIDENCE_NOT_FRESH`), (b) stays in the ACTIVE **state** until freshness + grace, then SR-2 suspends it, and (c) each
+evaluation in that period records VERIFIED_SUCCESS, so the status field `lastSuccessfulVerificationAt` keeps advancing on
+revoked evidence. (a) and (c) are positive determinations after revocation and conflict with policy B invariant 4; they
+are the subject of the pending ACTIVE decision. Tested in `conformance-revocation-eligibility.test.ts` ("ACTIVE
+credentials, interim policy").
 
 ### 3.2 Validator reinstatement (K-2)
 
@@ -125,7 +134,9 @@ operation and challenge type match the job; the mirror digest equals the authori
 unexpired now; its window covers the challenge; the challenge and both observations are bound to it with purpose
 `VALIDATOR_REQUALIFICATION`. The decisive re-check and the federation transition run while holding the conformance
 store's write lock (`underWriteLock`), so a revocation either committed before the check (refused) or commits after the
-reinstatement — never in between. Residual: the two stores are separate files; a crash after the federation commit and
+reinstatement — never in between (tested with a second connection that is refused BUSY while the lock is held). The
+lock refuses to nest, the credential-free and generation-eligibility gates are re-read inside it, and a lock that cannot
+be taken refuses with `REQUALIFICATION_FAILED` (`STORE_BUSY`). Residual: the two stores are separate files; a crash after the federation commit and
 before the lock is released leaves a reinstatement that preceded any revocation, which is the linearized order.
 
 ## 4. Invariants (WP-11) and where they are tested

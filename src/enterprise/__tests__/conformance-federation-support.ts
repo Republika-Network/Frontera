@@ -145,7 +145,7 @@ export function fedDecisions(f: Federation, prepared: PreparedFederationAction, 
   return [decide(attester, 'attest', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, at), decide(approver, 'approve', prepared.action, prepared.subjectRef, prepared.actionBindingDigest, at)];
 }
 
-export function buildFederation(options: { readonly seed?: string; readonly operators?: readonly string[]; readonly faults?: { afterConformanceEnrollment?: () => void; beforeReinstatementCommit?: () => void } } = {}): Federation {
+export function buildFederation(options: { readonly seed?: string; readonly operators?: readonly string[]; readonly faults?: { afterConformanceEnrollment?: () => void; beforeReinstatementCommit?: () => void; insideReinstatementLock?: () => void } } = {}): Federation {
   const c = buildReferenceCircuit({ seed: options.seed ?? 'rn-conform-05' });
   const fedPath = join(c.dir, 'federation.sqlite');
   const random = deterministicRandom(`${options.seed ?? 'rn-conform-05'}:federation`);
@@ -318,7 +318,7 @@ export function beat(f: Federation, ids: readonly string[] = [...f.validators.ke
 }
 
 /** The standard federation: A1, A2, A3 under operator A; B1 under B; C1 under C. All healthy. */
-export function standardFederation(seed = 'rn-conform-05', faults?: { beforeReinstatementCommit?: () => void }): Federation {
+export function standardFederation(seed = 'rn-conform-05', faults?: { beforeReinstatementCommit?: () => void; insideReinstatementLock?: () => void }): Federation {
   const f = buildFederation(faults === undefined ? { seed } : { seed, faults });
   addValidator(f, 'va1', FED_OPERATORS.A);
   addValidator(f, 'va2', FED_OPERATORS.A);

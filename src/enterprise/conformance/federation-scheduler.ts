@@ -7,6 +7,7 @@ import type { FederationHealth } from './federation-health.js';
 import type { FederationRegistry } from './federation-registry.js';
 import { FederationStoreError, type FederationStore } from './federation-store.js';
 import type { ConformanceProfileRegistry } from './profile.js';
+import { positivelyEligible } from './lifecycle.js';
 import { operatorEligibleAt, type ConformanceStore } from './sqlite-conformance-store.js';
 import type { TestingAuthorizationPurpose } from './testing-authorization.js';
 
@@ -104,6 +105,10 @@ export function createFederationScheduler(deps: {
     return Object.freeze(out);
   };
 
+  // RN-CONFORM-07A (review #6): conformance scheduling counts what a positive evaluation would count — CONFORMANCE
+  // purpose, and conformant evidence only while its own authorization is unrevoked and unexpired; violations always.
+  const countsForScheduling = (eventId: string, outcomeClass: string, at: number) =>
+    store.getObservationPurpose(eventId)?.purpose === 'CONFORMANCE' && (outcomeClass !== 'conformant' || positivelyEligible(store, eventId, at));
   const authorizationFor = (authorizationId: string, fixtureRef: string, deadlineSeconds: number, at: number, purpose: TestingAuthorizationPurpose) => {
     const auth = fed.getAuthorization(authorizationId);
     if (auth === undefined) return undefined;
@@ -242,7 +247,7 @@ export function createFederationScheduler(deps: {
       const windowMs = FEDERATION_TIMING.routineWindowSeconds * 1000;
       const windowIndex = Math.floor(at / windowMs);
       // RN-CONFORM-07 (review #6): only CONFORMANCE-purpose evidence drives conformance scheduling.
-      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - windowMs, 4096).filter((o) => store.getObservationPurpose(o.eventId)?.purpose === 'CONFORMANCE');
+      const recent = store.listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - windowMs, 4096).filter((o) => countsForScheduling(o.eventId, o.outcomeClass, at));
       const results: ScheduleResult[] = [];
       for (const requirement of resolved.definition.requirements) {
         if (requirement.evaluation !== 'validator-corroborated' || requirement.challengeType === null) continue;
@@ -280,7 +285,7 @@ export function createFederationScheduler(deps: {
       // Look back far enough to see an unresolved violation still inside T_confirm, plus one window of evidence before it.
       const recent = store
         .listRecentObservations(auth.record.organizationId, auth.record.integrationDigest, at - corroboration.investigationTimeoutSeconds * 1000 - w, 4096)
-        .filter((o) => store.getObservationPurpose(o.eventId)?.purpose === 'CONFORMANCE');
+        .filter((o) => countsForScheduling(o.eventId, o.outcomeClass, at));
       // Only evidence the engine would count now: validators not quarantined/revoked, operators eligible (lifecycle rule).
       const counts = new Map<string, boolean>();
       const counted = (validatorId: string): boolean => {
