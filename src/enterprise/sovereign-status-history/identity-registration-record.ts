@@ -1,5 +1,6 @@
-import { closeSync, existsSync, fsyncSync, openSync, readSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, readSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { checkProtectedFile, confirmExclusivelyHeld, exclusiveCloser } from './executor-exclusivity.js';
 
@@ -325,33 +326,153 @@ export interface FvRegistrationRecordFile {
  * process holds it; `ABSENT` when it does not exist and `create` is not given; `PATH_REFUSED` when the path
  * fails the FV filesystem policy; `CORRUPT` when the file is not this organization's intact record.
  */
+/** RACE-INV-01 (D2): how long opening a record waits to acquire its exclusive lock before refusing BUSY. */
+const RECORD_LOCK_WAIT_MS = 500;
+/** RACE-INV-01 (D1): the private name a new record is initialized under, beside the record path, before it is published. */
+const PUBLICATION_SUFFIX = /^\.init-[0-9a-f]{32}$/;
+
+const fsyncDirectory = (path: string): void => {
+  const directory = openSync(dirname(path), 'r');
+  try {
+    fsyncSync(directory);
+  } finally {
+    closeSync(directory);
+  }
+};
+
+/**
+ * RACE-INV-01 (D1): the record path's file policy. A record that a publication interrupted between `link` and the removal of
+ * its private name has two names (`LINKED`); only such a private name — exactly the publication pattern, the same file —
+ * is released, which changes no content (the record is verified as always once opened). Anything else stays refused.
+ */
+function protectedOrRefused(file: string, allowMissing: boolean): void {
+  let refusal = checkProtectedFile(file, { allowMissing });
+  if (refusal === 'LINKED' && releasePublicationNames(file)) refusal = checkProtectedFile(file, { allowMissing });
+  if (refusal !== undefined) throw new FvIdentityRegistrationRecordError('PATH_REFUSED', `The registration record path is refused (${refusal}).`);
+}
+
+function releasePublicationNames(file: string): boolean {
+  let record;
+  try {
+    record = lstatSync(file);
+  } catch {
+    return false;
+  }
+  if (!record.isFile() || record.nlink !== 2) return false;
+  const name = basename(file);
+  let released = false;
+  for (const entry of readdirSync(dirname(file))) {
+    if (!entry.startsWith(name) || !PUBLICATION_SUFFIX.test(entry.slice(name.length))) continue;
+    const candidate = join(dirname(file), entry);
+    try {
+      const stat = lstatSync(candidate);
+      if (stat.isFile() && stat.dev === record.dev && stat.ino === record.ino) {
+        unlinkSync(candidate);
+        released = true;
+      }
+    } catch {
+      // Gone meanwhile (its own publication removed it): nothing to release.
+    }
+  }
+  if (released) fsyncDirectory(file);
+  return released;
+}
+
+/**
+ * RACE-INV-01 (D1): initializes a new record in full under a private, owner-only, never-reused name beside the record path,
+ * makes it durable, and publishes it at the path with `link` (which never replaces anything). If another ceremony
+ * published first, its record is the one used. The private name is always removed; an interrupted publication leaves at
+ * most an unused private file (never at the record path) or a second name `protectedOrRefused` releases.
+ */
+/**
+ * RACE-INV-01 (D1): releases the private second name an interrupted publication left on the record at `path` (a
+ * registration killed between `link` and the removal of that name), so the record path passes its file policy again.
+ * Only exactly such a name of the same file is removed; nothing else, and no content, changes.
+ */
+export function releaseInterruptedRecordPublication(path: string): void {
+  try {
+    const file = resolve(path);
+    if (checkProtectedFile(file) === 'LINKED') releasePublicationNames(file);
+  } catch {
+    // Never throws (review F3): whatever could not be released is refused by the record's file policy that follows.
+  }
+}
+
+async function publishInitializedRecord(file: string, organizationId: string, now: () => string): Promise<void> {
+  const temporary = `${file}.init-${randomBytes(16).toString('hex')}`;
+  try {
+    closeSync(openSync(temporary, 'wx', 0o600));
+  } catch (error) {
+    throw new FvIdentityRegistrationRecordError('UNAVAILABLE', `The registration record could not be prepared: ${(error as Error).message}`);
+  }
+  try {
+    const { default: SqliteDatabase } = await import('better-sqlite3');
+    const db: Database = new SqliteDatabase(temporary, { fileMustExist: true });
+    try {
+      db.pragma('journal_mode = DELETE');
+      db.pragma('synchronous = FULL');
+      db.transaction(() => {
+        db.exec(SCHEMA);
+        db.prepare('INSERT INTO fv_registration_meta (id, schema_version, organization_id, created_at) VALUES (1, ?, ?, ?)').run(FV_IDENTITY_REGISTRATION_RECORD_SCHEMA, organizationId, now());
+      }).immediate();
+    } finally {
+      db.close();
+    }
+    const fd = openSync(temporary, 'r');
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    try {
+      linkSync(temporary, file);
+    } catch (error) {
+      // Another ceremony published first: its record is the one opened. Anything else is not a record being published.
+      if ((error as { code?: unknown }).code !== 'EEXIST') throw error;
+    }
+  } catch (error) {
+    if (error instanceof FvIdentityRegistrationRecordError) throw error;
+    throw new FvIdentityRegistrationRecordError('UNAVAILABLE', `The registration record could not be published: ${(error as Error).message}`);
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== 'ENOENT') throw new FvIdentityRegistrationRecordError('UNAVAILABLE', `The registration record's private name could not be removed: ${(error as Error).message}`);
+    }
+    fsyncDirectory(file);
+  }
+}
+
 export async function openFvRegistrationRecord(path: string, options: { readonly organizationId: string; readonly now: () => string; readonly create?: boolean }): Promise<FvRegistrationRecordFile> {
   const file = resolve(path);
   const { organizationId, now } = options;
   const exists = existsSync(file);
-  const refusal = checkProtectedFile(file, { allowMissing: options.create === true && !exists });
-  if (refusal !== undefined) throw new FvIdentityRegistrationRecordError('PATH_REFUSED', `The registration record path is refused (${refusal}).`);
+  protectedOrRefused(file, options.create === true && !exists);
   if (!exists && options.create !== true) throw new FvIdentityRegistrationRecordError('ABSENT', 'No registration record exists; it is created only by a registration.');
-  let created = false;
+  // RACE-INV-01 (D1): a new record is initialized in full under a private name and only then published at the record
+  // path, never over anything (`link`). The path therefore only ever holds a complete record: a concurrent ceremony
+  // never sees, and an interrupted one never leaves, an uninitialized file there (which every later registration would
+  // refuse as corrupt, forever). A ceremony that publishes second simply opens the record the first one published.
   if (!exists) {
-    // O_EXCL: never over anything that appeared meanwhile. Owner-only from its first byte.
-    try {
-      closeSync(openSync(file, 'wx', 0o600));
-      created = true;
-    } catch {
-      throw new FvIdentityRegistrationRecordError('BUSY', 'The registration record appeared while it was being created; another ceremony is running.');
-    }
+    await publishInitializedRecord(file, organizationId, now);
+    protectedOrRefused(file, false);
   }
   // Publication review L2: a record is a rollback-journal database. A WAL database at this path (another owner's
   // ledger, history or store, misconfigured) is refused before SQLite opens it, so it is never checkpointed or converted.
-  if (!created && (existsSync(`${file}-wal`) || walHeader(file))) throw new FvIdentityRegistrationRecordError('CORRUPT', 'The file at the registration record path is a WAL database, not a registration record; it was not opened.');
+  if ((existsSync(`${file}-wal`) || walHeader(file))) throw new FvIdentityRegistrationRecordError('CORRUPT', 'The file at the registration record path is a WAL database, not a registration record; it was not opened.');
   const { default: SqliteDatabase } = await import('better-sqlite3');
   const db: Database = new SqliteDatabase(file, { fileMustExist: true });
   try {
-    db.pragma('locking_mode = EXCLUSIVE');
-    db.pragma('busy_timeout = 0');
+    // RACE-INV-01 (D2): two ceremonies opening at once both took SQLite's SHARED lock and, with no wait and exclusive
+    // locking mode already set (in which SQLite releases no lock, even after a failed attempt), neither could escalate:
+    // both were refused. The lock is now acquired in normal mode with a bounded wait — a failed attempt releases what it
+    // took, so one contender acquires — and exclusive mode is set while it is held, so it is kept past COMMIT for the
+    // whole ceremony. A record genuinely held by a running ceremony is still refused (BUSY) once the wait ends.
+    db.pragma(`busy_timeout = ${RECORD_LOCK_WAIT_MS}`);
     db.exec('BEGIN EXCLUSIVE');
+    db.pragma('locking_mode = EXCLUSIVE');
     db.exec('COMMIT');
+    db.pragma('busy_timeout = 0');
   } catch {
     db.close();
     throw new FvIdentityRegistrationRecordError('BUSY', 'Another registration ceremony holds the registration record.');
@@ -362,27 +483,11 @@ export async function openFvRegistrationRecord(path: string, options: { readonly
     if (!held()) throw new FvIdentityRegistrationRecordError('UNAVAILABLE', 'The registration ceremony no longer holds its record; nothing was written.');
   };
   try {
-    // An existing file is confirmed to be this organization's record before any pragma changes it.
-    if (!created) verifyStructure(db, organizationId);
+    // The file is confirmed to be this organization's record before any pragma changes it. Nothing is ever initialized
+    // in place: a file at the record path that holds no record (whoever left it) is refused, never adopted.
+    verifyStructure(db, organizationId);
     db.pragma('journal_mode = DELETE');
     db.pragma('synchronous = FULL');
-    const empty = db.prepare(`SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1`).get() === undefined;
-    if (empty) {
-      // Only a file this ceremony just created is initialized; an existing empty file is not a record.
-      if (!created) corrupt('The registration record file holds no record; it is never initialized in place.');
-      db.transaction(() => {
-        fence();
-        db.exec(SCHEMA);
-        db.prepare('INSERT INTO fv_registration_meta (id, schema_version, organization_id, created_at) VALUES (1, ?, ?, ?)').run(FV_IDENTITY_REGISTRATION_RECORD_SCHEMA, organizationId, now());
-      }).immediate();
-      // The new file's directory entry is durable before anything relies on it.
-      const directory = openSync(dirname(file), 'r');
-      try {
-        fsyncSync(directory);
-      } finally {
-        closeSync(directory);
-      }
-    }
     verifyStructure(db, organizationId);
   } catch (error) {
     close();

@@ -4,6 +4,24 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
 
 ## [Unreleased]
 
+### Fixed — FV-P4C-2B3C-2A1-RACE-INV-01 registration record publication and lock acquisition (internal, not operational)
+- **Incident.** Main CI (`cded5c80`) failed the B3C-2A1 two-process registration race: one `REGISTRAR_BUSY`, one `RECORD_CORRUPT`, no registration.
+- **Root cause.** Two defects in `identity-registration-record.ts`. Both were reproduced deterministically and in bounded unmodified races: 7 failures in 40 before the fix, 0 in 80 after.
+  - **D1:** the record was created at its path before it was initialized. A concurrent or crashed ceremony left an uninitialized file there, which made every later registration `RECORD_CORRUPT`, permanently.
+  - **D2:** the exclusive lock was taken in exclusive locking mode with no wait, so two openers could both be refused.
+- **Fix.**
+  - A new record is initialized under a private name and published with `link` (never over anything). A publication's leftover second name is released, and nothing else is adopted.
+  - The lock is acquired in normal mode with a bounded 500 ms wait, then kept in exclusive mode.
+  - Authorization, ledger, witness and store logic are unchanged.
+- **Evidence.**
+  - `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (6 tests, real processes; 5 of 6 fail on the pre-fix code, the sixth pins the never-adopt guard).
+  - Targeted mutants: all four killed deterministically. The lock-order mutant is killed by a deterministic behavioural test (6 of 6) and by the structure pin; the two-contender race test alone catches it in about 2 of 3 runs.
+  - Independent AI review: conditional go; its three Lows are addressed.
+  - Details in lifecycle doc §19.
+- **Limits.**
+  - A record path already left schema-less by D1 stays refused. Removing it is an operator decision on the evidence listed in §19; nothing is automated.
+  - Power-loss durability relies on `fsync` and was checked by reading the code, not tested.
+
 ### Fixed — FV-P4C-2B3C-2A3A-AUDIT-HF01 revocation audit contract parity (internal, not operational)
 - **What.** `verifyFvRevocations` (`human-identity/fv-revocation.ts`) now re-checks the scope and lifetime AUTH-03 enforces at write time:
   - the store id, deployment, FV state kind, witness id and witness key digest (the store id was found unchecked by this hotfix's own independent review);

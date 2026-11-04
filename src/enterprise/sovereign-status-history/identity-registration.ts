@@ -32,6 +32,7 @@ import {
   fileIdentityOf,
   openFvRegistrationRecord,
   readFvRegistrationRecordSnapshot,
+  releaseInterruptedRecordPublication,
   type FvIdentityRegistrationQuarantineReason,
   type FvIdentityRegistrationRecord,
   type FvIdentityRegistrationState,
@@ -795,7 +796,9 @@ export async function registerFvIdentity(options: FvIdentityRegistrarOptions, re
   // One registration, one execution: a second capability for the same registration is refused by the ledger.
   if (verification.capability.executionId !== registrationId) return refused('CAPABILITY_REJECTED', 'EXECUTION_MISMATCH');
 
-  // 2. The files' policy, before anything is created.
+  // 2. The files' policy, before anything is created. (RACE-INV-01: a record publication interrupted between `link` and
+  // the removal of its private name is released first; that name is the only thing removed.)
+  releaseInterruptedRecordPublication(config.recordPath);
   for (const [name, path] of [['record', config.recordPath], ['ledger', config.ledgerPath], ['store', config.storePath]] as const) {
     const refusal = checkProtectedFile(path, { allowMissing: true });
     if (refusal !== undefined) return refused('PATH_REFUSED', `${name}:${refusal}`);
