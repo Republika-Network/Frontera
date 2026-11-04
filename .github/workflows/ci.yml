@@ -413,3 +413,94 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+
+  rn-conform-07-v3-migration:
+    # RN-CONFORM-07: historical /3 → /4 migration regression on a REAL rn.conformance.store/3 database produced by the
+    # historical code itself (main 9ddd66bd: RN-CONFORM-05 store /3 + RN-CONFORM-06 docs, checked out and built
+    # separately) through its own insertion paths; the current code then migrates it and verifies that no historical
+    # row changed, every historical challenge and observation is LEGACY (auditable, never new conformance evidence), no
+    # testing authorization is granted to a legacy integration, interrupted/tampered/partial states are refused, and the
+    # properties survive a restart. Synthetic, no network beyond npm ci, no secret, no write permission.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      V3_COMMIT: 9ddd66bdfa469a65cb310fdbda63d978b7b3514c
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Check out and build the historical /3 code
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/v3" "$V3_COMMIT"
+          cd "$RUNNER_TEMP/v3"
+          npm ci
+          npm run build
+      - name: Generate the v3 fixture with the historical code
+        env:
+          V3_ROOT: ${{ runner.temp }}/v3
+          OUT_DIR: ${{ runner.temp }}/v3-fixture
+        run: node scripts/conformance/rn-conform-07-v3-fixture.mjs
+      - name: Migrate and verify with the current code
+        env:
+          FRONTERA_RN_CONFORM_07_V3_FIXTURE: ${{ runner.temp }}/v3-fixture
+        run: |
+          node --test --test-reporter=spec dist/src/enterprise/__tests__/conformance-migration-v3-historical.test.js 2>&1 | tee "$RUNNER_TEMP/v3-fixture/migration-test.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -q "skipped 0" "$RUNNER_TEMP/v3-fixture/migration-test.log"
+          cd "$RUNNER_TEMP/v3-fixture" && sha256sum fixture.v3.sqlite fixture.v3.json | tee fixture.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rn-conform-07-v3-migration-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/v3-fixture/
+          if-no-files-found: error
+          retention-days: 90
+
+  rn-conform-07-demo:
+    # RN-CONFORM-07: one run of the synthetic testing-authorization demonstration (scenarios A–H: authorized issuance,
+    # unauthorized refusal, scope violation, revocation with durable ordering, expiry, quota exhaustion across two
+    # coordinators, requalification isolation, legacy migration), captured as rn.conformance.authorization-demo-report/1
+    # plus a summary. Synthetic and test-only: no network, no external system, no secret, no write permission.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Run the demonstration
+        env:
+          FRONTERA_RN_CONFORM_07_REPORT_OUT: ${{ runner.temp }}/rn-conform-07-demo/rn-conformance-authorization-demo-report.json
+        run: node --test --test-reporter=spec dist/src/enterprise/__tests__/conformance-authorization-demo.test.js
+      - name: Digest the report
+        working-directory: ${{ runner.temp }}/rn-conform-07-demo
+        run: |
+          test -s rn-conformance-authorization-demo-report.json
+          sha256sum rn-conformance-authorization-demo-report.json | tee rn-conformance-authorization-demo-report.json.sha256
+          {
+            echo '### RN-CONFORM-07 synthetic testing-authorization demonstration'
+            echo
+            cat rn-conformance-authorization-demo-report.summary.md
+            echo
+            echo '```'
+            cat rn-conformance-authorization-demo-report.json.sha256
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rn-conform-07-authorization-demo-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rn-conform-07-demo/
+          if-no-files-found: error
+          retention-days: 90
