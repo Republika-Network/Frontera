@@ -1223,16 +1223,18 @@ FV store:   EMPTY ─(2A2A, issuer)→ ADMINISTERED ─(2A2B, admin)→ ADMINIST
 
 **Evidence after the fix:**
 - The same unmodified races ran 40 + 40 times with a single winner every time; the loser got `REGISTRAR_BUSY` or `ALREADY_REGISTERED`. No ties, no corrupt record.
-- `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (6 tests, all with real, separate processes, since POSIX locks belong to a whole process):
+- `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (8 tests, all with real, separate processes, since POSIX locks belong to a whole process):
   - publication is complete, with nothing at the record path meanwhile;
   - two contenders, started together while a third process holds the record, give exactly one prompt winner;
   - an opener waiting for the lock holds nothing, so a writer holding RESERVED can still commit. This test is timing-dependent: it assumes the opener entered its wait within 100 ms;
   - the wait is bounded;
   - both interrupted-publication states recover;
-  - everything else stays refused.
-- On the pre-fix implementation (the `cded5c80` sources, rebuilt), 5 of the 6 fail. The sixth pins the never-adopt guard and passes on both, by design.
+  - everything else stays refused;
+  - L1 (added after the publication review): a record seen `LINKED` while a live publication removes its own private name is re-checked and opened. The instant is made deterministic by having the "publisher" remove the name during the release's directory scan;
+  - the re-check adopts nothing: a foreign second name, a private-pattern name of another file, a symlink, another organization's record, a schema-less file.
+- On the pre-fix implementation (the `cded5c80` sources, rebuilt), 5 of the original 6 fail. The sixth pins the never-adopt guard and passes on both, by design. The two L1 tests were written later, against the review's finding.
 - **Targeted mutants:**
-  - killed deterministically by the new e2e tests: no wait; release disabled; the registrar's release removed;
+  - killed deterministically by the new e2e tests: no wait; release disabled; the registrar's release removed; the opener's L1 re-check reverted (4 of 4 runs; it fails with exactly the pre-fix `PATH_REFUSED (LINKED)`);
   - exclusive mode set before acquiring (the second half of D2): killed in 6 of 6 runs by the lock-order test (timing-dependent, see above), and every time by the structure pin. The two-contender test catches it only in about two runs of three (6 of 9), because the real tie needs both openers to take SHARED before either escalates, which can't be forced from outside SQLite.
 - **Independent review** (a fresh AI agent, not human): conditional go. It confirmed both D2 halves are needed (both refused in 17–21 of 25 runs for each half alone, 0 of 25 with both) and that SIGKILL during publication is recoverable (60 of 60 on the fix; 14 of 30 kills left a permanently corrupt record on the pre-fix code). Its three Lows were addressed:
   - the mutant wording above;

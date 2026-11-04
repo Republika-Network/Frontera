@@ -14,9 +14,11 @@ All notable changes to Frontera Systems. The project follows [Semantic Versionin
   - The lock is acquired in normal mode with a bounded 500 ms wait, then kept in exclusive mode.
   - Authorization, ledger, witness and store logic are unchanged.
 - **Evidence.**
-  - `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (6 tests, real processes; 5 of 6 fail on the pre-fix code, the sixth pins the never-adopt guard).
-  - Targeted mutants: all killed. The lock-order mutant is killed by a timing-dependent behavioural test (6 of 6 runs) and every time by the structure pin; the two-contender race test alone catches it in about 2 of 3 runs.
-  - Publication review: GO. L1 (a transient `PATH_REFUSED` during a live publication) is fixed. L2 (two ceremonies in one process, pre-existing, fails closed) is documented for a follow-up.
+  - `tests/fv-p4c2b3c2a1-race-inv01-record-publication.e2e.test.mjs` (8 tests, real processes). Of the original six, 5 fail on the pre-fix code; the sixth pins the never-adopt guard. Two later tests pin the L1 re-check.
+  - Targeted mutants (isolated copy, hashes restored): all 6 killed.
+    - Deterministically, by the e2e tests: no wait; release disabled; the registrar's release removed; the opener's L1 re-check reverted (killed by the new L1 regression in 4 of 4 runs).
+    - The lock-order mutant: killed by a timing-dependent behavioural test (6 of 6 runs) and every time by the structure pin. The two-contender race test alone catches it in about 2 of 3 runs.
+  - Independent AI publication reviews (fresh agents; **not** human security approval): GO, then conditional go on the final delta. L1 (a transient `PATH_REFUSED` during a live publication) is fixed and pinned by a regression test. L2 (two ceremonies in one process; pre-existing; fails closed; not reachable in the current architecture) is documented for a follow-up. Human security review is still required.
   - Independent AI review: conditional go; its three Lows are addressed.
   - Details in lifecycle doc §19.
 - **Limits.**
